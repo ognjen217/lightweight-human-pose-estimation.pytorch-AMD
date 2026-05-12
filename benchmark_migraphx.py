@@ -26,7 +26,6 @@ class MIGraphXWrapper:
     def __init__(self, model):
         self.model = model
         self.input_name = 'input'
-        # Convert to string to safely compare (e.g., 'float_type' or 'half_type')
         self.expected_type = str(self.model.get_parameter_shapes()[self.input_name].type())
         print(f"DEBUG: MIGraphX expects input type: {self.expected_type}")
 
@@ -89,7 +88,7 @@ def run_inference(model, tensor_input):
         
     return model.run({'input': n_input})
     
-def benchmark(args, iterations=100, warm_up=20, compile_model=True, profiler=False, validate_accuracy=True):
+def benchmark(args, iterations=100, warm_up=20, profiler=False, validate_accuracy=True):
     input_dtype = torch.float32
     device = torch.device('cuda')
 
@@ -125,7 +124,6 @@ def benchmark(args, iterations=100, warm_up=20, compile_model=True, profiler=Fal
         output_json = f"results_{args.quantization}_ref{args.num_refinement_stages}.json"
         
         try:
-            # We pass the wrapped model which now handles the conversion
             evaluate(
                 labels=args.labels, 
                 output_name=output_json, 
@@ -135,7 +133,6 @@ def benchmark(args, iterations=100, warm_up=20, compile_model=True, profiler=Fal
             )
         except Exception as e:
             print(f"EVALUATION FAILED: {e}")
-# ...
 
     input_arg = migraphx.argument(dummy_input.detach().cpu().numpy())
     run_params = {"input": input_arg}
@@ -161,8 +158,7 @@ def benchmark(args, iterations=100, warm_up=20, compile_model=True, profiler=Fal
         "Mode": args.quantization,
         "Latency (ms)": f"{avg_latency:.2f}",
         "Throughput (FPS)": f"{fps:.2f}",
-        "Power (W)": f"{avg_power:.2f}" if device.type == 'cuda' else "N/A",
-        "Compiled": compile_model if device.type == 'cuda' else "N/A"
+        "Power (W)": f"{avg_power:.2f}" if device.type == 'cuda' else "N/A"
     }
     FINAL_RESULTS.append(res)
     
@@ -189,8 +185,8 @@ def create_args(mode, refinement_stages):
 
 
 if __name__ == '__main__':
-    target_refinements = [1]
-    target_modes = ['fp32']
+    target_refinements = [1,2,3]
+    target_modes = ['fp16','fp32','int8','bf16']
 
     for ref in target_refinements:
         print(f"\n{'='*20}")
@@ -199,15 +195,19 @@ if __name__ == '__main__':
         for mode in target_modes:
             try:
                 args = create_args(mode, ref)
-                benchmark(args, iterations=50, compile_model=False, profiler=True, validate_accuracy=False)
+                benchmark(args, iterations=50, profiler=False, validate_accuracy=True)
             except Exception as e:
                 print(f"FAILED [Mode: {mode}, Ref: {ref}]: {e}")
 
     print("\n" + "="*50)
-    print(f"{'STAGES':<8} | {'MODE':<10} | {'LATENCY':<10} | {'FPS':<10}| {'Power (W)':<10}")
+    print(f"{'STAGES':<8} | {'MODE':<10} | {'LATENCY':<10} | {'FPS':<10} | {'Power (W)':<10} | {'FPS/Watt':<10}")
     print("-" * 50)
     for r in FINAL_RESULTS:
-        print(f"{r['Stages']:<8} | {r['Mode']:<10} | {r['Latency (ms)']:<10} | {r['Throughput (FPS)']:<10} | {r.get('Power (W)', 'N/A'):<10}")
+        fps = float(r.get('Throughput (FPS)', 0))
+        power = float(r.get('Power (W)', 0))
+        efficiency = fps / power if power > 0 else 0
+        r['Efficiency (FPS/W)'] = round(efficiency, 2)
+        print(f"{r['Stages']:<8} | {r['Mode']:<10} | {r['Latency (ms)']:<10} | {fps:<10.2f} | {power:<10.2f} | {r['Efficiency (FPS/W)']:<10.2f}")
 
     if FINAL_RESULTS:
         with open('benchmark_results.csv', 'w', newline='') as f:

@@ -1,0 +1,138 @@
+====================
+ TESTING REFINEMENT STAGES: 1 
+====================
+
+--- Benchmarking: FP16 on cuda ---
+--- Loading pre-compiled model from pose_model1_fp16_ref1.mxr ---
+
+ Average Precision  (AP) @[ IoU=0.50:0.95 | area=   all | maxDets= 20 ] = 0.416
+ Average Precision  (AP) @[ IoU=0.50      | area=   all | maxDets= 20 ] = 0.666
+ Average Precision  (AP) @[ IoU=0.75      | area=   all | maxDets= 20 ] = 0.431
+ Average Precision  (AP) @[ IoU=0.50:0.95 | area=medium | maxDets= 20 ] = 0.440
+ Average Precision  (AP) @[ IoU=0.50:0.95 | area= large | maxDets= 20 ] = 0.403
+ Average Recall     (AR) @[ IoU=0.50:0.95 | area=   all | maxDets= 20 ] = 0.471
+ Average Recall     (AR) @[ IoU=0.50      | area=   all | maxDets= 20 ] = 0.707
+ Average Recall     (AR) @[ IoU=0.75      | area=   all | maxDets= 20 ] = 0.488
+ Average Recall     (AR) @[ IoU=0.50:0.95 | area=medium | maxDets= 20 ] = 0.457
+ Average Recall     (AR) @[ IoU=0.50:0.95 | area= large | maxDets= 20 ] = 0.493
+
+--- Inference Complete. Writing results to results_fp32_ref1.json... ---
+ Average Precision  (AP) @[ IoU=0.50:0.95 | area=   all | maxDets= 20 ] = 0.420
+ Average Precision  (AP) @[ IoU=0.50      | area=   all | maxDets= 20 ] = 0.668
+ Average Precision  (AP) @[ IoU=0.75      | area=   all | maxDets= 20 ] = 0.441
+ Average Precision  (AP) @[ IoU=0.50:0.95 | area=medium | maxDets= 20 ] = 0.442
+ Average Precision  (AP) @[ IoU=0.50:0.95 | area= large | maxDets= 20 ] = 0.409
+ Average Recall     (AR) @[ IoU=0.50:0.95 | area=   all | maxDets= 20 ] = 0.474
+ Average Recall     (AR) @[ IoU=0.50      | area=   all | maxDets= 20 ] = 0.709
+ Average Recall     (AR) @[ IoU=0.75      | area=   all | maxDets= 20 ] = 0.495
+ Average Recall     (AR) @[ IoU=0.50:0.95 | area=medium | maxDets= 20 ] = 0.460
+ Average Recall     (AR) @[ IoU=0.50:0.95 | area= large | maxDets= 20 ] = 0.497
+
+--- Inference Complete. Writing results to results_int8_ref1.json... ---
+ Average Precision  (AP) @[ IoU=0.50:0.95 | area=   all | maxDets= 20 ] = 0.000
+ Average Precision  (AP) @[ IoU=0.50      | area=   all | maxDets= 20 ] = 0.000
+ Average Precision  (AP) @[ IoU=0.75      | area=   all | maxDets= 20 ] = 0.000
+ Average Precision  (AP) @[ IoU=0.50:0.95 | area=medium | maxDets= 20 ] = 0.000
+ Average Precision  (AP) @[ IoU=0.50:0.95 | area= large | maxDets= 20 ] = 0.000
+ Average Recall     (AR) @[ IoU=0.50:0.95 | area=   all | maxDets= 20 ] = 0.000
+ Average Recall     (AR) @[ IoU=0.50      | area=   all | maxDets= 20 ] = 0.000
+ Average Recall     (AR) @[ IoU=0.75      | area=   all | maxDets= 20 ] = 0.000
+ Average Recall     (AR) @[ IoU=0.50:0.95 | area=medium | maxDets= 20 ] = 0.000
+ Average Recall     (AR) @[ IoU=0.50:0.95 | area= large | maxDets= 20 ] = 0.000
+
+--- Loading pre-compiled model from pose_model1_bf16_ref1.mxr ---
+
+--- Loading pre-compiled model from pose_model1_fp16_ref2.mxr ---
+ Average Precision  (AP) @[ IoU=0.50:0.95 | area=   all | maxDets= 20 ] = 0.416
+ Average Precision  (AP) @[ IoU=0.50      | area=   all | maxDets= 20 ] = 0.666
+ Average Precision  (AP) @[ IoU=0.75      | area=   all | maxDets= 20 ] = 0.431
+ Average Precision  (AP) @[ IoU=0.50:0.95 | area=medium | maxDets= 20 ] = 0.440
+ Average Precision  (AP) @[ IoU=0.50:0.95 | area= large | maxDets= 20 ] = 0.403
+ Average Recall     (AR) @[ IoU=0.50:0.95 | area=   all | maxDets= 20 ] = 0.471
+ Average Recall     (AR) @[ IoU=0.50      | area=   all | maxDets= 20 ] = 0.707
+ Average Recall     (AR) @[ IoU=0.75      | area=   all | maxDets= 20 ] = 0.488
+ Average Recall     (AR) @[ IoU=0.50:0.95 | area=medium | maxDets= 20 ] = 0.457
+ Average Recall     (AR) @[ IoU=0.50:0.95 | area= large | maxDets= 20 ] = 0.493
+
+
+--- Loading pre-compiled model from pose_model1_fp32_ref2.mxr ---
+ Average Precision  (AP) @[ IoU=0.50:0.95 | area=   all | maxDets= 20 ] = 0.420
+ Average Precision  (AP) @[ IoU=0.50      | area=   all | maxDets= 20 ] = 0.668
+ Average Precision  (AP) @[ IoU=0.75      | area=   all | maxDets= 20 ] = 0.441
+ Average Precision  (AP) @[ IoU=0.50:0.95 | area=medium | maxDets= 20 ] = 0.442
+ Average Precision  (AP) @[ IoU=0.50:0.95 | area= large | maxDets= 20 ] = 0.409
+ Average Recall     (AR) @[ IoU=0.50:0.95 | area=   all | maxDets= 20 ] = 0.474
+ Average Recall     (AR) @[ IoU=0.50      | area=   all | maxDets= 20 ] = 0.709
+ Average Recall     (AR) @[ IoU=0.75      | area=   all | maxDets= 20 ] = 0.495
+ Average Recall     (AR) @[ IoU=0.50:0.95 | area=medium | maxDets= 20 ] = 0.460
+ Average Recall     (AR) @[ IoU=0.50:0.95 | area= large | maxDets= 20 ] = 0.497
+
+
+--- Loading pre-compiled model from pose_model1_int8_ref2.mxr ---
+ Average Precision  (AP) @[ IoU=0.50:0.95 | area=   all | maxDets= 20 ] = 0.000
+ Average Precision  (AP) @[ IoU=0.50      | area=   all | maxDets= 20 ] = 0.000
+ Average Precision  (AP) @[ IoU=0.75      | area=   all | maxDets= 20 ] = 0.000
+ Average Precision  (AP) @[ IoU=0.50:0.95 | area=medium | maxDets= 20 ] = 0.000
+ Average Precision  (AP) @[ IoU=0.50:0.95 | area= large | maxDets= 20 ] = 0.000
+ Average Recall     (AR) @[ IoU=0.50:0.95 | area=   all | maxDets= 20 ] = 0.000
+ Average Recall     (AR) @[ IoU=0.50      | area=   all | maxDets= 20 ] = 0.000
+ Average Recall     (AR) @[ IoU=0.75      | area=   all | maxDets= 20 ] = 0.000
+ Average Recall     (AR) @[ IoU=0.50:0.95 | area=medium | maxDets= 20 ] = 0.000
+ Average Recall     (AR) @[ IoU=0.50:0.95 | area= large | maxDets= 20 ] = 0.000
+--- Benchmarking: BF16 on cuda ---
+--- Saving compiled model to pose_model1_bf16_ref2.mxr ---
+EVALUATION FAILED: Got unsupported ScalarType BFloat16
+
+--- Inference Complete. Writing results to results_fp16_ref3.json... ---
+ Average Precision  (AP) @[ IoU=0.50:0.95 | area=   all | maxDets= 20 ] = 0.416
+ Average Precision  (AP) @[ IoU=0.50      | area=   all | maxDets= 20 ] = 0.666
+ Average Precision  (AP) @[ IoU=0.75      | area=   all | maxDets= 20 ] = 0.431
+ Average Precision  (AP) @[ IoU=0.50:0.95 | area=medium | maxDets= 20 ] = 0.440
+ Average Precision  (AP) @[ IoU=0.50:0.95 | area= large | maxDets= 20 ] = 0.403
+ Average Recall     (AR) @[ IoU=0.50:0.95 | area=   all | maxDets= 20 ] = 0.471
+ Average Recall     (AR) @[ IoU=0.50      | area=   all | maxDets= 20 ] = 0.707
+ Average Recall     (AR) @[ IoU=0.75      | area=   all | maxDets= 20 ] = 0.488
+ Average Recall     (AR) @[ IoU=0.50:0.95 | area=medium | maxDets= 20 ] = 0.457
+ Average Recall     (AR) @[ IoU=0.50:0.95 | area= large | maxDets= 20 ] = 0.493
+--- Saving compiled model to pose_model1_fp32_ref3.mxr ---
+--- Inference Complete. Writing results to results_fp32_ref3.json... ---
+ Average Precision  (AP) @[ IoU=0.50:0.95 | area=   all | maxDets= 20 ] = 0.420
+ Average Precision  (AP) @[ IoU=0.50      | area=   all | maxDets= 20 ] = 0.668
+ Average Precision  (AP) @[ IoU=0.75      | area=   all | maxDets= 20 ] = 0.441
+ Average Precision  (AP) @[ IoU=0.50:0.95 | area=medium | maxDets= 20 ] = 0.442
+ Average Precision  (AP) @[ IoU=0.50:0.95 | area= large | maxDets= 20 ] = 0.409
+ Average Recall     (AR) @[ IoU=0.50:0.95 | area=   all | maxDets= 20 ] = 0.474
+ Average Recall     (AR) @[ IoU=0.50      | area=   all | maxDets= 20 ] = 0.709
+ Average Recall     (AR) @[ IoU=0.75      | area=   all | maxDets= 20 ] = 0.495
+ Average Recall     (AR) @[ IoU=0.50:0.95 | area=medium | maxDets= 20 ] = 0.460
+ Average Recall     (AR) @[ IoU=0.50:0.95 | area= large | maxDets= 20 ] = 0.497
+--- Saving compiled model to pose_model1_int8_ref3.mxr ---
+--- Inference Complete. Writing results to results_int8_ref3.json... ---
+ Average Precision  (AP) @[ IoU=0.50:0.95 | area=   all | maxDets= 20 ] = 0.000
+ Average Precision  (AP) @[ IoU=0.50      | area=   all | maxDets= 20 ] = 0.000
+ Average Precision  (AP) @[ IoU=0.75      | area=   all | maxDets= 20 ] = 0.000
+ Average Precision  (AP) @[ IoU=0.50:0.95 | area=medium | maxDets= 20 ] = 0.000
+ Average Precision  (AP) @[ IoU=0.50:0.95 | area= large | maxDets= 20 ] = 0.000
+ Average Recall     (AR) @[ IoU=0.50:0.95 | area=   all | maxDets= 20 ] = 0.000
+ Average Recall     (AR) @[ IoU=0.50      | area=   all | maxDets= 20 ] = 0.000
+ Average Recall     (AR) @[ IoU=0.75      | area=   all | maxDets= 20 ] = 0.000
+ Average Recall     (AR) @[ IoU=0.50:0.95 | area=medium | maxDets= 20 ] = 0.000
+ Average Recall     (AR) @[ IoU=0.50:0.95 | area= large | maxDets= 20 ] = 0.000
+--- Saving compiled model to pose_model1_bf16_ref3.mxr ---
+EVALUATION FAILED: Got unsupported ScalarType BFloat16
+
+==================================================
+STAGES   | MODE       | LATENCY    | FPS        | Power (W)  | FPS/Watt  
+--------------------------------------------------
+1        | fp16       | 5.00       | 199.94     | 34.85      | 5.74      
+1        | fp32       | 11.31      | 88.42      | 43.05      | 2.05      
+1        | int8       | 4.52       | 221.20     | 40.05      | 5.52      
+1        | bf16       | 5.35       | 187.09     | 49.45      | 3.78      
+2        | fp16       | 5.19       | 192.60     | 34.87      | 5.52      
+2        | fp32       | 11.07      | 90.31      | 44.03      | 2.05      
+2        | int8       | 4.52       | 221.30     | 39.67      | 5.58      
+2        | bf16       | 5.46       | 183.15     | 48.23      | 3.80      
+3        | fp16       | 5.21       | 191.76     | 35.06      | 5.47      
+3        | fp32       | 11.18      | 89.46      | 43.46      | 2.06      
+3        | int8       | 4.63       | 216.06     | 41.07      | 5.26      
+3        | bf16       | 5.60       | 178.57     | 43.07      | 4.15      

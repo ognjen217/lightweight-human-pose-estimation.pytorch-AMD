@@ -136,6 +136,7 @@ class PoseEstimationWithMobileNet(nn.Module):
                 refinement_stage(self.cat_op.cat([backbone_features, stages_output[-2], stages_output[-1]], dim=1)))
 
         final_results = [stages_output[-2], stages_output[-1]]
+
         return [self.dequant(out) for out in final_results]
 
     def fuse_model(self):

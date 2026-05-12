@@ -134,13 +134,14 @@ def evaluate(labels, output_name, images_folder, net, multiscale=False, visualiz
     dataset = CocoValDataset(labels, images_folder)
     coco_result = []
     for i, sample in enumerate(dataset):
+        if i < 134:
+            continue
         file_name = sample['file_name']
         img = sample['img']
         
         if i % 10 == 0:
             print(f"Processing image {i}/5000: {file_name}")
-        if i % 100 == 0:
-            torch.cuda.empty_cache()
+        
         avg_heatmaps, avg_pafs = infer(net, img, scales, base_height, base_width, stride, quantization_type)
 
         total_keypoints_num = 0
@@ -253,10 +254,16 @@ if __name__ == '__main__':
     parser.add_argument('--visualize', action='store_true', help='show keypoints')
     parser.add_argument('--num-refinement-stages', type=int, help='preformance')
     parser.add_argument('--quantization', type=str, default='fp32', choices=['fp32', 'fp16', 'int8', 'bf16', 'mixed_fp32', 'mixed_fp16'])
+    parser.add_argument('--export', action='store_true', help='export the model before evaluation')
+    parser.add_argument('--export-name', type=str, default='pose_model.onnx', help='output filename for exported model')
+
     args = parser.parse_args()
 
     net = load_model(args)
-    #export_to_onnx(net, output_path="pose_model.onnx")
+    
+    if args.export:
+        export_to_onnx(net, output_path=args.export_name)
+        
     evaluate(args.labels, args.output_name, args.images_folder, net, 
              args.multiscale, args.visualize, args.quantization)
 
