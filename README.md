@@ -213,6 +213,52 @@ The summary table includes the following fields:
 ```text
 model | variant | mode | ref | frames | pre | infer | post | e2e | FPS | Power | FPS/W | J/frame | post_spd | e2e_spd | Δe2e%
 ```
+### Grouping Optimization: Removing Full PAF Channel Copies
+
+After the batched keypoint extraction improvements, the remaining bottleneck was the pose grouping stage. Function-level timing inside `group_keypoints` showed that most of the grouping time was not spent in NMS or pose assembly, but in repeatedly slicing the full Part Affinity Field tensor for every limb pair.
+
+The original grouping path used the following pattern for each body part:
+
+```python
+part_pafs = pafs[:, :, BODY_PARTS_PAF_IDS[part_id]]
+field = part_pafs[y, x].reshape(-1, points_per_limb, 2)
+```
+
+This creates a full `H × W × 2` copy of the PAF channels for every limb before only a small number of sampled points are actually used. The optimized implementation avoids this full-channel copy and instead stores only the two PAF channel IDs, then gathers the required values directly at the sampled coordinates:
+
+```python
+paf_x_id, paf_y_id = BODY_PARTS_PAF_IDS[part_id]
+
+field = np.empty((x.shape[0], 2), dtype=np.float32)
+field[:, 0] = pafs[y, x, paf_x_id]
+field[:, 1] = pafs[y, x, paf_y_id]
+field = field.reshape(-1, points_per_limb, 2)
+```
+
+This change keeps the grouping algorithm equivalent, because the same PAF values are used for affinity scoring, but it avoids repeatedly copying large PAF maps. It directly targets the dominant cost observed in `group_keypoints` and makes the accuracy-preserving postprocess path significantly faster.
+
+### Latest Benchmark After Grouping Improvements
+
+The latest benchmark was run with `benchmark_postprocess_models_report_powerfix.py` on `cctv_1280x720_24fps_3.mp4`, using 5 warmup frames and 100 measured frames. Drawing and video writing were disabled so the benchmark isolates preprocess, inference, and postprocess cost.
+
+| Model | Variant | Mode | Frames | Preprocess (ms) | Inference (ms) | Postprocess (ms) | End-to-End (ms) | FPS | Power (W) | FPS/W | J/frame | Postprocess Speedup | E2E Speedup | ΔE2E |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| `pose_model1_fp16_ref1.mxr` | `standard` | fp16 | 100 | 3.72 | 7.75 | 498.08 | 509.55 | 1.96 | 39.44 | 0.05 | 20.0966 | 1.00× | 1.00× | 0.00% |
+| `pose_model1_fp16_ref1.mxr` | `fast_no_resize` | fp16 | 100 | 3.72 | 7.75 | 3.05 | 14.52 | 68.88 | 39.44 | 1.75 | 0.5726 | 163.45× | 35.10× | -97.15% |
+| `pose_model1_fp16_ref1.mxr` | `optimized_batch_k20_fast` | fp16 | 100 | 3.72 | 7.75 | 123.94 | 135.41 | 7.38 | 39.44 | 0.19 | 5.3407 | 4.02× | 3.76× | -73.42% |
+| `pose_model1_fp16_ref1.mxr` | `optimized_batch_k20` | fp16 | 100 | 3.72 | 7.75 | 336.03 | 347.50 | 2.88 | 39.44 | 0.07 | 13.7053 | 1.48× | 1.47× | -31.80% |
+
+The key result is that `optimized_batch_k20_fast` reduces postprocessing from **498.08 ms** to **123.94 ms**, giving a **4.02× postprocess speedup** and a **3.76× end-to-end speedup** compared with the standard pipeline. End-to-end latency drops from **509.55 ms** to **135.41 ms**, while throughput improves from **1.96 FPS** to **7.38 FPS**.
+
+Importantly, the COCO validation results show that the new optimized grouping path preserves the same AP/AR metrics as the standard path in this test:
+
+| Dataset | Variant | AP | AP50 | AP75 | AR | AR50 | AR75 |
+|---|---|---:|---:|---:|---:|---:|---:|
+| COCO val2017 | `standard` | 0.387 | 0.651 | 0.390 | 0.446 | 0.692 | 0.453 |
+| COCO val2017 | `optimized_batch_k20_fast` | 0.387 | 0.651 | 0.390 | 0.446 | 0.692 | 0.453 |
+| COCO val2017 | `optimized_batch_k20` | 0.387 | 0.651 | 0.390 | 0.446 | 0.692 | 0.453 |
+
+Therefore, the current best accuracy-preserving configuration is now `optimized_batch_k20_fast`: it combines batched keypoint extraction with the faster grouping implementation that avoids full PAF channel slicing. The previous conservative `optimized_batch_k20` remains useful as a reference implementation, but the new grouping optimization provides a much larger speedup without reducing measured COCO AP/AR in the latest validation run.
 
 ### Current Best Configuration
 
@@ -220,10 +266,11 @@ Based on the current tests, there are two relevant configurations depending on t
 
 | Goal | Recommended Variant | Reason |
 |---|---|---|
-| Best accuracy-preserving optimization | `optimized_batch_k20` | Matches standard AP/AR in the COCO validation run while reducing postprocess time from 499.80 ms to 334.25 ms. |
-| Maximum speed experiment | `fast_no_resize` | Reduces end-to-end latency to 15.01 ms and reaches 66.64 FPS, but must be treated as a separate approximation because grouping is done at lower resolution. |
+| Best accuracy-preserving optimization | `optimized_batch_k20_fast` | Matches standard AP/AR in the latest COCO validation run while reducing postprocess time from 498.08 ms to 123.94 ms. |
+| Conservative accuracy-preserving reference | `optimized_batch_k20` | Keeps the original full-resolution grouping behavior and reduces postprocess time to 336.03 ms. |
+| Maximum speed experiment | `fast_no_resize` | Reduces end-to-end latency to 14.52 ms and reaches 68.88 FPS, but must be treated as a separate approximation because grouping is done at lower resolution. |
 
-The current final recommendation is to use FP16 with one refinement stage and `optimized_batch_k20` as the stable accuracy-preserving postprocess configuration. Further acceleration should focus on optimizing `group_keypoints`, but replacing it with a faster grouping method may reduce AP/AR metrics and therefore requires a full COCO validation run after each change.
+The current final recommendation is to use FP16 with one refinement stage and `optimized_batch_k20_fast` as the stable accuracy-preserving postprocess configuration. The latest grouping optimization avoids full PAF channel copies and preserves AP/AR in the measured COCO validation run. Further grouping changes should still be validated on COCO after each modification.
 
 ### Research Status After Postprocessing Tests
 
@@ -280,3 +327,4 @@ This project is based on:
     Daniil Osokin, 2018. arXiv:1811.12004
 
 Original Project: osokin/lightweight-human-pose-estimation.pytorch
+
