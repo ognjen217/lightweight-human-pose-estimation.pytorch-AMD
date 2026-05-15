@@ -72,6 +72,7 @@ Power Efficiency Final
 |FP16 (2 Stages)   |	61.24W   | 207.02 |	3.38
 |FP16 (3 Stages)   |	66.85W   | 196.92 | 2.95
 |FP32 (1 Stage)    |   60.24W    | 95.75  | 1.59
+
 ### Performance Profiling
 
 Below is the execution profile for FP16 (1 refinement step) processing five 968 × 544 images. The profile highlights the dominance of fused MLIR kernels (convolution + ReLU) and the minimized impact of Device-to-Host (DtoH) copies.
@@ -90,6 +91,148 @@ Below is the execution profile for FP16 (1 refinement step) processing five 968 
                            Memcpy DtoH (Device -> Host)         0.00%       0.000us         0.00%       0.000us       0.000us     502.377us         2.57%     502.377us     100.475us             5  
                       _migraphxgpudevicelauncherIZZN...         0.00%       0.000us         0.00%       0.000us       0.000us     389.653us         1.99%     389.653us      25.977us            15  
 -------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+
+
+
+## Extended Investigation: End-to-End Video Pipeline Bottleneck
+
+After the inference backend was optimized with MIGraphX, the next research step was to evaluate the complete video pipeline rather than the neural network inference stage in isolation. This is important because the previously reported throughput of approximately 215 FPS describes the optimized model execution path, while the real application also includes frame preprocessing, heatmap/PAF decoding, resizing, keypoint extraction, keypoint grouping, and optional drawing/video output.
+
+The profiling of `video_val.py` showed that MIGraphX inference is no longer the dominant bottleneck. Instead, the main cost moved to CPU-side postprocessing, especially the keypoint extraction and pose grouping stages. In the measured FP16 refinement-stage-1 configuration, inference was approximately 8 ms per frame, while the original postprocessing path could take several hundred milliseconds per frame.
+
+### Postprocessing Variants Tested
+
+The following postprocessing strategies were implemented and benchmarked:
+
+| Variant | Description | Expected Accuracy Behavior |
+|---|---|---|
+| `standard` | Original postprocess path: resize heatmaps, resize PAFs, run original `extract_keypoints`, then `group_keypoints`. | Reference behavior and accuracy baseline. |
+| `fast_no_resize` | Skips heatmap and PAF resizing before grouping. Grouping is done at network output resolution and keypoints are scaled afterwards. | Extremely fast, but may reduce AP/AR because grouping is performed on lower-resolution maps. |
+| `optimized_batch_k10` | Keeps original resize behavior, but replaces per-channel keypoint extraction with batched OpenCV-based extraction limited to 10 keypoints per type. | Faster than standard, but may lose accuracy when more people/keypoints are present. |
+| `optimized_batch_k20` | Same batched extraction approach, but allows up to 20 keypoints per type. | Best accuracy-preserving optimization in the current tests. |
+
+### Latest End-to-End Benchmark
+
+The following benchmark was run on the FP16, one-refinement-stage MIGraphX model:
+
+```bash
+python benchmark_postprocess_models_report.py \
+  --video cctv_1280x720_24fps_3.mp4 \
+  --model pose_model1_fp16_ref1.mxr \
+  --frames 100 \
+  --warmup 20
+```
+
+Measured configuration:
+
+- Model: `pose_model1_fp16_ref1.mxr`
+- Precision: FP16
+- Refinement stages: 1
+- Measured frames: 100
+- Warmup frames: 20
+- Drawing and video writing: disabled
+
+| Model | Variant | Preprocess (ms) | Inference (ms) | Postprocess (ms) | End-to-End (ms) | End-to-End FPS | Postprocess Speedup | E2E Speedup |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| `pose_model1_fp16_ref1.mxr` | `standard` | 3.77 | 7.99 | 499.80 | 511.56 | 1.95 | 1.00× | 1.00× |
+| `pose_model1_fp16_ref1.mxr` | `fast_no_resize` | 3.77 | 7.99 | 3.25 | 15.01 | 66.64 | 153.77× | 34.09× |
+| `pose_model1_fp16_ref1.mxr` | `optimized_batch_k10` | 3.77 | 7.99 | 334.66 | 346.42 | 2.89 | 1.49× | 1.48× |
+| `pose_model1_fp16_ref1.mxr` | `optimized_batch_k20` | 3.77 | 7.99 | 334.25 | 346.01 | 2.89 | 1.50× | 1.48× |
+
+The results show that the neural network inference step is already efficient: it takes only around 7.99 ms per frame. However, the full standard pipeline reaches only 1.95 FPS because the postprocessing stage dominates the runtime. The `fast_no_resize` variant demonstrates the upper bound of a lightweight postprocessing path, reaching 66.64 FPS end-to-end, but this result should not be interpreted as accuracy-preserving without COCO validation. The `optimized_batch_k20` variant is currently the best conservative optimization because it preserves the original resize-and-grouping logic while accelerating keypoint extraction.
+
+### Accuracy Comparison of Postprocessing Variants
+
+The postprocessing variants were also compared on COCO validation metrics:
+
+| Dataset | Variant | AP | AP50 | AP75 | AR | AR50 | AR75 |
+|---|---|---:|---:|---:|---:|---:|---:|
+| COCO val2017 | `standard` | 0.386 | 0.650 | 0.389 | 0.444 | 0.690 | 0.452 |
+| COCO val2017 | `optimized_batch_k10` | 0.364 | 0.615 | 0.364 | 0.421 | 0.656 | 0.426 |
+| COCO val2017 | `optimized_batch_k20` | 0.386 | 0.650 | 0.389 | 0.444 | 0.690 | 0.452 |
+
+The `optimized_batch_k20` variant matches the standard postprocess accuracy in the tested COCO validation run, while `optimized_batch_k10` is faster but loses AP/AR because the maximum number of retained keypoints per type is too restrictive. Therefore, `optimized_batch_k20` is the best current candidate for the final accuracy-preserving pipeline.
+
+### Energy and Power Metrics
+
+The benchmark was extended with power and efficiency metrics so that models can be compared not only by latency and FPS, but also by energy efficiency. The extended script reports:
+
+| Metric | Meaning |
+|---|---|
+| `avg_power_w` | Average GPU socket/package power sampled through `rocm-smi --showpower`. |
+| `fps_per_watt` | End-to-end FPS divided by average GPU power. Higher is better. |
+| `energy_j_per_frame` | Approximate joules consumed per processed frame. Lower is better. |
+| `e2e_avg_ms` | Full pipeline latency: preprocess + inference + postprocess. |
+| `e2e_fps` | Full pipeline throughput calculated from end-to-end latency. |
+| `post_speedup_vs_standard` | Postprocess speedup compared to the standard postprocess path. |
+| `e2e_speedup_vs_standard` | Full-pipeline speedup compared to the standard postprocess path. |
+
+The formulas used are:
+
+```python
+e2e_fps = 1000.0 / e2e_avg_ms
+fps_per_watt = e2e_fps / avg_power_w
+energy_j_per_frame = avg_power_w * (e2e_avg_ms / 1000.0)
+```
+
+On the tested system, `rocm-smi --showpower` reports power in the following format:
+
+```text
+GPU[0] : Current Socket Graphics Package Power (W): 43.02
+```
+
+The benchmark power parser was updated to support this ROCm output format. If the parser cannot read a valid power value, the table prints `N/A` for `Power`, `FPS/W`, and `J/frame`, while latency and FPS are still reported normally.
+
+### Updated Benchmark Script
+
+The updated benchmark script is intended to compare both model variants and postprocess variants:
+
+```bash
+python benchmark_postprocess_models_report_powerfix.py \
+  --video cctv_1280x720_24fps_3.mp4 \
+  --model pose_model1_fp16_ref1.mxr \
+  --frames 100 \
+  --warmup 20
+```
+
+For comparing multiple MIGraphX models:
+
+```bash
+python benchmark_postprocess_models_report_powerfix.py \
+  --video cctv_1280x720_24fps_3.mp4 \
+  --models pose_model1_fp16_ref1.mxr pose_model1_fp32_ref1.mxr pose_model1_int8_ref1.mxr \
+  --frames 100 \
+  --warmup 20 \
+  --csv model_postprocess_benchmark_summary.csv \
+  --md model_postprocess_benchmark_report.md \
+  --detailed-csv model_postprocess_per_frame.csv
+```
+
+The summary table includes the following fields:
+
+```text
+model | variant | mode | ref | frames | pre | infer | post | e2e | FPS | Power | FPS/W | J/frame | post_spd | e2e_spd | Δe2e%
+```
+
+### Current Best Configuration
+
+Based on the current tests, there are two relevant configurations depending on the goal:
+
+| Goal | Recommended Variant | Reason |
+|---|---|---|
+| Best accuracy-preserving optimization | `optimized_batch_k20` | Matches standard AP/AR in the COCO validation run while reducing postprocess time from 499.80 ms to 334.25 ms. |
+| Maximum speed experiment | `fast_no_resize` | Reduces end-to-end latency to 15.01 ms and reaches 66.64 FPS, but must be treated as a separate approximation because grouping is done at lower resolution. |
+
+The current final recommendation is to use FP16 with one refinement stage and `optimized_batch_k20` as the stable accuracy-preserving postprocess configuration. Further acceleration should focus on optimizing `group_keypoints`, but replacing it with a faster grouping method may reduce AP/AR metrics and therefore requires a full COCO validation run after each change.
+
+### Research Status After Postprocessing Tests
+
+The optimization path can now be summarized in two layers:
+
+1. **Model inference optimization**: ROCm + MIGraphX + FP16 + kernel exhaustive search moved inference from the original PyTorch bottleneck to an efficient model execution path.
+2. **Application pipeline optimization**: After inference became fast, CPU-side postprocessing became the dominant bottleneck. Batched keypoint extraction improves the conservative pipeline, while low-resolution grouping provides a much faster but potentially less accurate alternative.
+
+This means that the main remaining research direction is no longer neural network inference, but postprocessing algorithm design. The next promising step is to accelerate or redesign pose grouping while preserving COCO AP/AR metrics.
 
 
 ## Installation and Setup
