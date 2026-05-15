@@ -103,6 +103,18 @@ Extract COCO 2017 into the <COCO_HOME> folder.
     python3 -m venv venv
     source venv/bin/activate
     pip install -r requirements/requirements.txt
+```
+If `pycocotools` fails to build with `ModuleNotFoundError: No module named 'Cython'`, rerun:
+```
+    pip install --no-build-isolation -r requirements/requirements.txt
+```
+If COCO evaluation later fails in `pycocotools` with NumPy 2.x, install a compatible NumPy first:
+```
+    pip install "numpy<2.0"
+    pip install -r requirements/requirements.txt
+```
+Then continue with:
+```
     pip install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/rocm7.2
     # Export ROCm Library Path (Crucial for MIGraphX/ROCm 7.2.0)
     export PYTHONPATH=$PYTHONPATH:/opt/rocm-7.2.0/lib

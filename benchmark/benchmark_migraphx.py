@@ -44,7 +44,7 @@ class MIGraphXWrapper:
         return [torch.from_numpy(np.array(res)).float() for res in results]
 
 def load_model(args, device):
-    onnx_path = "pose_model1.onnx"
+    onnx_path = "models/fp16_refinment1.onnx"
 
     compiled_model_path = f"pose_model1_{args.quantization}_ref{args.num_refinement_stages}.mxr"
     if os.path.exists(compiled_model_path):
@@ -81,19 +81,30 @@ def get_gpu_power():
 
 def run_inference(model, tensor_input):
     n_input = tensor_input.cpu().numpy()
-    param_type = model.get_parameter_shapes()['input'].type()
-    
-    if param_type == 'half_type':
+    param_type = str(model.get_parameter_shapes()['input'].type())
+
+    if 'half' in param_type:
         n_input = n_input.astype(np.float16)
-        
+    elif 'bfloat' in param_type:
+        n_input = n_input.astype(np.float32)
+    elif 'float' in param_type:
+        n_input = n_input.astype(np.float32)
+
     return model.run({'input': n_input})
     
 def benchmark(args, iterations=100, warm_up=20, profiler=False, validate_accuracy=True):
-    input_dtype = torch.float32
     device = torch.device('cuda')
 
     print(f"\n--- Benchmarking: {args.quantization.upper()} on {device} ---")
     net = load_model(args, device)
+
+    param_type = str(net.get_parameter_shapes()['input'].type())
+    if 'half' in param_type:
+        input_dtype = torch.float16
+    elif 'bfloat' in param_type:
+        input_dtype = torch.bfloat16
+    else:
+        input_dtype = torch.float32
 
     dummy_input = torch.randn(1, 3, base_height, base_width, dtype=input_dtype).to("cuda")
 
@@ -185,8 +196,8 @@ def create_args(mode, refinement_stages):
 
 
 if __name__ == '__main__':
-    target_refinements = [1,2,3]
-    target_modes = ['fp16','fp32','int8','bf16']
+    target_refinements = [1]
+    target_modes = ['fp16']
 
     for ref in target_refinements:
         print(f"\n{'='*20}")

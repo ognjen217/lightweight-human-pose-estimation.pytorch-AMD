@@ -1,0 +1,2 @@
+Stages,Mode,Latency (ms),Throughput (FPS),Power (W),Efficiency (FPS/W)
+1,fp16,5.14,194.62,43.85,4.44

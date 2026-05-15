@@ -236,7 +236,9 @@ def calibrate_model(model, args):
 
 def export_to_onnx(net, output_path="pose_model.onnx"):
     net.eval().cpu()
-    dummy_input = torch.randn(1, 3, base_height, base_width) 
+    # Get the model's dtype from its parameters
+    model_dtype = next(net.parameters()).dtype
+    dummy_input = torch.randn(1, 3, base_height, base_width, dtype=model_dtype)
     torch.onnx.export(net, dummy_input, output_path, 
                       input_names=['input'], 
                       output_names=['stage_heatmaps', 'stage_pafs'],
@@ -261,9 +263,13 @@ if __name__ == '__main__':
 
     net = load_model(args)
     
+
     if args.export:
         export_to_onnx(net, output_path=args.export_name)
-        
+        # Move model back to CUDA if it was FP16
+        if args.quantization == 'fp16':
+            net = net.to(torch.device('cuda'))
+
     evaluate(args.labels, args.output_name, args.images_folder, net, 
              args.multiscale, args.visualize, args.quantization)
 
