@@ -311,31 +311,46 @@ The following GPU and hybrid variants were tested in addition to the CPU baselin
 
 ### Cached COCO Benchmark: Accuracy and Postprocess Latency
 
-To avoid MIGraphX and PyTorch ROCm runtime conflicts in the same process, the COCO validation benchmark was split into two phases:
+To evaluate the postprocessing algorithms independently from the MIGraphX runtime, the COCO validation benchmark was split into two phases:
 
-1. **MIGraphX cache generation**: run MIGraphX only and save heatmaps/PAFs for COCO images.
-2. **Postprocess evaluation**: load cached heatmaps/PAFs and run CPU/GPU postprocessing variants without importing MIGraphX.
+1. **MIGraphX cache generation**: MIGraphX inference is executed first and the resulting heatmaps/PAFs are saved for each COCO image.
+2. **Cached postprocess evaluation**: the saved heatmaps/PAFs are loaded from disk and each CPU/GPU postprocessing variant is evaluated without importing or running MIGraphX in the same process.
 
-This makes the GPU postprocessing numbers more representative because PyTorch ROCm can own the GPU cleanly during postprocessing.
+This benchmark is useful for measuring the **algorithmic quality of postprocessing variants** because every variant receives the same network outputs. It also avoids runtime interference between MIGraphX and PyTorch ROCm, so PyTorch can use the GPU cleanly for the GPU-based postprocessing experiments.
+
+Latest cached benchmark result:
 
 | Variant | AP | AP50 | AP75 | AR | Avg Postprocess (ms) | p95 (ms) |
 |---|---:|---:|---:|---:|---:|---:|
-| `standard` | 0.415 | 0.684 | 0.422 | 0.473 | 45.68 | 71.60 |
-| `k20_fast` | 0.415 | 0.684 | 0.422 | 0.473 | 17.28 | 22.30 |
-| `lowres_cpu_group` | 0.203 | 0.459 | 0.147 | 0.254 | 0.85 | 1.86 |
-| `gpu_nms_fullres_cpu_group` | 0.415 | 0.684 | 0.422 | 0.473 | 11.09 | 15.57 |
-| `gpu_fullres_paf` | 0.415 | 0.684 | 0.422 | 0.473 | 26.17 | 35.64 |
-| `gpu_lowres_paf` | 0.232 | 0.530 | 0.169 | 0.291 | 5.83 | 11.60 |
+| `standard` | 0.415 | 0.684 | 0.422 | 0.473 | 48.48 | 75.01 |
+| `k20_fast` | 0.415 | 0.684 | 0.422 | 0.473 | 17.49 | 22.54 |
+| `lowres_cpu_group` | 0.203 | 0.459 | 0.147 | 0.254 | 0.88 | 1.91 |
+| `gpu_nms_fullres_cpu_group` | 0.415 | 0.684 | 0.422 | 0.473 | 10.99 | 15.03 |
+| `gpu_fullres_paf` | 0.415 | 0.684 | 0.422 | 0.473 | 25.97 | 35.42 |
+| `gpu_lowres_paf` | 0.232 | 0.530 | 0.169 | 0.291 | 5.62 | 11.12 |
 
-The best result is `gpu_nms_fullres_cpu_group`. It preserves the exact same AP/AR as `standard` and `k20_fast`, while reducing average postprocessing time to **11.09 ms**. Compared with `standard`, this is a **4.12× postprocess speedup**. Compared with the optimized CPU `k20_fast` path, it is still **1.56× faster**.
+The best cached benchmark result is `gpu_nms_fullres_cpu_group`. It preserves the exact same AP/AR as both `standard` and `k20_fast`, while reducing average postprocessing latency to **10.99 ms**.
 
-| Comparison | Avg Postprocess Before | Avg Postprocess After | Speedup |
-|---|---:|---:|---:|
-| `standard` → `gpu_nms_fullres_cpu_group` | 45.68 ms | 11.09 ms | 4.12× |
-| `k20_fast` → `gpu_nms_fullres_cpu_group` | 17.28 ms | 11.09 ms | 1.56× |
-| `gpu_fullres_paf` → `gpu_nms_fullres_cpu_group` | 26.17 ms | 11.09 ms | 2.36× |
+| Comparison | Avg Postprocess Before | Avg Postprocess After | Speedup | Latency Reduction |
+|---|---:|---:|---:|---:|
+| `standard` → `gpu_nms_fullres_cpu_group` | 48.48 ms | 10.99 ms | 4.41× | 77.3% |
+| `k20_fast` → `gpu_nms_fullres_cpu_group` | 17.49 ms | 10.99 ms | 1.59× | 37.2% |
+| `gpu_fullres_paf` → `gpu_nms_fullres_cpu_group` | 25.97 ms | 10.99 ms | 2.36× | 57.7% |
 
-This result shows that heatmap NMS is a good target for GPU acceleration. It is a highly parallel local-maximum operation, and Torch `max_pool2d` maps well to the GPU. The remaining grouping stage is left on CPU because the current optimized CPU implementation is already efficient, stable, and avoids the overhead of moving many small pose-assembly operations to the GPU.
+This result shows that heatmap NMS is a good target for GPU acceleration. It is a highly parallel local-maximum operation, and Torch `max_pool2d` maps well to the GPU when PyTorch ROCm owns the GPU context during the cached postprocess run.
+
+The accuracy results also show that GPU execution itself is not the source of AP/AR degradation. The full-resolution variants all preserve the same metrics:
+
+| Variant | Resolution Used for NMS/Grouping | AP | AR | Accuracy Result |
+|---|---|---:|---:|---|
+| `standard` | Full resolution | 0.415 | 0.473 | Baseline |
+| `k20_fast` | Full resolution | 0.415 | 0.473 | Same as baseline |
+| `gpu_nms_fullres_cpu_group` | Full resolution | 0.415 | 0.473 | Same as baseline |
+| `gpu_fullres_paf` | Full resolution | 0.415 | 0.473 | Same as baseline |
+| `lowres_cpu_group` | Low resolution | 0.203 | 0.254 | Large accuracy drop |
+| `gpu_lowres_paf` | Low resolution | 0.232 | 0.291 | Large accuracy drop |
+
+Therefore, the main reason for the accuracy drop in the low-resolution GPU experiments is not GPU NMS, but the algorithmic change from full-resolution postprocessing to low-resolution postprocessing. Even when the final keypoint coordinates are scaled back to the original image size, low-resolution heatmaps and PAFs lose spatial detail that is important for keypoint localization and body-part association.
 
 ### Why Full GPU PAF Scoring Was Not the Best Variant
 
@@ -343,8 +358,8 @@ The `gpu_fullres_paf` variant also preserves AP/AR, but it is slower than `gpu_n
 
 | Variant | AP | AR | Avg Postprocess (ms) | Interpretation |
 |---|---:|---:|---:|---|
-| `gpu_nms_fullres_cpu_group` | 0.415 | 0.473 | 11.09 | Best accuracy-preserving latency. |
-| `gpu_fullres_paf` | 0.415 | 0.473 | 26.17 | Accurate, but slower due to transfer/synchronization and per-limb overhead. |
+| `gpu_nms_fullres_cpu_group` | 0.415 | 0.473 | 10.99 | Best accuracy-preserving latency. |
+| `gpu_fullres_paf` | 0.415 | 0.473 | 25.97 | Accurate, but slower due to transfer/synchronization and per-limb overhead. |
 
 Although PAF scoring is mathematically parallel, the current implementation still performs per-body-part loops, moves keypoint candidates between CPU and GPU, and performs connection NMS/pose assembly on CPU. These synchronization points reduce the benefit of GPU execution. A faster full-GPU PAF implementation would likely require a more complete redesign of grouping, not only a direct tensor translation of the existing CPU algorithm.
 
@@ -354,8 +369,8 @@ The low-resolution variants are useful as speed experiments, but they are not cu
 
 | Variant | AP | AR | Avg Postprocess (ms) | Result |
 |---|---:|---:|---:|---|
-| `lowres_cpu_group` | 0.203 | 0.254 | 0.85 | Fastest, but accuracy drops heavily. |
-| `gpu_lowres_paf` | 0.232 | 0.291 | 5.83 | Better AP/AR than low-res CPU grouping, but still far below full-res variants. |
+| `lowres_cpu_group` | 0.203 | 0.254 | 0.88 | Fastest, but accuracy drops heavily. |
+| `gpu_lowres_paf` | 0.232 | 0.291 | 5.62 | Better AP/AR than low-res CPU grouping, but still far below full-res variants. |
 
 The AP/AR loss comes from doing keypoint extraction and PAF grouping on low-resolution feature maps. Even if the final coordinates are scaled back to image size, the missing spatial detail reduces localization quality and body-part association quality.
 
@@ -374,9 +389,16 @@ A separate single-process video benchmark was also run through the CLI-style run
 | `gpu_fullres_paf` | `gpu-fullres-paf` | 100 | 3.69 | 8.43 | 1.05 | 3.76 | 8.00 | 110.15 | 75.15 | 198.14 | 206.04 | 5.05 |
 | `gpu_lowres_paf` | `gpu-lowres-paf` | 100 | 3.69 | 8.43 | 1.04 | 0.00 | 0.00 | 2.19 | 3.29 | 6.53 | 7.47 | 153.19 |
 
+The difference between the cached benchmark and the single-process video benchmark is important:
+
+| Benchmark | What it measures | Runtime setup | Best use | Limitation |
+|---|---|---|---|---|
+| Cached COCO postprocess benchmark | Accuracy and latency of postprocessing variants on fixed heatmap/PAF tensors. | MIGraphX is not imported during postprocessing; PyTorch ROCm can own the GPU cleanly. | Best benchmark for judging postprocessing algorithm quality and AP/AR impact. | Does not include live video decode, preprocessing, MIGraphX inference, or single-process runtime interaction. |
+| Single-process video benchmark | Current end-to-end CLI behavior on video frames. | MIGraphX inference and PyTorch GPU postprocessing run inside the same Python process. | Best benchmark for measuring current integration cost and real runner behavior. | GPU timings can be dominated by runtime interaction, synchronization, or transfer overhead. |
+
 This discrepancy is expected on the tested ROCm setup. The cached benchmark intentionally avoids importing MIGraphX and PyTorch ROCm in the same process, while the video benchmark uses both runtimes together. The very high `extract` time for `gpu_nms_fullres_cpu_group` in the single-process run indicates that GPU NMS timing is dominated by runtime interaction, synchronization, or transfer overhead rather than by the NMS operation alone.
 
-For that reason, the cached COCO benchmark is the preferred measurement for evaluating GPU postprocessing algorithm quality, while the single-process video benchmark remains useful for measuring the current CLI integration cost.
+For that reason, the cached COCO benchmark is the preferred measurement for evaluating GPU postprocessing algorithm quality, while the single-process video benchmark remains useful for measuring the current CLI integration cost. In practice, this means that `gpu_nms_fullres_cpu_group` is the best algorithmic candidate, but deployment must still solve the MIGraphX + PyTorch ROCm runtime interaction if this path is used in a single live video process.
 
 ### Updated Recommendation After GPU Tests
 
@@ -384,7 +406,7 @@ Based on the current speed and accuracy results, the recommended postprocessing 
 
 | Goal | Recommended Variant | Reason |
 |---|---|---|
-| Best accuracy-preserving GPU/hybrid postprocess | `gpu_nms_fullres_cpu_group` | Matches `standard` AP/AR and gives the lowest full-resolution accuracy-preserving postprocess time in the cached COCO benchmark: 11.09 ms. |
+| Best accuracy-preserving GPU/hybrid postprocess | `gpu_nms_fullres_cpu_group` | Matches `standard` AP/AR and gives the lowest full-resolution accuracy-preserving postprocess time in the cached COCO benchmark: 10.99 ms. |
 | Best CPU-only accuracy-preserving postprocess | `k20_fast` / `optimized_batch_k20_fast` | Preserves AP/AR and avoids runtime interaction between MIGraphX and PyTorch ROCm. |
 | Fastest experimental path | `lowres_cpu_group` | Runs below 1 ms in cached postprocess evaluation, but AP/AR loss is too large for accuracy-critical use. |
 | Full GPU PAF research path | `gpu_fullres_paf` | Preserves AP/AR but is slower than GPU NMS hybrid, so it needs deeper grouping redesign before it is useful. |
