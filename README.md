@@ -1,461 +1,320 @@
-# Lightweight Human Pose Estimation on AMD (ROCm & MIGraphX)
+# Lightweight Human Pose Estimation on AMD ROCm + MIGraphX
 
-This repository is an optimized version of the Lightweight OpenPose project, specifically tailored for the AMD ROCm ecosystem. By leveraging the AMD Strix Halo APU’s unified memory and MIGraphX inference engine, this implementation achieves real-time multi-person tracking suitable for edge deployment in high-traffic venues.
+This repository contains an AMD ROCm/MIGraphX-oriented optimization of the Lightweight OpenPose pipeline. The current focus is no longer only neural network inference speed, but the complete end-to-end video pipeline: preprocessing, MIGraphX inference, heatmap/PAF decoding, full-resolution postprocessing, keypoint extraction, pose grouping, and runtime/power behavior.
 
-## Key Improvements (AMD Optimization)
+A more detailed historical README with the full development trail and earlier benchmark notes is available here:
 
-Compared to the original repository, the following changes have been implemented:
+[https://github.com/ognjen217/lightweight-human-pose-estimation.pytorch-AMD/blob/gpu-accelerated-postprocessing/README.md](https://github.com/ognjen217/lightweight-human-pose-estimation.pytorch-AMD/blob/gpu-accelerated-postprocessing/README.md)
 
-1. ROCm 7.2+ Port: Migrated to Python 3.10+ and the latest PyTorch ROCm binaries.
+---
 
-2. MIGraphX Backend: Model compiled specifically for RDNA 3.5, jumping from ~8 FPS (Native) to ~215 FPS.
+## Current Status
 
-3. Zero-Copy Memory Opt: Reduced 6x redundant PCIe copies between CPU/GPU to 2x. Intermediate Heatmaps & PAFs remain in unified GPU memory.
+The model inference path has already been heavily optimized with MIGraphX, FP16 execution, memory-flow cleanup, and kernel tuning. After these changes, the main bottleneck moved from neural network inference to postprocessing.
 
-4. Kernel Exhaustive Search: Identification of the fastest mathematical kernels specifically for the Strix Halo architecture.
+The current optimization work therefore focuses on:
 
-5. Seamless Quantization: Implemented a unified codebase for FP32, FP16, BF16, and INT8 (both static and dynamic).
+- full-resolution heatmap NMS / keypoint extraction,
+- faster PAF-based grouping,
+- CPU-only fallback paths,
+- GPU/hybrid postprocessing,
+- MIGraphX NMS as a compiled postprocess subgraph,
+- end-to-end video latency and power efficiency.
 
-## Benchmark Results (Strix Halo)
+---
 
-Following extensive optimization, FP16 with 1 refinement stage emerged as the "sweet spot" for balancing throughput and precision on the Strix Halo architecture.
+## Model Inference Summary
 
-|Optimization Phase |Backend |Precision|Throughput (FPS)|Avg. Power (Watts)| 
-|------------------|--------|---------|----------------|------------|
-|Initial Port      |PyTorch |FP16     |8.02               |83.25W       |
-|MIGraphX          |MIGraphX|FP16     |148.31            |62.63W       |
-|Improved model perf|MIGraphX|FP16     |210.66            |55.44W       |
-|Final (Exhaustive kernel)|MIGraphX|FP16     |215.45            |48.44W       |
+The best inference configuration remains the FP16 one-refinement-stage MIGraphX model.
 
-### Key Observations:
+| Optimization Phase | Backend | Precision | Throughput | Avg. Power |
+|---|---|---:|---:|---:|
+| Initial PyTorch ROCm port | PyTorch | FP16 | ~8 FPS | ~83 W |
+| MIGraphX backend | MIGraphX | FP16 | ~148 FPS | ~63 W |
+| Improved model output path | MIGraphX | FP16 | ~211 FPS | ~55 W |
+| Kernel-tuned final model | MIGraphX | FP16 | ~215 FPS | ~48 W |
 
-Backend Impact: The initial PyTorch port using native kernels was severely bottlenecked (INT8 peaked at only 28.58 FPS). Migrating to MIGraphX provided an immediate 18x performance boost.
+Key observations:
 
-Quantization Choice: While FP32 performed respectably at 82.07 FPS, FP16 reached 148.31 FPS. Testing with INT8 and BF16 showed no significant gains in throughput over FP16, leading us to standardize on FP16 for the best balance of speed and stability.
+- MIGraphX gives the largest performance improvement over the initial PyTorch ROCm path.
+- FP16 provides the best speed/stability tradeoff.
+- INT8 reduced accuracy too much and did not provide a useful throughput advantage.
+- Removing redundant intermediate heatmap/PAF outputs improved inference throughput because only the final heatmaps and PAFs are needed by postprocessing.
 
-IR & Memory Optimization: Profiling the Intermediate Representation (IR) revealed six redundant PCIe copy operations. By optimizing the data flow to retain heatmaps and Part Affinity Fields (PAFs) in GPU memory, we significantly reduced overhead.
+---
 
-```
-for refinement_stage in self.refinement_stages:
-            stages_output.extend(
-                refinement_stage(self.cat_op.cat([backbone_features, stages_output[-2], stages_output[-1]], dim=1)))
+## Why Postprocessing Became the Main Bottleneck
 
-final_results = [stages_output[-2], stages_output[-1]]
-return [self.dequant(out) for out in final_results]
-```
+Once MIGraphX inference reached single-digit millisecond latency, the original OpenPose-style CPU postprocessing became the dominant cost. The original path performs full-resolution heatmap resize, full-resolution PAF resize, CPU keypoint extraction, and CPU pose grouping.
 
-In the above code we can see that for each refinement stage we are appending a new value for heatmaps and pafs to the output, but we only need the latest one, so we can optimize the code to only keep the latest and that optimisation saves about 50FPS.
+Earlier profiling showed that the standard CPU postprocess could take hundreds of milliseconds per frame, even when inference itself was already around 6–8 ms. Therefore, optimizing only the model was not enough for real end-to-end video performance.
 
-Kernel Tuning: We utilized MIOpen exhaustive search to tune convolution algorithms. By pre-selecting optimal tiling sizes and memory layouts for RDNA 3.5 Compute Units, we shaved an additional 1.5ms off the tail latency.
+---
 
-## Accuracy Analysis
+## Postprocessing Variants
 
-Accuracy testing demonstrated that FP16 maintains parity with FP32, whereas INT8 suffers from significant precision degradation.
+The main postprocessing variants investigated are:
 
-|Model Variant|Precision|AP @ 0.5:0.95|AR @ 0.5:0.95|Notes                       |
-|-------------|---------|-------------|-------------|----------------------------|
-|Refinement 1 |FP32     |0.436        |0.490        |Baseline                    |
-|             |FP16     |0.428        |0.482        |< 1% drop from FP32         |
-|             |INT8     |0.274        |0.313        |Significant precision loss  |
-|Refinement 2 |FP32     |0.458        |0.513        |                            |
-|             |FP16     |0.453        |0.508        |Optimal performance/accuracy|
-|             |INT8     |0.296        |0.336        |                            |
-|Refinement 3 |FP32     |0.461        |0.518        |Peak accuracy               |
-|             |FP16     |0.456        |0.510        |                            |
-
-
-
-Power Efficiency Final
-|Precision         |Avg. Power (Watts)|Throughput (FPS)|Efficiency (FPS/Watt)|
-|------------------|-------------|--------|-------------|
-|FP16 (1 Stage)    |	48.44W	 | 215.45 | 4.45
-|FP16 (2 Stages)   |	61.24W   | 207.02 |	3.38
-|FP16 (3 Stages)   |	66.85W   | 196.92 | 2.95
-|FP32 (1 Stage)    |   60.24W    | 95.75  | 1.59
-
-### Performance Profiling
-
-Below is the execution profile for FP16 (1 refinement step) processing five 968 × 544 images. The profile highlights the dominance of fused MLIR kernels (convolution + ReLU) and the minimized impact of Device-to-Host (DtoH) copies.
-
--------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
-                                                   Name    Self CPU %      Self CPU   CPU total %     CPU total  CPU time avg     Self CUDA   Self CUDA %    CUDA total  CUDA time avg    # of Calls  
-
-                                          ProfilerStep*         0.00%       0.000us         0.00%       0.000us       0.000us      20.963ms       107.10%      20.963ms       2.096ms            10  
-                    mlir_convolution_broadcast_add_relu         0.00%       0.000us         0.00%       0.000us       0.000us      15.227ms        77.79%      15.227ms      78.085us           195  
-                mlir_convolution_broadcast_add_relu_add         0.00%       0.000us         0.00%       0.000us       0.000us       2.101ms        10.73%       2.101ms      84.022us            25  
-                                       mlir_convolution         0.00%       0.000us         0.00%       0.000us       0.000us     749.703us         3.83%     749.703us      24.990us            30  
-                                          ProfilerStep*         3.52%     946.228us       100.00%      26.909ms       5.382ms       0.000us         0.00%     502.377us     100.475us             5  
-                                               aten::to         0.05%      12.949us         8.95%       2.409ms     240.887us       0.000us         0.00%     502.377us      50.238us            10  
-                                         aten::_to_copy         0.11%      30.589us         8.90%       2.396ms     479.183us       0.000us         0.00%     502.377us     100.475us             5  
-                                            aten::copy_         0.13%      35.419us         8.67%       2.332ms     466.436us     502.377us         2.57%     502.377us     100.475us             5  
-                           Memcpy DtoH (Device -> Host)         0.00%       0.000us         0.00%       0.000us       0.000us     502.377us         2.57%     502.377us     100.475us             5  
-                      _migraphxgpudevicelauncherIZZN...         0.00%       0.000us         0.00%       0.000us       0.000us     389.653us         1.99%     389.653us      25.977us            15  
--------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
-
-
-
-## Extended Investigation: End-to-End Video Pipeline Bottleneck
-
-After the inference backend was optimized with MIGraphX, the next research step was to evaluate the complete video pipeline rather than the neural network inference stage in isolation. This is important because the previously reported throughput of approximately 215 FPS describes the optimized model execution path, while the real application also includes frame preprocessing, heatmap/PAF decoding, resizing, keypoint extraction, keypoint grouping, and optional drawing/video output.
-
-The profiling of `video_val.py` showed that MIGraphX inference is no longer the dominant bottleneck. Instead, the main cost moved to CPU-side postprocessing, especially the keypoint extraction and pose grouping stages. In the measured FP16 refinement-stage-1 configuration, inference was approximately 8 ms per frame, while the original postprocessing path could take several hundred milliseconds per frame.
-
-### Postprocessing Variants Tested
-
-The following postprocessing strategies were implemented and benchmarked:
-
-| Variant | Description | Expected Accuracy Behavior |
+| Variant | Description | Accuracy Status |
 |---|---|---|
-| `standard` | Original postprocess path: resize heatmaps, resize PAFs, run original `extract_keypoints`, then `group_keypoints`. | Reference behavior and accuracy baseline. |
-| `fast_no_resize` | Skips heatmap and PAF resizing before grouping. Grouping is done at network output resolution and keypoints are scaled afterwards. | Extremely fast, but may reduce AP/AR because grouping is performed on lower-resolution maps. |
-| `optimized_batch_k10` | Keeps original resize behavior, but replaces per-channel keypoint extraction with batched OpenCV-based extraction limited to 10 keypoints per type. | Faster than standard, but may lose accuracy when more people/keypoints are present. |
-| `optimized_batch_k20` | Same batched extraction approach, but allows up to 20 keypoints per type. | Best accuracy-preserving optimization in the current tests. |
+| `standard_cpu` / `standard` | Original CPU keypoint extraction and original CPU grouping. | Baseline. |
+| `optimized_batch_k20_findnonzero_v1_cpu` | Best CPU-only path using batched K20/findNonZero extraction and fast grouping. | Accuracy-preserving in COCO tests. |
+| `gpu-fullres-nms-cpu-group` / `gpu-nms` | Full-resolution GPU heatmap NMS/top-K extraction with CPU fast grouping. | Best speed/accuracy tradeoff. |
+| `full-gpu` | GPU NMS plus GPU PAF affinity scoring, with final dynamic pose assembly still on CPU. | Accurate but slower than hybrid GPU NMS. |
+| `migraphx-nms` | Full-resolution MIGraphX NMS head producing a dense peak mask, followed by CPU mask extraction and fast grouping. | Accuracy-safe, but not fastest. |
+| `migraphx-nms-k20` | MIGraphX NMS with candidate limiting. | Slightly faster than full MIGraphX NMS, but loses AP/AR. |
+| Low-resolution variants | Skip full-resolution postprocess and scale results back. | Very fast but not accuracy-preserving. |
 
-### Latest End-to-End Benchmark
+---
 
-The following benchmark was run on the FP16, one-refinement-stage MIGraphX model:
+## Latest Single-Process E2E Video Benchmark
 
-```bash
-python benchmark_postprocess_models_report.py \
-  --video cctv_1280x720_24fps_3.mp4 \
-  --model pose_model1_fp16_ref1.mxr \
-  --frames 100 \
-  --warmup 20
+This benchmark was run on a fixed 1280x720 video using 100 measured frames and 5 warmup frames. Drawing and video writing were disabled. The benchmark measures the real single-process path:
+
+```text
+frame read -> preprocess -> MIGraphX inference -> selected postprocess variant
 ```
 
-Measured configuration:
+Power was sampled through `rocm-smi`, so `J/frame` and `FPS/W` are estimates based on GPU package power, not full-system wall power.
 
-- Model: `pose_model1_fp16_ref1.mxr`
-- Precision: FP16
-- Refinement stages: 1
-- Measured frames: 100
-- Warmup frames: 20
-- Drawing and video writing: disabled
+| Variant | Postprocess | E2E Latency | FPS | Power | J/frame | FPS/W | E2E Speedup |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `standard_cpu` | 227.76 ms | 240.06 ms | 4.17 | 56.31 W | 13.52 | 0.074 | 1.00x |
+| `optimized_batch_k20_findnonzero_v1_cpu` | 60.05 ms | 72.60 ms | 13.77 | 63.85 W | 4.64 | 0.216 | 3.31x |
+| `gpu-fullres-nms-cpu-group` | 38.95 ms | 49.33 ms | 20.27 | 81.68 W | 4.03 | 0.248 | 4.87x |
+| `full-gpu` | 46.51 ms | 57.64 ms | 17.35 | 82.06 W | 4.73 | 0.211 | 4.16x |
+| `migraphx-nms` | 110.83 ms | 125.11 ms | 7.99 | 61.14 W | 7.65 | 0.131 | 1.92x |
 
-| Model | Variant | Preprocess (ms) | Inference (ms) | Postprocess (ms) | End-to-End (ms) | End-to-End FPS | Postprocess Speedup | E2E Speedup |
+### Single-Process E2E Interpretation
+
+The best current single-process E2E variant is:
+
+```text
+gpu-fullres-nms-cpu-group
+```
+
+It reaches 20.27 FPS and provides the best energy efficiency among the tested variants. The main reason is that it moves the highly parallel heatmap NMS/top-K extraction step to the GPU while keeping the optimized CPU grouping path.
+
+The best CPU-only fallback is:
+
+```text
+optimized_batch_k20_findnonzero_v1_cpu
+```
+
+It avoids PyTorch/MIGraphX GPU runtime interaction and still improves E2E latency from 240.06 ms to 72.60 ms.
+
+The `full-gpu` variant is not the best final option because the final OpenPose pose assembly is dynamic and remains CPU-bound. Moving PAF scoring to GPU adds overhead and synchronization without outperforming the simpler hybrid GPU-NMS approach.
+
+---
+
+## COCO2017 Accuracy Benchmark
+
+Accuracy was evaluated on COCO `val2017` keypoint validation using the first 1000 COCO person images, with 5 warmup images excluded from reported results. The benchmark therefore reports metrics over 995 evaluated images.
+
+| Variant | Images | Detections | AP | AP50 | AP75 | AR | Postprocess | Frame |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| `pose_model1_fp16_ref1.mxr` | `standard` | 3.77 | 7.99 | 499.80 | 511.56 | 1.95 | 1.00× | 1.00× |
-| `pose_model1_fp16_ref1.mxr` | `fast_no_resize` | 3.77 | 7.99 | 3.25 | 15.01 | 66.64 | 153.77× | 34.09× |
-| `pose_model1_fp16_ref1.mxr` | `optimized_batch_k10` | 3.77 | 7.99 | 334.66 | 346.42 | 2.89 | 1.49× | 1.48× |
-| `pose_model1_fp16_ref1.mxr` | `optimized_batch_k20` | 3.77 | 7.99 | 334.25 | 346.01 | 2.89 | 1.50× | 1.48× |
+| `standard` | 995 | 3532 | 0.3208 | 0.5666 | 0.3080 | 0.3716 | 47.98 ms | 58.35 ms |
+| `optimized_batch_k20_findnonzero_v1` | 995 | 3532 | 0.3208 | 0.5666 | 0.3080 | 0.3716 | 18.80 ms | 28.17 ms |
+| `gpu-nms` | 995 | 3532 | 0.3208 | 0.5666 | 0.3080 | 0.3716 | 13.30 ms | 22.64 ms |
+| `migraphx-nms` | 995 | 3867 | 0.3207 | 0.5642 | 0.3085 | 0.3721 | 19.76 ms | 30.47 ms |
+| `migraphx-nms-k20` | 995 | 3638 | 0.3161 | 0.5625 | 0.3028 | 0.3675 | 17.72 ms | 27.66 ms |
 
-The results show that the neural network inference step is already efficient: it takes only around 7.99 ms per frame. However, the full standard pipeline reaches only 1.95 FPS because the postprocessing stage dominates the runtime. The `fast_no_resize` variant demonstrates the upper bound of a lightweight postprocessing path, reaching 66.64 FPS end-to-end, but this result should not be interpreted as accuracy-preserving without COCO validation. The `optimized_batch_k20` variant is currently the best conservative optimization because it preserves the original resize-and-grouping logic while accelerating keypoint extraction.
+### Accuracy Interpretation
 
-### Accuracy Comparison of Postprocessing Variants
-
-The postprocessing variants were also compared on COCO validation metrics:
-
-| Dataset | Variant | AP | AP50 | AP75 | AR | AR50 | AR75 |
-|---|---|---:|---:|---:|---:|---:|---:|
-| COCO val2017 | `standard` | 0.386 | 0.650 | 0.389 | 0.444 | 0.690 | 0.452 |
-| COCO val2017 | `optimized_batch_k10` | 0.364 | 0.615 | 0.364 | 0.421 | 0.656 | 0.426 |
-| COCO val2017 | `optimized_batch_k20` | 0.386 | 0.650 | 0.389 | 0.444 | 0.690 | 0.452 |
-
-The `optimized_batch_k20` variant matches the standard postprocess accuracy in the tested COCO validation run, while `optimized_batch_k10` is faster but loses AP/AR because the maximum number of retained keypoints per type is too restrictive. Therefore, `optimized_batch_k20` is the best current candidate for the final accuracy-preserving pipeline.
-
-### Energy and Power Metrics
-
-The benchmark was extended with power and efficiency metrics so that models can be compared not only by latency and FPS, but also by energy efficiency. The extended script reports:
-
-| Metric | Meaning |
-|---|---|
-| `avg_power_w` | Average GPU socket/package power sampled through `rocm-smi --showpower`. |
-| `fps_per_watt` | End-to-end FPS divided by average GPU power. Higher is better. |
-| `energy_j_per_frame` | Approximate joules consumed per processed frame. Lower is better. |
-| `e2e_avg_ms` | Full pipeline latency: preprocess + inference + postprocess. |
-| `e2e_fps` | Full pipeline throughput calculated from end-to-end latency. |
-| `post_speedup_vs_standard` | Postprocess speedup compared to the standard postprocess path. |
-| `e2e_speedup_vs_standard` | Full-pipeline speedup compared to the standard postprocess path. |
-
-The formulas used are:
-
-```python
-e2e_fps = 1000.0 / e2e_avg_ms
-fps_per_watt = e2e_fps / avg_power_w
-energy_j_per_frame = avg_power_w * (e2e_avg_ms / 1000.0)
-```
-
-On the tested system, `rocm-smi --showpower` reports power in the following format:
+The following variants are accuracy-preserving relative to the standard baseline:
 
 ```text
-GPU[0] : Current Socket Graphics Package Power (W): 43.02
+optimized_batch_k20_findnonzero_v1
+gpu-nms
+migraphx-nms
 ```
 
-The benchmark power parser was updated to support this ROCm output format. If the parser cannot read a valid power value, the table prints `N/A` for `Power`, `FPS/W`, and `J/frame`, while latency and FPS are still reported normally.
-
-### Updated Benchmark Script
-
-The updated benchmark script is intended to compare both model variants and postprocess variants:
-
-```bash
-python benchmark_postprocess_models_report_powerfix.py \
-  --video cctv_1280x720_24fps_3.mp4 \
-  --model pose_model1_fp16_ref1.mxr \
-  --frames 100 \
-  --warmup 20
-```
-
-For comparing multiple MIGraphX models:
-
-```bash
-python benchmark_postprocess_models_report_powerfix.py \
-  --video cctv_1280x720_24fps_3.mp4 \
-  --models pose_model1_fp16_ref1.mxr pose_model1_fp32_ref1.mxr pose_model1_int8_ref1.mxr \
-  --frames 100 \
-  --warmup 20 \
-  --csv model_postprocess_benchmark_summary.csv \
-  --md model_postprocess_benchmark_report.md \
-  --detailed-csv model_postprocess_per_frame.csv
-```
-
-The summary table includes the following fields:
+The best accuracy/speed tradeoff is:
 
 ```text
-model | variant | mode | ref | frames | pre | infer | post | e2e | FPS | Power | FPS/W | J/frame | post_spd | e2e_spd | Δe2e%
-```
-### Grouping Optimization: Removing Full PAF Channel Copies
-
-After the batched keypoint extraction improvements, the remaining bottleneck was the pose grouping stage. Function-level timing inside `group_keypoints` showed that most of the grouping time was not spent in NMS or pose assembly, but in repeatedly slicing the full Part Affinity Field tensor for every limb pair.
-
-The original grouping path used the following pattern for each body part:
-
-```python
-part_pafs = pafs[:, :, BODY_PARTS_PAF_IDS[part_id]]
-field = part_pafs[y, x].reshape(-1, points_per_limb, 2)
+gpu-nms
 ```
 
-This creates a full `H × W × 2` copy of the PAF channels for every limb before only a small number of sampled points are actually used. The optimized implementation avoids this full-channel copy and instead stores only the two PAF channel IDs, then gathers the required values directly at the sampled coordinates:
+It preserves AP/AR exactly relative to `standard` while reducing postprocess time from 47.98 ms to 13.30 ms.
 
-```python
-paf_x_id, paf_y_id = BODY_PARTS_PAF_IDS[part_id]
+The `migraphx-nms` variant is also accuracy-safe, with AP 0.3207 vs 0.3208 for `standard` and AR 0.3721 vs 0.3716. However, `migraphx-nms-k20` introduces a measurable accuracy drop, so it should not be treated as the safest final variant.
 
-field = np.empty((x.shape[0], 2), dtype=np.float32)
-field[:, 0] = pafs[y, x, paf_x_id]
-field[:, 1] = pafs[y, x, paf_y_id]
-field = field.reshape(-1, points_per_limb, 2)
+---
+
+## MIGraphX NMS Findings
+
+### Why COCO Requires Multiple MIGraphX NMS MXR Files
+
+MIGraphX `.mxr` programs are compiled for a fixed input tensor shape. The full-resolution NMS head receives heatmaps in this layout:
+
+```text
+[1, 19, H, W]
 ```
 
-This change keeps the grouping algorithm equivalent, because the same PAF values are used for affinity scoring, but it avoids repeatedly copying large PAF maps. It directly targets the dominant cost observed in `group_keypoints` and makes the accuracy-preserving postprocess path significantly faster.
+For fixed-resolution video, one `.mxr` is enough because every frame has the same height and width. For example, a 1280x720 video can reuse a single NMS head:
 
-### Latest Benchmark After Grouping Improvements
+```text
+[1, 19, 720, 1280]
+```
 
-The latest benchmark was run with `benchmark_postprocess_models_report_powerfix.py` on `cctv_1280x720_24fps_3.mp4`, using 5 warmup frames and 100 measured frames. Drawing and video writing were disabled so the benchmark isolates preprocess, inference, and postprocess cost.
+COCO is different because images have many different resolutions. To keep the validation full-resolution and avoid low-resolution AP/AR loss, the COCO benchmark used a per-resolution MXR cache:
 
-| Model | Variant | Mode | Frames | Preprocess (ms) | Inference (ms) | Postprocess (ms) | End-to-End (ms) | FPS | Power (W) | FPS/W | J/frame | Postprocess Speedup | E2E Speedup | ΔE2E |
-|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| `pose_model1_fp16_ref1.mxr` | `standard` | fp16 | 100 | 3.72 | 7.75 | 498.08 | 509.55 | 1.96 | 39.44 | 0.05 | 20.0966 | 1.00× | 1.00× | 0.00% |
-| `pose_model1_fp16_ref1.mxr` | `fast_no_resize` | fp16 | 100 | 3.72 | 7.75 | 3.05 | 14.52 | 68.88 | 39.44 | 1.75 | 0.5726 | 163.45× | 35.10× | -97.15% |
-| `pose_model1_fp16_ref1.mxr` | `optimized_batch_k20_fast` | fp16 | 100 | 3.72 | 7.75 | 123.94 | 135.41 | 7.38 | 39.44 | 0.19 | 5.3407 | 4.02× | 3.76× | -73.42% |
-| `pose_model1_fp16_ref1.mxr` | `optimized_batch_k20` | fp16 | 100 | 3.72 | 7.75 | 336.03 | 347.50 | 2.88 | 39.44 | 0.07 | 13.7053 | 1.48× | 1.47× | -31.80% |
+```text
+models/nms_fullres_cache/
+  heatmap_nms_head_426x640.mxr
+  heatmap_nms_head_427x640.mxr
+  heatmap_nms_head_480x640.mxr
+  ...
+```
 
-The key result is that `optimized_batch_k20_fast` reduces postprocessing from **498.08 ms** to **123.94 ms**, giving a **4.02× postprocess speedup** and a **3.76× end-to-end speedup** compared with the standard pipeline. End-to-end latency drops from **509.55 ms** to **135.41 ms**, while throughput improves from **1.96 FPS** to **7.38 FPS**.
+The benchmark selects the correct `.mxr` file for each image shape.
 
-Importantly, the COCO validation results show that the new optimized grouping path preserves the same AP/AR metrics as the standard path in this test:
+### MIGraphX NMS Accuracy Result
 
-| Dataset | Variant | AP | AP50 | AP75 | AR | AR50 | AR75 |
-|---|---|---:|---:|---:|---:|---:|---:|
-| COCO val2017 | `standard` | 0.387 | 0.651 | 0.390 | 0.446 | 0.692 | 0.453 |
-| COCO val2017 | `optimized_batch_k20_fast` | 0.387 | 0.651 | 0.390 | 0.446 | 0.692 | 0.453 |
-| COCO val2017 | `optimized_batch_k20` | 0.387 | 0.651 | 0.390 | 0.446 | 0.692 | 0.453 |
+Full-resolution `migraphx-nms` was successfully validated on COCO. It preserved accuracy almost exactly:
 
-Therefore, the current best accuracy-preserving configuration is now `optimized_batch_k20_fast`: it combines batched keypoint extraction with the faster grouping implementation that avoids full PAF channel slicing. The previous conservative `optimized_batch_k20` remains useful as a reference implementation, but the new grouping optimization provides a much larger speedup without reducing measured COCO AP/AR in the latest validation run.
+| Variant | AP | AR |
+|---|---:|---:|
+| `standard` | 0.3208 | 0.3716 |
+| `migraphx-nms` | 0.3207 | 0.3721 |
 
-### Current Best Configuration
+This confirms that the MIGraphX NMS approach is accuracy-safe when applied after full-resolution heatmap resizing and when the correct shape-specific `.mxr` is used.
 
-Based on the current tests, there are two relevant configurations depending on the goal:
+### MIGraphX NMS Runtime Result
+
+The main limitation is runtime. In the single-process 1280x720 video benchmark, `migraphx-nms` reached 125.11 ms E2E and 7.99 FPS, while the best hybrid GPU-NMS path reached 49.33 ms E2E and 20.27 FPS.
+
+The detailed MIGraphX NMS breakdown was:
+
+| Stage | Time |
+|---|---:|
+| Decode | 1.09 ms |
+| Heatmap resize | 2.38 ms |
+| PAF resize | 4.10 ms |
+| MIGraphX NMS | 5.66 ms |
+| CPU extract from mask | 59.79 ms |
+| CPU fast grouping | 5.80 ms |
+| Total postprocess | 110.83 ms |
+
+The MIGraphX NMS operation itself is not the main bottleneck. The expensive part is CPU `extract_from_mask`, which converts the dense NMS mask into keypoint candidate lists. This stage dominates the MIGraphX path and removes most of the potential performance gain.
+
+### MIGraphX NMS Conclusion
+
+MIGraphX NMS is validated as an accuracy-safe full-resolution alternative, but it is not the fastest implementation in the current pipeline.
+
+Current interpretation:
+
+- `migraphx-nms` is useful as a proof that NMS can be represented and validated as a compiled MIGraphX subgraph.
+- For COCO validation, per-resolution `.mxr` caching is required.
+- For fixed-size video, one `.mxr` head is enough.
+- The current bottleneck is not the compiled NMS operation, but CPU mask-to-keypoint extraction after the NMS head.
+- `migraphx-nms-k20` should not be used as the safest final variant because it reduces AP/AR.
+- Further MIGraphX NMS work only makes sense if `extract_from_mask` is replaced by a faster GPU/top-K or optimized CPU extraction path.
+
+---
+
+## Current Recommendation
 
 | Goal | Recommended Variant | Reason |
 |---|---|---|
-| Best accuracy-preserving optimization | `optimized_batch_k20_fast` | Matches standard AP/AR in the latest COCO validation run while reducing postprocess time from 498.08 ms to 123.94 ms. |
-| Conservative accuracy-preserving reference | `optimized_batch_k20` | Keeps the original full-resolution grouping behavior and reduces postprocess time to 336.03 ms. |
-| Maximum speed experiment | `fast_no_resize` | Reduces end-to-end latency to 14.52 ms and reaches 68.88 FPS, but must be treated as a separate approximation because grouping is done at lower resolution. |
+| Best overall speed/accuracy tradeoff | `gpu-fullres-nms-cpu-group` / `gpu-nms` | Preserves COCO AP/AR and gives the best latency in both COCO timing and single-process video tests. |
+| Best CPU-only fallback | `optimized_batch_k20_findnonzero_v1_cpu` | Good latency reduction without relying on PyTorch GPU postprocessing in the same process. |
+| MIGraphX-specific validated path | `migraphx-nms` | Accuracy-safe, but currently slower due to CPU `extract_from_mask`. |
+| Avoid as final accuracy-preserving path | `migraphx-nms-k20` | Introduces measurable AP/AR loss. |
+| Avoid for accuracy-critical use | Low-resolution variants | Very fast, but lose too much AP/AR. |
 
-The current final recommendation is to use FP16 with one refinement stage and `optimized_batch_k20_fast` as the stable accuracy-preserving postprocess configuration. The latest grouping optimization avoids full PAF channel copies and preserves AP/AR in the measured COCO validation run. Further grouping changes should still be validated on COCO after each modification.
+The current final recommendation is to use the FP16 one-refinement-stage MIGraphX model together with full-resolution GPU NMS and CPU fast grouping. If runtime interaction between MIGraphX and PyTorch ROCm becomes problematic in deployment, the optimized CPU-only K20/findNonZero path should be kept as the stable fallback.
 
-### Research Status After Postprocessing Tests
-
-The optimization path can now be summarized in two layers:
-
-1. **Model inference optimization**: ROCm + MIGraphX + FP16 + kernel exhaustive search moved inference from the original PyTorch bottleneck to an efficient model execution path.
-2. **Application pipeline optimization**: After inference became fast, CPU-side postprocessing became the dominant bottleneck. Batched keypoint extraction improves the conservative pipeline, while low-resolution grouping provides a much faster but potentially less accurate alternative.
-
-This means that the main remaining research direction is no longer neural network inference, but postprocessing algorithm design. The next promising step is to accelerate or redesign pose grouping while preserving COCO AP/AR metrics.
-
-
-## GPU-Accelerated Postprocessing Investigation
-
-After the CPU postprocessing optimizations, the next experiment was to move selected postprocessing stages to the GPU using ROCm-backed PyTorch operations. The goal was not to rewrite the full OpenPose postprocessor with custom HIP kernels, but to identify which parts of the existing heatmap/PAF pipeline can benefit from GPU primitives while preserving COCO AP/AR.
-
-The GPU work focused on three postprocessing stages:
-
-| Stage | CPU Baseline | GPU / Hybrid Experiment | Purpose |
-|---|---|---|---|
-| Heatmap NMS / keypoint extraction | `extract_keypoints` or `extract_keypoints_batch_cv2` | Torch `max_pool2d` NMS on heatmaps | Detect local maxima/keypoint candidates in parallel. |
-| PAF connection scoring | CPU affinity sampling inside grouping | Torch tensor-based PAF sampling and dot products | Score candidate limb connections on GPU. |
-| Pose assembly / final filtering | CPU grouping logic | Mostly kept on CPU | Preserve existing pose-entry behavior and COCO-compatible output. |
-
-The most important finding is that **partial GPU acceleration is better than moving the whole postprocessor to GPU**. In particular, moving only heatmap NMS/keypoint extraction to GPU while keeping the optimized CPU grouping path gives the best accuracy-preserving latency result in the cached COCO benchmark.
-
-### GPU Postprocessing Variants
-
-The following GPU and hybrid variants were tested in addition to the CPU baselines:
-
-| Variant | Description | Accuracy Expectation |
-|---|---|---|
-| `standard` | Original full-resolution CPU postprocessing: resize heatmaps and PAFs, run original `extract_keypoints`, then original `group_keypoints`. | Accuracy baseline. |
-| `k20_fast` | Full-resolution CPU path using batched K20 keypoint extraction and `group_keypoints_fast`. | Accuracy-preserving optimized CPU baseline. |
-| `lowres_cpu_group` | Runs batched K20 extraction and fast grouping directly on low-resolution heatmaps/PAFs, then scales coordinates back to image size. | Very fast, but expected to lose AP/AR. |
-| `gpu_nms_fullres_cpu_group` | Full-resolution resize, GPU heatmap NMS/keypoint extraction, then CPU `group_keypoints_fast`. | Main hybrid GPU candidate. |
-| `gpu_fullres_paf` | Full-resolution CPU K20 keypoint extraction, GPU PAF connection scoring, then CPU pose assembly. | Accuracy-preserving, but may have GPU/CPU synchronization overhead. |
-| `gpu_lowres_paf` | Low-resolution GPU NMS and GPU PAF scoring, then scales keypoints to image size. | Faster than full-resolution PAF scoring, but expected to lose AP/AR. |
-
-### Cached COCO Benchmark: Accuracy and Postprocess Latency
-
-To evaluate the postprocessing algorithms independently from the MIGraphX runtime, the COCO validation benchmark was split into two phases:
-
-1. **MIGraphX cache generation**: MIGraphX inference is executed first and the resulting heatmaps/PAFs are saved for each COCO image.
-2. **Cached postprocess evaluation**: the saved heatmaps/PAFs are loaded from disk and each CPU/GPU postprocessing variant is evaluated without importing or running MIGraphX in the same process.
-
-This benchmark is useful for measuring the **algorithmic quality of postprocessing variants** because every variant receives the same network outputs. It also avoids runtime interference between MIGraphX and PyTorch ROCm, so PyTorch can use the GPU cleanly for the GPU-based postprocessing experiments.
-
-Latest cached benchmark result:
-
-| Variant | AP | AP50 | AP75 | AR | Avg Postprocess (ms) | p95 (ms) |
-|---|---:|---:|---:|---:|---:|---:|
-| `standard` | 0.415 | 0.684 | 0.422 | 0.473 | 48.48 | 75.01 |
-| `k20_fast` | 0.415 | 0.684 | 0.422 | 0.473 | 17.49 | 22.54 |
-| `lowres_cpu_group` | 0.203 | 0.459 | 0.147 | 0.254 | 0.88 | 1.91 |
-| `gpu_nms_fullres_cpu_group` | 0.415 | 0.684 | 0.422 | 0.473 | 10.99 | 15.03 |
-| `gpu_fullres_paf` | 0.415 | 0.684 | 0.422 | 0.473 | 25.97 | 35.42 |
-| `gpu_lowres_paf` | 0.232 | 0.530 | 0.169 | 0.291 | 5.62 | 11.12 |
-
-The best cached benchmark result is `gpu_nms_fullres_cpu_group`. It preserves the exact same AP/AR as both `standard` and `k20_fast`, while reducing average postprocessing latency to **10.99 ms**.
-
-| Comparison | Avg Postprocess Before | Avg Postprocess After | Speedup | Latency Reduction |
-|---|---:|---:|---:|---:|
-| `standard` → `gpu_nms_fullres_cpu_group` | 48.48 ms | 10.99 ms | 4.41× | 77.3% |
-| `k20_fast` → `gpu_nms_fullres_cpu_group` | 17.49 ms | 10.99 ms | 1.59× | 37.2% |
-| `gpu_fullres_paf` → `gpu_nms_fullres_cpu_group` | 25.97 ms | 10.99 ms | 2.36× | 57.7% |
-
-This result shows that heatmap NMS is a good target for GPU acceleration. It is a highly parallel local-maximum operation, and Torch `max_pool2d` maps well to the GPU when PyTorch ROCm owns the GPU context during the cached postprocess run.
-
-The accuracy results also show that GPU execution itself is not the source of AP/AR degradation. The full-resolution variants all preserve the same metrics:
-
-| Variant | Resolution Used for NMS/Grouping | AP | AR | Accuracy Result |
-|---|---|---:|---:|---|
-| `standard` | Full resolution | 0.415 | 0.473 | Baseline |
-| `k20_fast` | Full resolution | 0.415 | 0.473 | Same as baseline |
-| `gpu_nms_fullres_cpu_group` | Full resolution | 0.415 | 0.473 | Same as baseline |
-| `gpu_fullres_paf` | Full resolution | 0.415 | 0.473 | Same as baseline |
-| `lowres_cpu_group` | Low resolution | 0.203 | 0.254 | Large accuracy drop |
-| `gpu_lowres_paf` | Low resolution | 0.232 | 0.291 | Large accuracy drop |
-
-Therefore, the main reason for the accuracy drop in the low-resolution GPU experiments is not GPU NMS, but the algorithmic change from full-resolution postprocessing to low-resolution postprocessing. Even when the final keypoint coordinates are scaled back to the original image size, low-resolution heatmaps and PAFs lose spatial detail that is important for keypoint localization and body-part association.
-
-### Why Full GPU PAF Scoring Was Not the Best Variant
-
-The `gpu_fullres_paf` variant also preserves AP/AR, but it is slower than `gpu_nms_fullres_cpu_group`:
-
-| Variant | AP | AR | Avg Postprocess (ms) | Interpretation |
-|---|---:|---:|---:|---|
-| `gpu_nms_fullres_cpu_group` | 0.415 | 0.473 | 10.99 | Best accuracy-preserving latency. |
-| `gpu_fullres_paf` | 0.415 | 0.473 | 25.97 | Accurate, but slower due to transfer/synchronization and per-limb overhead. |
-
-Although PAF scoring is mathematically parallel, the current implementation still performs per-body-part loops, moves keypoint candidates between CPU and GPU, and performs connection NMS/pose assembly on CPU. These synchronization points reduce the benefit of GPU execution. A faster full-GPU PAF implementation would likely require a more complete redesign of grouping, not only a direct tensor translation of the existing CPU algorithm.
-
-### Low-Resolution GPU and CPU Variants
-
-The low-resolution variants are useful as speed experiments, but they are not currently accuracy-preserving:
-
-| Variant | AP | AR | Avg Postprocess (ms) | Result |
-|---|---:|---:|---:|---|
-| `lowres_cpu_group` | 0.203 | 0.254 | 0.88 | Fastest, but accuracy drops heavily. |
-| `gpu_lowres_paf` | 0.232 | 0.291 | 5.62 | Better AP/AR than low-res CPU grouping, but still far below full-res variants. |
-
-The AP/AR loss comes from doing keypoint extraction and PAF grouping on low-resolution feature maps. Even if the final coordinates are scaled back to image size, the missing spatial detail reduces localization quality and body-part association quality.
-
-### Single-Process Video Benchmark Note
-
-A separate single-process video benchmark was also run through the CLI-style runner, where MIGraphX inference and PyTorch GPU postprocessing execute in the same Python process. In that benchmark, the GPU NMS path did **not** show the same improvement:
-
-| Variant | Mode | Frames | Preprocess (ms) | Inference (ms) | Decode (ms) | HM Resize (ms) | PAF Resize (ms) | Extract (ms) | Group (ms) | Post Avg (ms) | p95 (ms) | FPS |
-|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| `standard` | `standard` | 100 | 3.69 | 8.43 | 1.07 | 4.01 | 8.23 | 294.88 | 217.75 | 525.95 | 536.56 | 1.90 |
-| `fast_no_resize` | `fast` | 100 | 3.69 | 8.43 | 1.04 | 0.00 | 0.00 | 0.54 | 1.48 | 3.07 | 3.24 | 325.97 |
-| `k20_standard_group` | `k20` | 100 | 3.69 | 8.43 | 0.98 | 4.01 | 8.04 | 108.92 | 217.72 | 339.68 | 347.70 | 2.94 |
-| `k20_fast_cpu` | `k20-fast` | 100 | 3.69 | 8.43 | 1.04 | 3.91 | 7.79 | 109.04 | 1.81 | 123.61 | 127.49 | 8.09 |
-| `lowres_cpu_group` | `lowres-cpu-group` | 100 | 3.69 | 8.43 | 1.01 | 0.00 | 0.00 | 0.71 | 1.40 | 3.13 | 3.31 | 319.43 |
-| `gpu_nms_fullres_cpu_group` | `gpu-nms` | 100 | 3.69 | 8.43 | 0.97 | 3.75 | 7.75 | 530.68 | 1.93 | 545.09 | 566.44 | 1.83 |
-| `gpu_fullres_paf` | `gpu-fullres-paf` | 100 | 3.69 | 8.43 | 1.05 | 3.76 | 8.00 | 110.15 | 75.15 | 198.14 | 206.04 | 5.05 |
-| `gpu_lowres_paf` | `gpu-lowres-paf` | 100 | 3.69 | 8.43 | 1.04 | 0.00 | 0.00 | 2.19 | 3.29 | 6.53 | 7.47 | 153.19 |
-
-The difference between the cached benchmark and the single-process video benchmark is important:
-
-| Benchmark | What it measures | Runtime setup | Best use | Limitation |
-|---|---|---|---|---|
-| Cached COCO postprocess benchmark | Accuracy and latency of postprocessing variants on fixed heatmap/PAF tensors. | MIGraphX is not imported during postprocessing; PyTorch ROCm can own the GPU cleanly. | Best benchmark for judging postprocessing algorithm quality and AP/AR impact. | Does not include live video decode, preprocessing, MIGraphX inference, or single-process runtime interaction. |
-| Single-process video benchmark | Current end-to-end CLI behavior on video frames. | MIGraphX inference and PyTorch GPU postprocessing run inside the same Python process. | Best benchmark for measuring current integration cost and real runner behavior. | GPU timings can be dominated by runtime interaction, synchronization, or transfer overhead. |
-
-This discrepancy is expected on the tested ROCm setup. The cached benchmark intentionally avoids importing MIGraphX and PyTorch ROCm in the same process, while the video benchmark uses both runtimes together. The very high `extract` time for `gpu_nms_fullres_cpu_group` in the single-process run indicates that GPU NMS timing is dominated by runtime interaction, synchronization, or transfer overhead rather than by the NMS operation alone.
-
-For that reason, the cached COCO benchmark is the preferred measurement for evaluating GPU postprocessing algorithm quality, while the single-process video benchmark remains useful for measuring the current CLI integration cost. In practice, this means that `gpu_nms_fullres_cpu_group` is the best algorithmic candidate, but deployment must still solve the MIGraphX + PyTorch ROCm runtime interaction if this path is used in a single live video process.
-
-### Updated Recommendation After GPU Tests
-
-Based on the current speed and accuracy results, the recommended postprocessing configurations are now:
-
-| Goal | Recommended Variant | Reason |
-|---|---|---|
-| Best accuracy-preserving GPU/hybrid postprocess | `gpu_nms_fullres_cpu_group` | Matches `standard` AP/AR and gives the lowest full-resolution accuracy-preserving postprocess time in the cached COCO benchmark: 10.99 ms. |
-| Best CPU-only accuracy-preserving postprocess | `k20_fast` / `optimized_batch_k20_fast` | Preserves AP/AR and avoids runtime interaction between MIGraphX and PyTorch ROCm. |
-| Fastest experimental path | `lowres_cpu_group` | Runs below 1 ms in cached postprocess evaluation, but AP/AR loss is too large for accuracy-critical use. |
-| Full GPU PAF research path | `gpu_fullres_paf` | Preserves AP/AR but is slower than GPU NMS hybrid, so it needs deeper grouping redesign before it is useful. |
-
-The final practical conclusion is that **GPU NMS + full-resolution CPU fast grouping is the best tested accuracy-preserving postprocessing method**. It should be used as the main research direction for GPU-accelerated postprocessing, while the production video runner should account for the ROCm runtime interaction between MIGraphX and PyTorch. If both runtimes cannot share the GPU efficiently in one process, the deployment design should use either a two-process cache/streaming architecture or keep `k20_fast` as the stable single-process fallback.
-
+---
 
 ## Installation and Setup
 
-1. Prepare COCO Dataset:\
-Download from cocodataset.org [https://cocodataset.org/#home\]
-Extract COCO 2017 into the <COCO_HOME> folder.
+1. Prepare COCO Dataset:
 
-2. Environment:
+Download COCO 2017 from [https://cocodataset.org/#home](https://cocodataset.org/#home) and extract it into a local COCO folder.
+
+2. Create the Python environment:
+
+```bash
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements/requirements.txt
 ```
-    python3 -m venv venv
-    source venv/bin/activate
-    pip install -r requirements/requirements.txt
-```
+
 If `pycocotools` fails to build with `ModuleNotFoundError: No module named 'Cython'`, rerun:
-```
-    pip install --no-build-isolation -r requirements/requirements.txt
-```
-If COCO evaluation later fails in `pycocotools` with NumPy 2.x, install a compatible NumPy first:
-```
-    pip install "numpy<2.0"
-    pip install -r requirements/requirements.txt
-```
-Then continue with:
-```
-    pip install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/rocm7.2
-    # Export ROCm Library Path (Crucial for MIGraphX/ROCm 7.2.0)
-    export PYTHONPATH=$PYTHONPATH:/opt/rocm-7.2.0/lib
-```
-3. Example validation script:
-```
-    python3 val.py \
-    --checkpoint-path models/checkpoint_iter_370000.pth \
-    --labels coco/annotations/person_keypoints_val2017.json \
-    --images-folder coco/val2017 \
-    --num-refinement-stages 1 \
-    --quantization fp32
+
+```bash
+pip install --no-build-isolation -r requirements/requirements.txt
 ```
 
-## Citations and References
+If COCO evaluation fails with NumPy 2.x, install a compatible NumPy first:
+
+```bash
+pip install "numpy<2.0"
+pip install -r requirements/requirements.txt
+```
+
+Then install PyTorch ROCm and expose ROCm/MIGraphX libraries:
+
+```bash
+pip install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/rocm7.2
+export PYTHONPATH=$PYTHONPATH:/opt/rocm-7.2.0/lib
+```
+
+---
+
+## Example Commands
+
+Run the single-process E2E video benchmark:
+
+```bash
+python benchmark_singleprocess_e2e_power.py \
+  --video migraphx_postprocess_deliverable/cctv_1280x720_24fps_original.mp4 \
+  --model migraphx_postprocess_deliverable/pose_model1_fp16_ref1.mxr \
+  --migraphx-nms-mxr migraphx_postprocess_deliverable/models/heatmap_nms_head.mxr \
+  --variants standard_cpu optimized_batch_k20_findnonzero_v1_cpu gpu-fullres-nms-cpu-group full-gpu migraphx-nms \
+  --frames 100 \
+  --warmup 5 \
+  --torch-device cuda
+```
+
+Run COCO postprocess accuracy benchmark:
+
+```bash
+python benchmark_postprocess_accuracy.py \
+  --images migraphx_postprocess_deliverable/coco/val2017 \
+  --annotations migraphx_postprocess_deliverable/coco/annotations/person_keypoints_val2017.json \
+  --model migraphx_postprocess_deliverable/pose_model1_fp16_ref1.mxr \
+  --migraphx-nms-cache-dir migraphx_postprocess_deliverable/models/nms_fullres_cache \
+  --variants standard optimized_batch_k20_findnonzero_v1 gpu-nms migraphx-nms migraphx-nms-k20 \
+  --max-images 1000 \
+  --warmup-images 5
+```
+
+Compile full-resolution MIGraphX NMS heads for COCO shapes:
+
+```bash
+python tools/compile_coco_nms_heads.py \
+  --annotations migraphx_postprocess_deliverable/coco/annotations/person_keypoints_val2017.json \
+  --limit 1000 \
+  --output-dir migraphx_postprocess_deliverable/models/nms_fullres_cache \
+  --channels 19 \
+  --threshold 0.1
+```
+
+---
+
+## References
 
 This project is based on:
 
-    Real-time 2D Multi-Person Pose Estimation on CPU: Lightweight OpenPose
-    Daniil Osokin, 2018. arXiv:1811.12004
+```text
+Real-time 2D Multi-Person Pose Estimation on CPU: Lightweight OpenPose
+Daniil Osokin, 2018. arXiv:1811.12004
+```
 
-Original Project: osokin/lightweight-human-pose-estimation.pytorch
+Original project:
+
+```text
+osokin/lightweight-human-pose-estimation.pytorch
+```
