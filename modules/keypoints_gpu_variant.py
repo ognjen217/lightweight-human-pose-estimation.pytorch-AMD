@@ -1134,3 +1134,125 @@ def group_keypoints_numba(
     pose_entries = np.asarray(filtered_entries, dtype=np.float32)
 
     return pose_entries, all_keypoints
+
+def assemble_pose_entries_from_connections(
+    all_keypoints_by_type,
+    connections_by_part,
+    pose_entry_size=20,
+):
+    """
+    CPU pose-entry assembly from precomputed limb connections.
+
+    This helper is intended for hybrid GPU/CPU post-processing experiments:
+    NMS and PAF affinity scoring can run on a GPU, while the small greedy
+    bipartite selection and final OpenPose-style pose assembly stay on CPU.
+
+    Parameters
+    ----------
+    all_keypoints_by_type : list[list[tuple]]
+        Per-keypoint-type list of (x, y, score, global_id).
+    connections_by_part : list[list[tuple]]
+        For every limb/body-part, a list of (global_kpt_a_id,
+        global_kpt_b_id, affinity_score).
+    pose_entry_size : int
+        OpenPose pose entry length. Default 20: 18 keypoints + score + count.
+    """
+    import numpy as np
+
+    pose_entries = []
+
+    non_empty_keypoints = [
+        np.asarray(keypoints, dtype=np.float32)
+        for keypoints in all_keypoints_by_type
+        if len(keypoints) > 0
+    ]
+
+    if non_empty_keypoints:
+        all_keypoints = np.concatenate(non_empty_keypoints, axis=0)
+    else:
+        return np.empty((0, pose_entry_size), dtype=np.float32), np.empty((0, 4), dtype=np.float32)
+
+    for part_id, connections in enumerate(connections_by_part):
+        if len(connections) == 0:
+            continue
+
+        if part_id == 0:
+            pose_entries = [
+                np.ones(pose_entry_size, dtype=np.float32) * -1
+                for _ in range(len(connections))
+            ]
+
+            for i, connection in enumerate(connections):
+                kpt_a_global_id = int(connection[0])
+                kpt_b_global_id = int(connection[1])
+                score = float(connection[2])
+
+                pose_entries[i][BODY_PARTS_KPT_IDS[0][0]] = kpt_a_global_id
+                pose_entries[i][BODY_PARTS_KPT_IDS[0][1]] = kpt_b_global_id
+                pose_entries[i][-1] = 2
+                pose_entries[i][-2] = (
+                    np.sum(all_keypoints[[kpt_a_global_id, kpt_b_global_id], 2])
+                    + score
+                )
+
+        elif part_id == 17 or part_id == 18:
+            kpt_a_id = BODY_PARTS_KPT_IDS[part_id][0]
+            kpt_b_id = BODY_PARTS_KPT_IDS[part_id][1]
+
+            for connection in connections:
+                kpt_a_global_id = int(connection[0])
+                kpt_b_global_id = int(connection[1])
+
+                for pose_entry in pose_entries:
+                    if (
+                        pose_entry[kpt_a_id] == kpt_a_global_id
+                        and pose_entry[kpt_b_id] == -1
+                    ):
+                        pose_entry[kpt_b_id] = kpt_b_global_id
+
+                    elif (
+                        pose_entry[kpt_b_id] == kpt_b_global_id
+                        and pose_entry[kpt_a_id] == -1
+                    ):
+                        pose_entry[kpt_a_id] = kpt_a_global_id
+
+        else:
+            kpt_a_id = BODY_PARTS_KPT_IDS[part_id][0]
+            kpt_b_id = BODY_PARTS_KPT_IDS[part_id][1]
+
+            for connection in connections:
+                kpt_a_global_id = int(connection[0])
+                kpt_b_global_id = int(connection[1])
+                score = float(connection[2])
+
+                num_attached = 0
+
+                for pose_entry in pose_entries:
+                    if pose_entry[kpt_a_id] == kpt_a_global_id:
+                        pose_entry[kpt_b_id] = kpt_b_global_id
+                        pose_entry[-1] += 1
+                        pose_entry[-2] += all_keypoints[kpt_b_global_id, 2] + score
+                        num_attached += 1
+
+                if num_attached == 0:
+                    pose_entry = np.ones(pose_entry_size, dtype=np.float32) * -1
+                    pose_entry[kpt_a_id] = kpt_a_global_id
+                    pose_entry[kpt_b_id] = kpt_b_global_id
+                    pose_entry[-1] = 2
+                    pose_entry[-2] = (
+                        np.sum(all_keypoints[[kpt_a_global_id, kpt_b_global_id], 2])
+                        + score
+                    )
+                    pose_entries.append(pose_entry)
+
+    filtered_entries = []
+
+    for pose_entry in pose_entries:
+        if pose_entry[-1] < 3:
+            continue
+        if pose_entry[-2] / pose_entry[-1] < 0.2:
+            continue
+        filtered_entries.append(pose_entry)
+
+    pose_entries = np.asarray(filtered_entries, dtype=np.float32)
+    return pose_entries, all_keypoints
