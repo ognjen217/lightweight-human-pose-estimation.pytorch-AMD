@@ -409,7 +409,7 @@ def run_benchmarked_session(video_path, model_path):
     fourcc = cv2.VideoWriter_fourcc(*'mp4v') # type: ignore
 
     out = cv2.VideoWriter(
-        'output_pose_benchmarked_2_optimized.mp4',
+        'output_pose_benchmarked_orignal_gpu_nms.mp4',
         fourcc,
         fps,
         (width, height)
@@ -551,4 +551,4 @@ def run_benchmarked_session(video_path, model_path):
 
 if __name__ == "__main__":
     # Ensure this matches your ACTUAL file name from your 'ls' command
-    run_benchmarked_session("cctv_1280x720_24fps_2.mp4", "pose_model1_fp16_ref1.mxr")
+    run_benchmarked_session("cctv_1280x720_24fps_original.mp4", "pose_model1_fp16_ref1.mxr")
