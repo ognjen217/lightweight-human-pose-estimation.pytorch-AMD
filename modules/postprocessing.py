@@ -30,6 +30,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -48,6 +49,7 @@ from modules.keypoints import (
     connections_nms,
     extract_keypoints,
     extract_keypoints_batch,
+    extract_keypoints_from_peak_mask,
     group_keypoints,
     group_keypoints_fast,
 )
@@ -77,6 +79,9 @@ class PostprocessConfig:
     torch_device: str = "auto"  # auto | cuda | cpu
     require_gpu: bool = False
     force_cv2_batch_extractor: bool = True
+    migraphx_nms_mxr: Optional[str] = None
+    migraphx_nms_cache_dir: Optional[str] = None
+    migraphx_nms_input_name: str = "heatmaps"
     debug: bool = False
     extra: Dict[str, Any] = field(default_factory=dict)
 
@@ -132,6 +137,18 @@ VARIANT_INFOS: Tuple[VariantInfo, ...] = (
         description="Low-res batched K=20 extraction + group_keypoints_fast, then scale keypoints.",
         accuracy_note="Fast approximation; validate AP/AR before using for production accuracy.",
         aliases=("lowres-cpu-group", "cpu-lowres", "fast_cpu_group"),
+    ),
+    VariantInfo(
+        canonical="migraphx_nms",
+        description="Full-res resize + compiled MIGraphX dense heatmap NMS mask + CPU mask extraction + group_keypoints_fast.",
+        accuracy_note="Experimental path; AP should match full-res NMS semantics, but CPU mask-to-keypoint extraction is currently the bottleneck.",
+        aliases=("migraphx-nms", "mx-nms", "mx_nms", "migraphx_nms_fullres"),
+    ),
+    VariantInfo(
+        canonical="migraphx_nms_k20",
+        description="Same as migraphx_nms, but keeps only top K candidates per keypoint type after mask extraction.",
+        accuracy_note="K=20-compatible MIGraphX NMS path for comparison against optimized K20 CPU/GPU variants.",
+        aliases=("migraphx-nms-k20", "mx-nms-k20", "mx_nms_k20"),
     ),
     VariantInfo(
         canonical="gpu_nms_fullres_cpu_group",
@@ -267,6 +284,8 @@ def empty_timings() -> TimingDict:
         "resize_heatmaps": 0.0,
         "resize_pafs": 0.0,
         "extract_keypoints": 0.0,
+        "mx_nms": 0.0,
+        "extract_from_mask": 0.0,
         "group_keypoints": 0.0,
         "group_total": 0.0,
         "group_prepare": 0.0,
@@ -715,6 +734,80 @@ def score_paf_connections_gpu(
     return connections_by_part, stats
 
 
+
+_MIGRAPHX_NMS_CACHE: Dict[Tuple[str, str], Any] = {}
+
+
+def _resolve_migraphx_nms_path(original_hw: Tuple[int, int], config: PostprocessConfig) -> str:
+    """Return the MXR path for the full-resolution NMS head for this image/frame size."""
+    h, w = int(original_hw[0]), int(original_hw[1])
+
+    if config.migraphx_nms_cache_dir:
+        path = Path(config.migraphx_nms_cache_dir) / f"heatmap_nms_head_{h}x{w}.mxr"
+        if not path.exists():
+            raise FileNotFoundError(
+                "Missing MIGraphX NMS cache file for current full-resolution shape.\n"
+                f"  shape:    {h}x{w}\n"
+                f"  expected: {path}\n"
+                "Generate the cache first with modules/migraphx_compiler.py."
+            )
+        return str(path)
+
+    if not config.migraphx_nms_mxr:
+        raise ValueError(
+            "MIGraphX NMS mode requires PostprocessConfig.migraphx_nms_mxr "
+            "or PostprocessConfig.migraphx_nms_cache_dir."
+        )
+
+    path = Path(config.migraphx_nms_mxr)
+    if not path.exists():
+        raise FileNotFoundError(f"MIGraphX NMS .mxr not found: {path}")
+    return str(path)
+
+
+def _get_migraphx_nms_head(mxr_path: str, input_name: str):
+    """Lazy-load and cache MIGraphX NMS programs by MXR path/input name."""
+    key = (str(mxr_path), str(input_name))
+    if key not in _MIGRAPHX_NMS_CACHE:
+        from modules.migraphx_nms import MIGraphXNMSHead
+        _MIGRAPHX_NMS_CACHE[key] = MIGraphXNMSHead(str(mxr_path), input_name=input_name)
+    return _MIGRAPHX_NMS_CACHE[key]
+
+
+def _postprocess_migraphx_nms(
+    heatmaps: np.ndarray,
+    pafs: np.ndarray,
+    original_hw: Tuple[int, int],
+    config: PostprocessConfig,
+    timings: TimingDict,
+    *,
+    limit_k20: bool,
+) -> PostprocessOutput:
+    """Full-res MIGraphX NMS followed by CPU mask extraction and fast grouping."""
+    heatmaps_full, pafs_full = resize_fullres(heatmaps, pafs, original_hw, timings)
+
+    mxr_path = _resolve_migraphx_nms_path(original_hw, config)
+    mx_head = _get_migraphx_nms_head(mxr_path, config.migraphx_nms_input_name)
+
+    heatmaps_nchw = np.moveaxis(np.ascontiguousarray(heatmaps_full, dtype=np.float32), -1, 0)[np.newaxis, ...]
+    with Timer() as t:
+        peak_mask = mx_head.run(heatmaps_nchw)
+    timings["mx_nms"] = t.ms
+
+    with Timer() as t:
+        all_kpts, _ = extract_keypoints_from_peak_mask(
+            heatmaps_full,
+            peak_mask,
+            max_candidates_per_part=(config.max_keypoints_per_type if limit_k20 else None),
+            num_keypoint_types=18,
+        )
+    timings["extract_from_mask"] = t.ms
+    timings["extract_keypoints"] = t.ms
+
+    poses, kpts = _group_fast_timed(all_kpts, pafs_full, timings, config.points_per_limb)
+    return _as_output(poses, kpts, timings)
+
+
 def _postprocess_maps_impl(
     mode: str,
     heatmaps: np.ndarray,
@@ -782,6 +875,12 @@ def _postprocess_maps_impl(
         else:
             poses, kpts = _group_standard_timed(all_kpts, pafs_full, timings, config.points_per_limb)
         return _as_output(poses, kpts, timings)
+
+    if canonical == "migraphx_nms":
+        return _postprocess_migraphx_nms(heatmaps, pafs, original_hw, config, timings, limit_k20=False)
+
+    if canonical == "migraphx_nms_k20":
+        return _postprocess_migraphx_nms(heatmaps, pafs, original_hw, config, timings, limit_k20=True)
 
     if canonical == "gpu_nms_fullres_cpu_group":
         heatmaps_full, pafs_full = resize_fullres(heatmaps, pafs, original_hw, timings)

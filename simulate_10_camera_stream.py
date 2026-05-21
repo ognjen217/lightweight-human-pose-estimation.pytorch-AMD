@@ -203,6 +203,48 @@ def resolve_registry_mode(user_mode: str) -> Tuple[str, str, bool]:
     return canonical, canonical, canonical.startswith("gpu")
 
 
+def select_migraphx_nms_mxr_for_hw(
+    *,
+    original_hw: Tuple[int, int],
+    migraphx_nms_mxr: str = "",
+    migraphx_nms_cache_dir: str = "",
+) -> str:
+    """Resolve the compiled MIGraphX NMS head for a full-resolution frame.
+
+    Video streams have constant frame resolution, so normally one cached
+    heatmap_nms_head_<H>x<W>.mxr file is enough for the whole run.
+    """
+    if migraphx_nms_mxr:
+        return migraphx_nms_mxr
+
+    if not migraphx_nms_cache_dir:
+        return ""
+
+    h, w = int(original_hw[0]), int(original_hw[1])
+    return str(Path(migraphx_nms_cache_dir) / f"heatmap_nms_head_{h}x{w}.mxr")
+
+
+def compile_migraphx_nms_for_stream_if_requested(args, sources: Sequence[str]) -> None:
+    if not getattr(args, "compile_migraphx_nms", False):
+        return
+
+    cache_dir = getattr(args, "migraphx_nms_cache_dir", "") or "models/nms_fullres_cache"
+    video = sources[0] if sources else ""
+    if not video:
+        raise RuntimeError("Cannot compile MIGraphX NMS head: no input video source found.")
+
+    from modules.migraphx_compiler import compile_nms_cache_for_video
+
+    print(f"[MX-NMS] compiling stream NMS head from video: {video}", flush=True)
+    compile_nms_cache_for_video(
+        video=video,
+        output_dir=cache_dir,
+        force=bool(getattr(args, "force_compile_migraphx_nms", False)),
+        keep_onnx=bool(getattr(args, "keep_migraphx_nms_onnx", False)),
+        exhaustive_tune=bool(getattr(args, "exhaustive_tune_migraphx_nms", False)),
+    )
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -682,6 +724,8 @@ def postprocess_worker(
     gpu_compute_dtype: str,
     grid_q=None,
     render_output: bool = False,
+    migraphx_nms_mxr: str = "",
+    migraphx_nms_cache_dir: str = "",
 ) -> None:
     try:
         canonical, registry_mode, wants_torch = resolve_registry_mode(user_variant)
@@ -708,8 +752,18 @@ def postprocess_worker(
             nms_radius_lowres=nms_radius_lowres,
             torch_device=torch_device,
             require_gpu=bool(require_gpu and wants_torch and torch_device == "cuda"),
-            extra={"gpu_compute_dtype": gpu_compute_dtype, "nms_impl": nms_impl},
+            extra={
+                "gpu_compute_dtype": gpu_compute_dtype,
+                "nms_impl": nms_impl,
+                "migraphx_nms_mxr": migraphx_nms_mxr,
+                "migraphx_nms_cache_dir": migraphx_nms_cache_dir,
+            },
         )
+
+        # MIGraphX NMS postprocess resolver in modules.postprocessing expects
+        # these as direct config attributes, not only inside config.extra.
+        config.migraphx_nms_mxr = migraphx_nms_mxr
+        config.migraphx_nms_cache_dir = migraphx_nms_cache_dir
 
         print(
             f"[POST:{worker_id}] user_variant={canonical} registry_mode={registry_mode} "
@@ -731,6 +785,21 @@ def postprocess_worker(
             post_start = time.perf_counter()
             queue_wait_ms = (post_start - float(item.get("infer_done_ts", post_start))) * 1000.0
             queue_wait_times.append(queue_wait_ms)
+
+            if registry_mode in {"migraphx_nms", "migraphx_nms_k20"}:
+                selected_mxr = select_migraphx_nms_mxr_for_hw(
+                    original_hw=tuple(item["original_hw"]),
+                    migraphx_nms_mxr=migraphx_nms_mxr,
+                    migraphx_nms_cache_dir=migraphx_nms_cache_dir,
+                )
+                if not selected_mxr or not Path(selected_mxr).exists():
+                    raise FileNotFoundError(
+                        "Missing MIGraphX NMS .mxr for stream resolution. "
+                        f"original_hw={tuple(item['original_hw'])}, expected={selected_mxr}. "
+                        "Run: python -m modules.migraphx_compiler --video <video> "
+                        "--output-dir models/nms_fullres_cache"
+                    )
+                config.extra["migraphx_nms_mxr"] = selected_mxr
 
             out = postprocess_from_maps(
                 registry_mode,
@@ -995,6 +1064,8 @@ def inference_latest_worker(
     stride: int,
     shared_dtype: str,
     poll_sleep_s: float = 0.001,
+    migraphx_nms_mxr: str = "",
+    migraphx_nms_cache_dir: str = "",
 ) -> None:
     """Round-robin MIGraphX worker over newest-frame slots, one slot per camera.
 
@@ -1159,6 +1230,8 @@ def postprocess_latest_worker(
     grid_q=None,
     render_output: bool = False,
     poll_sleep_s: float = 0.001,
+    migraphx_nms_mxr: str = "",
+    migraphx_nms_cache_dir: str = "",
 ) -> None:
     """Round-robin postprocess worker over newest decoded-map slots, one slot per camera."""
     try:
@@ -1186,8 +1259,18 @@ def postprocess_latest_worker(
             nms_radius_lowres=nms_radius_lowres,
             torch_device=torch_device,
             require_gpu=bool(require_gpu and wants_torch and torch_device == "cuda"),
-            extra={"gpu_compute_dtype": gpu_compute_dtype, "nms_impl": nms_impl},
+            extra={
+                "gpu_compute_dtype": gpu_compute_dtype,
+                "nms_impl": nms_impl,
+                "migraphx_nms_mxr": migraphx_nms_mxr,
+                "migraphx_nms_cache_dir": migraphx_nms_cache_dir,
+            },
         )
+
+        # MIGraphX NMS postprocess resolver in modules.postprocessing expects
+        # these as direct config attributes, not only inside config.extra.
+        config.migraphx_nms_mxr = migraphx_nms_mxr
+        config.migraphx_nms_cache_dir = migraphx_nms_cache_dir
 
         print(
             f"[POST:{worker_id}] user_variant={canonical} registry_mode={registry_mode} "
@@ -1225,6 +1308,21 @@ def postprocess_latest_worker(
             post_start = time.perf_counter()
             queue_wait_ms = (post_start - float(item.get("infer_done_ts", post_start))) * 1000.0
             queue_wait_times.append(queue_wait_ms)
+
+            if registry_mode in {"migraphx_nms", "migraphx_nms_k20"}:
+                selected_mxr = select_migraphx_nms_mxr_for_hw(
+                    original_hw=tuple(item["original_hw"]),
+                    migraphx_nms_mxr=migraphx_nms_mxr,
+                    migraphx_nms_cache_dir=migraphx_nms_cache_dir,
+                )
+                if not selected_mxr or not Path(selected_mxr).exists():
+                    raise FileNotFoundError(
+                        "Missing MIGraphX NMS .mxr for stream resolution. "
+                        f"original_hw={tuple(item['original_hw'])}, expected={selected_mxr}. "
+                        "Run: python -m modules.migraphx_compiler --video <video> "
+                        "--output-dir models/nms_fullres_cache"
+                    )
+                config.extra["migraphx_nms_mxr"] = selected_mxr
 
             out = postprocess_from_maps(
                 registry_mode,
@@ -1438,6 +1536,7 @@ def run_queue(args) -> Dict[str, Any]:
 
     # Validate variant in the parent process without touching Torch CUDA.
     canonical, registry_mode, wants_torch = resolve_registry_mode(args.variant)
+    compile_migraphx_nms_for_stream_if_requested(args, sources)
 
     pre_q = ctx.Queue(maxsize=max(1, int(args.preprocess_queue_size)))
     post_q = ctx.Queue(maxsize=max(1, int(args.postprocess_queue_size)))
@@ -1558,6 +1657,8 @@ def run_queue(args) -> Dict[str, Any]:
                 gpu_compute_dtype=args.gpu_compute_dtype,
                 grid_q=grid_q,
                 render_output=bool(args.grid_video),
+                migraphx_nms_mxr=args.migraphx_nms_mxr,
+                migraphx_nms_cache_dir=args.migraphx_nms_cache_dir,
             ),
             name=f"postprocess_{worker_id}",
         )
@@ -1676,6 +1777,7 @@ def run_latest(args) -> Dict[str, Any]:
     sources = camera_sources(args.num_cameras, videos)
 
     canonical, registry_mode, wants_torch = resolve_registry_mode(args.variant)
+    compile_migraphx_nms_for_stream_if_requested(args, sources)
 
     pre_queues = [ctx.Queue(maxsize=1) for _ in range(args.num_cameras)]
     post_queues = [ctx.Queue(maxsize=1) for _ in range(args.num_cameras)]
@@ -1806,6 +1908,8 @@ def run_latest(args) -> Dict[str, Any]:
                 gpu_compute_dtype=args.gpu_compute_dtype,
                 grid_q=grid_q,
                 render_output=bool(args.grid_video),
+                migraphx_nms_mxr=args.migraphx_nms_mxr,
+                migraphx_nms_cache_dir=args.migraphx_nms_cache_dir,
             ),
             name=f"postprocess_latest_{worker_id}",
         )
@@ -1922,7 +2026,8 @@ def parse_args():
         default="gpu_nms_fullres_two_process",
         help=(
             "Postprocess variant. Examples: standard, optimized_batch_k20_fast, "
-            "lowres_cpu_group, gpu_nms_fullres_two_process, gpu_nms_lowres_two_process."
+            "lowres_cpu_group, gpu_nms_fullres_two_process, gpu_nms_lowres_two_process, "
+            "migraphx-nms, migraphx-nms-k20."
         ),
     )
     parser.add_argument("--videos", nargs="*", default=DEFAULT_VIDEO_CYCLE)
@@ -1961,6 +2066,24 @@ def parse_args():
     parser.add_argument("--nms-radius-lowres", type=int, default=1)
     parser.add_argument("--nms-impl", choices=["2d", "separable"], default="separable")
     parser.add_argument("--gpu-compute-dtype", choices=["float32", "float16"], default="float32")
+    parser.add_argument(
+        "--migraphx-nms-mxr",
+        default="",
+        help="Optional explicit compiled MIGraphX NMS .mxr path for migraphx-nms variants.",
+    )
+    parser.add_argument(
+        "--migraphx-nms-cache-dir",
+        default="models/nms_fullres_cache",
+        help="Directory containing heatmap_nms_head_<H>x<W>.mxr files.",
+    )
+    parser.add_argument(
+        "--compile-migraphx-nms",
+        action="store_true",
+        help="Compile the stream-resolution MIGraphX NMS head before starting the stream.",
+    )
+    parser.add_argument("--force-compile-migraphx-nms", action="store_true")
+    parser.add_argument("--keep-migraphx-nms-onnx", action="store_true")
+    parser.add_argument("--exhaustive-tune-migraphx-nms", action="store_true")
 
     parser.add_argument(
         "--grid-video",

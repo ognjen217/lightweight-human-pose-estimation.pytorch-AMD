@@ -123,6 +123,8 @@ def summarize_variant(name: str, rows: List[TimingDict], baseline_e2e_ms: Option
     hm_resize = [safe_get(r, "resize_heatmaps") for r in rows]
     paf_resize = [safe_get(r, "resize_pafs") for r in rows]
     extract = [safe_get(r, "extract_keypoints") for r in rows]
+    mx_nms = [safe_get(r, "mx_nms") for r in rows]
+    mask_extract = [safe_get(r, "extract_from_mask") for r in rows]
     group = [safe_get(r, "group_keypoints") for r in rows]
     post = [safe_get(r, "total_postprocess") for r in rows]
     e2e = [safe_get(r, "e2e") for r in rows]
@@ -146,6 +148,8 @@ def summarize_variant(name: str, rows: List[TimingDict], baseline_e2e_ms: Option
         "hm_resize_ms": mean(hm_resize),
         "paf_resize_ms": mean(paf_resize),
         "extract_ms": mean(extract),
+        "mx_nms_ms": mean(mx_nms),
+        "extract_from_mask_ms": mean(mask_extract),
         "group_ms": mean(group),
         "post_avg_ms": post_avg,
         "post_p50_ms": percentile(post, 50),
@@ -174,7 +178,7 @@ def print_table(summaries: List[Dict[str, Any]]) -> None:
     print("=" * 190)
     print(
         f"{'variant':<34} {'frames':>6} {'pre':>8} {'infer':>8} {'decode':>8} "
-        f"{'hm_res':>8} {'paf_res':>8} {'extract':>9} {'group':>9} "
+        f"{'hm_res':>8} {'paf_res':>8} {'mx_nms':>8} {'extract':>9} {'mask_ext':>9} {'group':>9} "
         f"{'post':>9} {'post_p95':>9} {'e2e':>9} {'e2e_p95':>9} "
         f"{'FPS':>8} {'speedup':>9} {'Δe2e%':>9}"
     )
@@ -184,7 +188,8 @@ def print_table(summaries: List[Dict[str, Any]]) -> None:
             f"{s['variant']:<34} {int(s['frames']):>6} "
             f"{s['preprocess_ms']:>8.2f} {s['inference_ms']:>8.2f} {s['decode_ms']:>8.2f} "
             f"{s['hm_resize_ms']:>8.2f} {s['paf_resize_ms']:>8.2f} "
-            f"{s['extract_ms']:>9.2f} {s['group_ms']:>9.2f} "
+            f"{s.get('mx_nms_ms', 0.0):>8.2f} {s['extract_ms']:>9.2f} "
+            f"{s.get('extract_from_mask_ms', 0.0):>9.2f} {s['group_ms']:>9.2f} "
             f"{s['post_avg_ms']:>9.2f} {s['post_p95_ms']:>9.2f} "
             f"{s['e2e_avg_ms']:>9.2f} {s['e2e_p95_ms']:>9.2f} "
             f"{s['e2e_fps']:>8.2f} {s['e2e_speedup_vs_standard']:>9.2f} "
@@ -205,7 +210,7 @@ def write_csv(path: str, rows: List[Dict[str, Any]]) -> None:
         "variant", "model", "model_path", "precision", "refinement_stages",
         "frames", "images",
         "preprocess_ms", "inference_ms", "decode_ms",
-        "hm_resize_ms", "paf_resize_ms", "extract_ms", "group_ms",
+        "hm_resize_ms", "paf_resize_ms", "mx_nms_ms", "extract_ms", "extract_from_mask_ms", "group_ms",
         "post_avg_ms", "post_p50_ms", "post_p95_ms", "post_fps",
         "e2e_avg_ms", "e2e_p95_ms", "e2e_fps",
         "e2e_speedup_vs_standard", "e2e_delta_pct_vs_standard",
@@ -270,6 +275,9 @@ def _run_single_process_speed(args, variants: Sequence[str]) -> List[Dict[str, A
         nms_radius_lowres=args.nms_radius_lowres,
         torch_device=args.torch_device,
         require_gpu=args.require_gpu,
+        migraphx_nms_mxr=args.migraphx_nms_mxr,
+        migraphx_nms_cache_dir=args.migraphx_nms_cache_dir,
+        extra={"gpu_compute_dtype": args.gpu_compute_dtype, "nms_impl": args.nms_impl},
     )
 
     engine = MIGraphXVideoEngine(
@@ -397,6 +405,29 @@ def validate_speed(args) -> List[Dict[str, Any]]:
     # Keep user order but remove duplicates after alias normalization.
     variants = list(dict.fromkeys(variants))
 
+    if any(v in {"migraphx_nms", "migraphx_nms_k20"} for v in variants):
+        if args.compile_migraphx_nms:
+            from modules.migraphx_compiler import compile_nms_cache_for_video
+
+            cache_dir = args.migraphx_nms_cache_dir or "models/nms_fullres_cache"
+            mxr_path = compile_nms_cache_for_video(
+                video_path=args.video,
+                output_dir=cache_dir,
+                threshold=args.threshold,
+                radius=args.nms_radius_fullres,
+                force=args.force_compile_migraphx_nms,
+                keep_onnx=args.keep_migraphx_nms_onnx,
+                exhaustive_tune=args.exhaustive_tune_migraphx_nms,
+            )
+            args.migraphx_nms_cache_dir = cache_dir
+            args.migraphx_nms_mxr = str(mxr_path)
+            print(f"MIGraphX NMS head ready: {mxr_path}")
+        elif not args.migraphx_nms_cache_dir and not args.migraphx_nms_mxr:
+            raise RuntimeError(
+                "migraphx_nms variants require --migraphx-nms-mxr or --migraphx-nms-cache-dir. "
+                "For video speed validation, you can pass --compile-migraphx-nms to build the one needed head from video resolution."
+            )
+
     single_process_variants = [v for v in variants if not is_two_process_mode(v)]
     two_process_variants = [v for v in variants if is_two_process_mode(v)]
 
@@ -459,6 +490,12 @@ def parse_args():
     parser.add_argument("--shared-dtype", choices=["float32", "float16"], default="float32")
     parser.add_argument("--gpu-compute-dtype", choices=["float32", "float16"], default="float32")
     parser.add_argument("--nms-impl", choices=["2d", "separable"], default="2d")
+    parser.add_argument("--migraphx-nms-mxr", default="", help="Static compiled MIGraphX NMS head .mxr for fixed-resolution video.")
+    parser.add_argument("--migraphx-nms-cache-dir", default="", help="Directory with heatmap_nms_head_<H>x<W>.mxr files.")
+    parser.add_argument("--compile-migraphx-nms", action="store_true", help="Compile the one video-resolution MIGraphX NMS head before running speed validation.")
+    parser.add_argument("--force-compile-migraphx-nms", action="store_true", help="Recompile MIGraphX NMS even if the MXR already exists.")
+    parser.add_argument("--keep-migraphx-nms-onnx", action="store_true", help="Keep temporary ONNX files generated for MIGraphX NMS compilation.")
+    parser.add_argument("--exhaustive-tune-migraphx-nms", action="store_true", help="Pass exhaustive_tune=True when compiling MIGraphX NMS.")
     return parser.parse_args()
 
 

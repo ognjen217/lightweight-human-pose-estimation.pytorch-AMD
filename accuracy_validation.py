@@ -99,6 +99,8 @@ class VariantMeter:
     preprocess_ms: List[float] = field(default_factory=list)
     inference_ms: List[float] = field(default_factory=list)
     decode_ms: List[float] = field(default_factory=list)
+    mx_nms_ms: List[float] = field(default_factory=list)
+    extract_from_mask_ms: List[float] = field(default_factory=list)
     post_ms: List[float] = field(default_factory=list)
     e2e_ms: List[float] = field(default_factory=list)
     power_w_samples: List[float] = field(default_factory=list)
@@ -109,6 +111,14 @@ class VariantMeter:
         self.decode_ms.append(float(decode))
         self.post_ms.append(float(post))
         self.e2e_ms.append(float(pre) + float(infer) + float(decode) + float(post))
+
+    def add_post_details(self, timings: Dict[str, Any]) -> None:
+        try:
+            self.mx_nms_ms.append(float(timings.get("mx_nms", 0.0) or 0.0))
+            self.extract_from_mask_ms.append(float(timings.get("extract_from_mask", 0.0) or 0.0))
+        except Exception:
+            self.mx_nms_ms.append(0.0)
+            self.extract_from_mask_ms.append(0.0)
 
     def add_power(self, power_w: float) -> None:
         try:
@@ -132,6 +142,8 @@ class VariantMeter:
             "preprocess_ms": mean(self.preprocess_ms),
             "inference_ms": mean(self.inference_ms),
             "decode_ms": mean(self.decode_ms),
+            "mx_nms_ms": mean(self.mx_nms_ms),
+            "extract_from_mask_ms": mean(self.extract_from_mask_ms),
             "post_avg_ms": post_avg,
             "post_p50_ms": percentile(self.post_ms, 50),
             "post_p95_ms": percentile(self.post_ms, 95),
@@ -425,7 +437,7 @@ def write_flat_csv(path: str, rows: List[Dict[str, Any]]) -> None:
         "variant", "model", "model_path", "precision", "refinement_stages",
         "frames", "images",
         "preprocess_ms", "inference_ms", "decode_ms",
-        "hm_resize_ms", "paf_resize_ms", "extract_ms", "group_ms",
+        "hm_resize_ms", "paf_resize_ms", "mx_nms_ms", "extract_ms", "extract_from_mask_ms", "group_ms",
         "post_avg_ms", "post_p50_ms", "post_p95_ms", "post_fps",
         "e2e_avg_ms", "e2e_p95_ms", "e2e_fps",
         "e2e_speedup_vs_standard", "e2e_delta_pct_vs_standard",
@@ -459,7 +471,7 @@ def print_summary_table(rows: List[Dict[str, Any]]) -> None:
     print(
         f"{'model':<30} {'variant':<32} {'img':>5} "
         f"{'AP':>6} {'AP50':>6} {'AP75':>6} {'AR':>6} "
-        f"{'pre':>8} {'infer':>8} {'dec':>7} {'post':>8} {'e2e':>8} "
+        f"{'pre':>8} {'infer':>8} {'dec':>7} {'mx_nms':>8} {'mask':>8} {'post':>8} {'e2e':>8} "
         f"{'FPS':>8} {'W':>8} {'FPS/W':>8} {'J/frame':>9}"
     )
     print("-" * 170)
@@ -469,7 +481,8 @@ def print_summary_table(rows: List[Dict[str, Any]]) -> None:
             f"{fmt_float(r.get('AP'), 3):>6} {fmt_float(r.get('AP50'), 3):>6} "
             f"{fmt_float(r.get('AP75'), 3):>6} {fmt_float(r.get('AR'), 3):>6} "
             f"{fmt_float(r.get('preprocess_ms'), 2):>8} {fmt_float(r.get('inference_ms'), 2):>8} "
-            f"{fmt_float(r.get('decode_ms'), 2):>7} {fmt_float(r.get('post_avg_ms'), 2):>8} "
+            f"{fmt_float(r.get('decode_ms'), 2):>7} {fmt_float(r.get('mx_nms_ms'), 2):>8} "
+            f"{fmt_float(r.get('extract_from_mask_ms'), 2):>8} {fmt_float(r.get('post_avg_ms'), 2):>8} "
             f"{fmt_float(r.get('e2e_avg_ms'), 2):>8} {fmt_float(r.get('e2e_fps'), 2):>8} "
             f"{fmt_float(r.get('avg_gpu_power_w'), 2):>8} {fmt_float(r.get('fps_per_watt'), 3):>8} "
             f"{fmt_float(r.get('energy_j_per_frame'), 4):>9}"
@@ -497,6 +510,30 @@ def validate_accuracy(args) -> List[Dict[str, Any]]:
 
     _assert_accuracy_variants_are_migraphx_safe(variants)
 
+    if any(v in {"migraphx_nms", "migraphx_nms_k20"} for v in variants):
+        if args.compile_migraphx_nms_cache:
+            from modules.migraphx_compiler import compile_nms_cache_for_coco
+
+            cache_dir = args.migraphx_nms_cache_dir or "models/nms_fullres_cache"
+            compile_nms_cache_for_coco(
+                annotations=args.labels,
+                output_dir=cache_dir,
+                max_images=args.max_images,
+                skip_images=args.skip_images,
+                threshold=args.threshold,
+                radius=args.nms_radius_fullres,
+                force=args.force_compile_migraphx_nms,
+                keep_onnx=args.keep_migraphx_nms_onnx,
+                exhaustive_tune=args.exhaustive_tune_migraphx_nms,
+            )
+            args.migraphx_nms_cache_dir = cache_dir
+            print(f"MIGraphX NMS cache ready: {cache_dir}")
+        elif not args.migraphx_nms_cache_dir and not args.migraphx_nms_mxr:
+            raise RuntimeError(
+                "migraphx_nms variants require --migraphx-nms-cache-dir or --migraphx-nms-mxr. "
+                "For COCO accuracy validation, use --compile-migraphx-nms-cache so all required per-resolution heads are built before AP/AR evaluation."
+            )
+
     config = PostprocessConfig(
         max_keypoints_per_type=args.max_keypoints,
         threshold=args.threshold,
@@ -504,6 +541,8 @@ def validate_accuracy(args) -> List[Dict[str, Any]]:
         nms_radius_lowres=args.nms_radius_lowres,
         torch_device=args.torch_device,
         require_gpu=args.require_gpu,
+        migraphx_nms_mxr=args.migraphx_nms_mxr,
+        migraphx_nms_cache_dir=args.migraphx_nms_cache_dir,
         extra={"gpu_compute_dtype": args.gpu_compute_dtype, "nms_impl": args.nms_impl},
     )
 
@@ -583,6 +622,7 @@ def validate_accuracy(args) -> List[Dict[str, Any]]:
                         decode=infer_timings["decode_ms"],
                         post=out.timings.get("total_postprocess", 0.0),
                     )
+                    meter.add_post_details(out.timings)
                     meter.detections.extend(build_coco_detections(image_id, out.pose_entries, out.all_keypoints))
 
                     if args.power_every > 0 and processed % args.power_every == 0:
@@ -606,6 +646,7 @@ def validate_accuracy(args) -> List[Dict[str, Any]]:
                         decode=infer_timings["decode_ms"],
                         post=post_timing,
                     )
+                    meter.add_post_details(result.get("timings", {}))
                     meter.detections.extend(
                         build_coco_detections(
                             image_id,
@@ -691,6 +732,12 @@ def parse_args():
     parser.add_argument("--nms-radius-lowres", type=int, default=1)
     parser.add_argument("--nms-impl", choices=["2d", "separable"], default="separable")
     parser.add_argument("--gpu-compute-dtype", choices=["float32", "float16"], default="float32")
+    parser.add_argument("--migraphx-nms-mxr", default="", help="Static compiled MIGraphX NMS .mxr. Mainly useful for fixed-size subsets.")
+    parser.add_argument("--migraphx-nms-cache-dir", default="", help="Directory with per-resolution heatmap_nms_head_<H>x<W>.mxr files.")
+    parser.add_argument("--compile-migraphx-nms-cache", action="store_true", help="Compile all required COCO per-resolution MIGraphX NMS heads before evaluation.")
+    parser.add_argument("--force-compile-migraphx-nms", action="store_true", help="Recompile MIGraphX NMS heads even if MXR files already exist.")
+    parser.add_argument("--keep-migraphx-nms-onnx", action="store_true", help="Keep ONNX files generated while compiling MIGraphX NMS heads.")
+    parser.add_argument("--exhaustive-tune-migraphx-nms", action="store_true", help="Pass exhaustive_tune=True when compiling MIGraphX NMS heads.")
     parser.add_argument("--two-process-queue-size", type=int, default=2)
     parser.add_argument("--two-process-timeout", type=float, default=120.0)
     args = parser.parse_args()

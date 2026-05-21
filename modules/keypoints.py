@@ -1134,3 +1134,105 @@ def group_keypoints_numba(
     pose_entries = np.asarray(filtered_entries, dtype=np.float32)
 
     return pose_entries, all_keypoints
+
+def extract_keypoints_from_peak_mask(
+    heatmaps,
+    peak_mask,
+    max_candidates_per_part=None,
+    num_keypoint_types=18,
+):
+    """Convert a dense peak mask into OpenPose-style keypoint candidates.
+
+    Parameters
+    ----------
+    heatmaps : np.ndarray
+        Heatmaps in either HWC or NCHW/NHWC batch format. Scores are read from
+        this tensor.
+    peak_mask : np.ndarray
+        Dense peak mask matching heatmaps spatially. Non-zero values are treated
+        as selected local maxima.
+    max_candidates_per_part : Optional[int]
+        If set, keep only the highest-scoring K candidates per keypoint type.
+        Use 20 for compatibility with the existing optimized extraction path.
+    num_keypoint_types : int
+        Number of human keypoint channels to convert. Defaults to 18, leaving
+        the background channel unused when C=19.
+
+    Returns
+    -------
+    tuple[list[list[tuple]], int]
+        Same candidate format as extract_keypoints_batch_cv2(): per-type lists
+        of (x, y, score, global_id), plus total candidate count.
+    """
+    import numpy as np
+
+    heatmaps = np.asarray(heatmaps, dtype=np.float32)
+    peak_mask = np.asarray(peak_mask)
+
+    # Normalize common layouts to H x W x C.
+    if heatmaps.ndim == 4:
+        if heatmaps.shape[0] != 1:
+            raise ValueError(f"Expected batch size 1 for heatmaps, got {heatmaps.shape}")
+        # NCHW -> HWC when channel dimension is second.
+        if heatmaps.shape[1] <= 64:
+            heatmaps = np.moveaxis(heatmaps[0], 0, -1)
+        else:  # NHWC
+            heatmaps = heatmaps[0]
+    elif heatmaps.ndim != 3:
+        raise ValueError(f"Expected heatmaps as HWC or batched 4D tensor, got {heatmaps.shape}")
+
+    if peak_mask.ndim == 4:
+        if peak_mask.shape[0] != 1:
+            raise ValueError(f"Expected batch size 1 for peak_mask, got {peak_mask.shape}")
+        if peak_mask.shape[1] <= 64:
+            peak_mask = np.moveaxis(peak_mask[0], 0, -1)
+        else:
+            peak_mask = peak_mask[0]
+    elif peak_mask.ndim != 3:
+        raise ValueError(f"Expected peak_mask as HWC or batched 4D tensor, got {peak_mask.shape}")
+
+    if heatmaps.shape[:2] != peak_mask.shape[:2]:
+        raise ValueError(
+            f"Spatial shape mismatch: heatmaps {heatmaps.shape}, peak_mask {peak_mask.shape}"
+        )
+
+    channels = min(int(num_keypoint_types), heatmaps.shape[2], peak_mask.shape[2])
+    all_keypoints_by_type = []
+    total_keypoints_num = 0
+
+    for kpt_idx in range(channels):
+        ys, xs = np.nonzero(peak_mask[:, :, kpt_idx] > 0)
+
+        if len(xs) == 0:
+            all_keypoints_by_type.append([])
+            continue
+
+        scores = heatmaps[ys, xs, kpt_idx]
+        order = np.argsort(scores)[::-1]
+
+        if max_candidates_per_part is not None and len(order) > max_candidates_per_part:
+            order = order[:max_candidates_per_part]
+
+        xs = xs[order]
+        ys = ys[order]
+        scores = scores[order]
+
+        keypoints = []
+        for i in range(len(xs)):
+            keypoints.append(
+                (
+                    int(xs[i]),
+                    int(ys[i]),
+                    float(scores[i]),
+                    total_keypoints_num + i,
+                )
+            )
+
+        all_keypoints_by_type.append(keypoints)
+        total_keypoints_num += len(keypoints)
+
+    # Preserve the expected 18-list structure even if a smaller tensor is tested.
+    while len(all_keypoints_by_type) < int(num_keypoint_types):
+        all_keypoints_by_type.append([])
+
+    return all_keypoints_by_type, total_keypoints_num
