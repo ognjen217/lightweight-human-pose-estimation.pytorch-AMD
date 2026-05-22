@@ -505,11 +505,7 @@ final_report/
   report_migraphx_compiled_nms_experiments.md
   report_final_accuracy_and_speed_validation.md
   final_optimization_report.md
-```
 
-The `report_*.md` files are intended for JIRA attachments or detailed task documentation. The final summary report should use the validated numbers from the merged accuracy and speed files.
-
----
 
 ## Practical decision guide
 
