@@ -8,3 +8,23 @@ __pycache__/
 *.pyc
 *.nbc
 *.nbi
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Numba cache
+*.nbc
+*.nbi
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Numba cache
+*.nbc
+*.nbi

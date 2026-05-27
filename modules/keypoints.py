@@ -8,18 +8,37 @@ BODY_PARTS_KPT_IDS = [[1, 2], [1, 5], [2, 3], [3, 4], [5, 6], [6, 7], [1, 8], [8
 BODY_PARTS_PAF_IDS = ([12, 13], [20, 21], [14, 15], [16, 17], [22, 23], [24, 25], [0, 1], [2, 3], [4, 5],
                       [6, 7], [8, 9], [10, 11], [28, 29], [30, 31], [34, 35], [32, 33], [36, 37], [18, 19], [26, 27])
 
+_NMS_KERNEL_CACHE = {}
+
+
+def _nms_kernel(radius):
+    kernel = _NMS_KERNEL_CACHE.get(radius)
+    if kernel is None:
+        size = 2 * int(radius) + 1
+        kernel = np.ones((size, size), dtype=np.uint8)
+        _NMS_KERNEL_CACHE[radius] = kernel
+    return kernel
+
+
+def _topk_descending_order(scores, max_items):
+    n = int(scores.shape[0])
+    if max_items is None or n <= int(max_items):
+        return np.argsort(scores)[::-1]
+
+    k = int(max_items)
+    top = np.argpartition(scores, n - k)[n - k:]
+    return top[np.argsort(scores[top])[::-1]]
+
 
 def extract_keypoints_batch(heatmaps, max_keypoints_per_type=20):
     import cv2
-    import numpy as np
 
     threshold = 0.1
     nms_radius = 6
 
     h, w, num_kpts = heatmaps.shape
 
-    kernel_size = 2 * nms_radius + 1
-    kernel = np.ones((kernel_size, kernel_size), dtype=np.uint8)
+    kernel = _nms_kernel(nms_radius)
 
     all_keypoints_by_type = []
     total_keypoints_num = 0
@@ -38,10 +57,7 @@ def extract_keypoints_batch(heatmaps, max_keypoints_per_type=20):
 
         scores = heatmaps[ys, xs, kpt_idx]
 
-        order = np.argsort(scores)[::-1]
-
-        if len(order) > max_keypoints_per_type:
-            order = order[:max_keypoints_per_type]
+        order = _topk_descending_order(scores, max_keypoints_per_type)
 
         xs = xs[order]
         ys = ys[order]
@@ -67,7 +83,6 @@ def extract_keypoints_batch(heatmaps, max_keypoints_per_type=20):
 
 def extract_keypoints(heatmap, all_keypoints, total_keypoint_num):
     import cv2
-    import numpy as np
 
     threshold = 0.1
     nms_radius = 6
@@ -75,8 +90,7 @@ def extract_keypoints(heatmap, all_keypoints, total_keypoint_num):
 
     h, w = heatmap.shape
 
-    kernel_size = 2 * nms_radius + 1
-    kernel = np.ones((kernel_size, kernel_size), dtype=np.uint8)
+    kernel = _nms_kernel(nms_radius)
 
     heatmap_dilated = cv2.dilate(heatmap, kernel)
 
@@ -90,10 +104,7 @@ def extract_keypoints(heatmap, all_keypoints, total_keypoint_num):
 
     scores = heatmap[ys, xs]
 
-    order = np.argsort(scores)[::-1]
-
-    if len(order) > max_keypoints_per_type:
-        order = order[:max_keypoints_per_type]
+    order = _topk_descending_order(scores, max_keypoints_per_type)
 
     xs = xs[order]
     ys = ys[order]
@@ -132,29 +143,43 @@ def connections_nms(a_idx, b_idx, affinity_scores):
     idx = np.asarray(idx, dtype=np.int32)
     return a_idx[idx], b_idx[idx], affinity_scores[idx]
 
-def extract_keypoints_batch_cv2(heatmaps, max_keypoints_per_type=20):
+def extract_keypoints_batch_cv2(heatmaps, max_keypoints_per_type=20, return_timing=False):
     import cv2
-    import numpy as np
+    import time
 
     threshold = 0.1
     nms_radius = 6
 
     h, w, num_kpts = heatmaps.shape
 
-    kernel_size = 2 * nms_radius + 1
-    kernel = np.ones((kernel_size, kernel_size), dtype=np.uint8)
+    kernel = _nms_kernel(nms_radius)
+
+    timings = {
+        "extract_cv2_dilate": 0.0,
+        "extract_cv2_peak_mask": 0.0,
+        "extract_cv2_find_nonzero": 0.0,
+        "extract_cv2_score_gather": 0.0,
+        "extract_cv2_topk": 0.0,
+        "extract_cv2_build": 0.0,
+    }
+    t_total = time.perf_counter()
 
     all_keypoints_by_type = []
     total_keypoints_num = 0
 
+    t0 = time.perf_counter()
     heatmaps_dilated = cv2.dilate(heatmaps, kernel)
+    timings["extract_cv2_dilate"] = (time.perf_counter() - t0) * 1000.0
 
+    t0 = time.perf_counter()
     peaks_binary = (heatmaps == heatmaps_dilated) & (heatmaps > threshold)
+    timings["extract_cv2_peak_mask"] = (time.perf_counter() - t0) * 1000.0
 
     for kpt_idx in range(num_kpts):
+        t0 = time.perf_counter()
         mask = peaks_binary[:, :, kpt_idx].astype(np.uint8)
-
         pts = cv2.findNonZero(mask)
+        timings["extract_cv2_find_nonzero"] += (time.perf_counter() - t0) * 1000.0
 
         if pts is None:
             all_keypoints_by_type.append([])
@@ -165,17 +190,19 @@ def extract_keypoints_batch_cv2(heatmaps, max_keypoints_per_type=20):
         xs = pts[:, 0]
         ys = pts[:, 1]
 
+        t0 = time.perf_counter()
         scores = heatmaps[ys, xs, kpt_idx]
+        timings["extract_cv2_score_gather"] += (time.perf_counter() - t0) * 1000.0
 
-        order = np.argsort(scores)[::-1]
-
-        if len(order) > max_keypoints_per_type:
-            order = order[:max_keypoints_per_type]
+        t0 = time.perf_counter()
+        order = _topk_descending_order(scores, max_keypoints_per_type)
+        timings["extract_cv2_topk"] += (time.perf_counter() - t0) * 1000.0
 
         xs = xs[order]
         ys = ys[order]
         scores = scores[order]
 
+        t0 = time.perf_counter()
         keypoints_with_score_and_id = []
 
         for i in range(len(xs)):
@@ -187,10 +214,14 @@ def extract_keypoints_batch_cv2(heatmaps, max_keypoints_per_type=20):
                     total_keypoints_num + i
                 )
             )
+        timings["extract_cv2_build"] += (time.perf_counter() - t0) * 1000.0
 
         all_keypoints_by_type.append(keypoints_with_score_and_id)
         total_keypoints_num += len(keypoints_with_score_and_id)
 
+    if return_timing:
+        timings["extract_cv2_total"] = (time.perf_counter() - t_total) * 1000.0
+        return all_keypoints_by_type, total_keypoints_num, timings
     return all_keypoints_by_type, total_keypoints_num
 
 def group_keypoints(
@@ -1208,10 +1239,7 @@ def extract_keypoints_from_peak_mask(
             continue
 
         scores = heatmaps[ys, xs, kpt_idx]
-        order = np.argsort(scores)[::-1]
-
-        if max_candidates_per_part is not None and len(order) > max_candidates_per_part:
-            order = order[:max_candidates_per_part]
+        order = _topk_descending_order(scores, max_candidates_per_part)
 
         xs = xs[order]
         ys = ys[order]
@@ -1236,3 +1264,227 @@ def extract_keypoints_from_peak_mask(
         all_keypoints_by_type.append([])
 
     return all_keypoints_by_type, total_keypoints_num
+
+
+def _to_numpy(x):
+    """
+    Convert torch.Tensor / numpy array to numpy array without changing values.
+    Keeps existing code independent from torch import.
+    """
+    import numpy as np
+
+    if hasattr(x, "detach"):
+        x = x.detach()
+    if hasattr(x, "cpu"):
+        x = x.cpu()
+    if hasattr(x, "numpy"):
+        x = x.numpy()
+
+    return np.asarray(x)
+
+
+def _ensure_hwc(x, expected_channels=None, name="tensor"):
+    """
+    Convert one sample to H x W x C format.
+
+    Supported input formats:
+      - C x H x W
+      - H x W x C
+
+    Returns:
+      - numpy array in H x W x C layout
+    """
+    import numpy as np
+
+    x = _to_numpy(x)
+
+    if x.ndim != 3:
+        raise ValueError(
+            f"{name} must be 3D for a single sample, got shape={x.shape}"
+        )
+
+    # Already H x W x C
+    if expected_channels is not None and x.shape[-1] == expected_channels:
+        return np.ascontiguousarray(x)
+
+    # C x H x W -> H x W x C
+    if expected_channels is not None and x.shape[0] == expected_channels:
+        return np.ascontiguousarray(np.transpose(x, (1, 2, 0)))
+
+    # Heuristic fallback:
+    # If first dimension is much smaller than spatial dims, assume C x H x W.
+    if x.shape[0] < x.shape[1] and x.shape[0] < x.shape[2]:
+        return np.ascontiguousarray(np.transpose(x, (1, 2, 0)))
+
+    return np.ascontiguousarray(x)
+
+
+def _ensure_bchw(x, expected_channels=None, name="tensor"):
+    """
+    Convert network output to B x C x H x W format.
+
+    Supported input formats:
+      - B x C x H x W
+      - B x H x W x C
+      - C x H x W
+      - H x W x C
+
+    Returns:
+      - numpy array in B x C x H x W layout
+    """
+    import numpy as np
+
+    x = _to_numpy(x)
+
+    if x.ndim == 3:
+        # Single sample, add batch dimension.
+        hwc = _ensure_hwc(x, expected_channels=expected_channels, name=name)
+        chw = np.transpose(hwc, (2, 0, 1))
+        return np.ascontiguousarray(chw[None, ...])
+
+    if x.ndim != 4:
+        raise ValueError(
+            f"{name} must be 3D or 4D, got shape={x.shape}"
+        )
+
+    # B x C x H x W
+    if expected_channels is not None and x.shape[1] == expected_channels:
+        return np.ascontiguousarray(x)
+
+    # B x H x W x C -> B x C x H x W
+    if expected_channels is not None and x.shape[-1] == expected_channels:
+        return np.ascontiguousarray(np.transpose(x, (0, 3, 1, 2)))
+
+    # Heuristic fallback:
+    # If dim 1 is channel-like, assume BCHW.
+    if x.shape[1] < x.shape[2] and x.shape[1] < x.shape[3]:
+        return np.ascontiguousarray(x)
+
+    # Otherwise assume BHWC.
+    return np.ascontiguousarray(np.transpose(x, (0, 3, 1, 2)))
+
+
+def postprocess_single_pose_output(
+    heatmaps,
+    pafs,
+    max_keypoints_per_type=20,
+    use_fast_group=True,
+    debug_timing=False,
+):
+    """
+    Postprocess one model output sample.
+
+    Input can be:
+      heatmaps: C x H x W or H x W x C
+      pafs:     C x H x W or H x W x C
+
+    Returns:
+      pose_entries, all_keypoints
+    """
+    heatmaps_hwc = _ensure_hwc(
+        heatmaps,
+        expected_channels=19,
+        name="heatmaps"
+    )
+
+    pafs_hwc = _ensure_hwc(
+        pafs,
+        expected_channels=38,
+        name="pafs"
+    )
+
+    all_keypoints_by_type, _ = extract_keypoints_batch_cv2(
+        heatmaps_hwc,
+        max_keypoints_per_type=max_keypoints_per_type
+    )
+
+    if use_fast_group and "group_keypoints_fast" in globals():
+        grouped = group_keypoints_fast(
+            all_keypoints_by_type,
+            pafs_hwc,
+            debug_timing=debug_timing
+        )
+    else:
+        grouped = group_keypoints(
+            all_keypoints_by_type,
+            pafs_hwc,
+            debug_timing=debug_timing
+        )
+
+    # group_keypoints_fast in some versions may optionally return timing.
+    if isinstance(grouped, tuple) and len(grouped) >= 2:
+        pose_entries, all_keypoints = grouped[0], grouped[1]
+    else:
+        raise RuntimeError(
+            "group_keypoints/group_keypoints_fast returned unexpected output"
+        )
+
+    return pose_entries, all_keypoints
+
+
+def postprocess_batched_pose_output(
+    heatmaps_batch,
+    pafs_batch,
+    max_keypoints_per_type=20,
+    use_fast_group=True,
+    debug_timing=False,
+):
+    """
+    Postprocess batched model outputs.
+
+    Expected model output layouts:
+      - B x C x H x W  recommended, MIGraphX/PyTorch default
+      - B x H x W x C  also accepted
+      - C x H x W      accepted as batch size 1
+      - H x W x C      accepted as batch size 1
+
+    Returns:
+      list of dicts, one item per batch element:
+      [
+        {
+          "pose_entries": pose_entries,
+          "all_keypoints": all_keypoints
+        },
+        ...
+      ]
+    """
+    heatmaps_bchw = _ensure_bchw(
+        heatmaps_batch,
+        expected_channels=19,
+        name="heatmaps_batch"
+    )
+
+    pafs_bchw = _ensure_bchw(
+        pafs_batch,
+        expected_channels=38,
+        name="pafs_batch"
+    )
+
+    if heatmaps_bchw.shape[0] != pafs_bchw.shape[0]:
+        raise ValueError(
+            "Batch size mismatch: "
+            f"heatmaps batch={heatmaps_bchw.shape[0]}, "
+            f"pafs batch={pafs_bchw.shape[0]}"
+        )
+
+    results = []
+
+    batch_size = heatmaps_bchw.shape[0]
+
+    for b in range(batch_size):
+        pose_entries, all_keypoints = postprocess_single_pose_output(
+            heatmaps_bchw[b],
+            pafs_bchw[b],
+            max_keypoints_per_type=max_keypoints_per_type,
+            use_fast_group=use_fast_group,
+            debug_timing=debug_timing
+        )
+
+        results.append(
+            {
+                "pose_entries": pose_entries,
+                "all_keypoints": all_keypoints
+            }
+        )
+
+    return results
