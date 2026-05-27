@@ -60,6 +60,9 @@ except Exception:  # pragma: no cover - keep compatibility with older keypoints.
     extract_keypoints_batch_cv2 = None
 
 
+_RESIZE_BUFFER_CACHE: Dict[Tuple[int, int, int, str], np.ndarray] = {}
+
+
 TimingDict = Dict[str, float]
 PoseEntries = np.ndarray
 AllKeypoints = np.ndarray
@@ -321,9 +324,42 @@ def _merge_group_timings(timings: TimingDict, group_times: Optional[Mapping[str,
             pass
 
 
-def _batch_extract(heatmaps_18: np.ndarray, max_keypoints_per_type: int, force_cv2: bool = True):
-    extractor = extract_keypoints_batch_cv2 if (force_cv2 and extract_keypoints_batch_cv2 is not None) else extract_keypoints_batch
-    return extractor(heatmaps_18, max_keypoints_per_type=max_keypoints_per_type)
+def _batch_extract(
+    heatmaps_18: np.ndarray,
+    max_keypoints_per_type: int,
+    force_cv2: bool = True,
+    timings: Optional[TimingDict] = None,
+):
+    """Run CPU batched keypoint extraction with optional timing support.
+
+    Older versions of ``extract_keypoints_batch_cv2`` do not accept
+    ``return_timing=True``.  Keep this wrapper backward-compatible by
+    trying the timed call first and falling back to the original signature.
+    """
+    extractor = (
+        extract_keypoints_batch_cv2
+        if (force_cv2 and extract_keypoints_batch_cv2 is not None)
+        else extract_keypoints_batch
+    )
+
+    if timings is not None and extractor is extract_keypoints_batch_cv2:
+        try:
+            out = extractor(
+                heatmaps_18,
+                max_keypoints_per_type=max_keypoints_per_type,
+                return_timing=True,
+            )
+            all_kpts, total, extract_times = out
+            timings.update({k: float(v) for k, v in extract_times.items()})
+            return all_kpts, total
+        except TypeError:
+            pass
+
+    return extractor(
+        heatmaps_18,
+        max_keypoints_per_type=max_keypoints_per_type,
+    )
+
 
 
 def decode_migraphx_outputs(
@@ -357,6 +393,85 @@ def decode_migraphx_outputs(
     return np.ascontiguousarray(heatmaps), np.ascontiguousarray(pafs)
 
 
+
+def decode_migraphx_batch_outputs(
+    results: Any,
+    target_dim: Tuple[int, int] = (968, 544),
+    stride: int = 8,
+    batch_size: Optional[int] = None,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Decode raw MIGraphX outputs into batched low-resolution BHWC maps.
+
+    Expected raw layout for batched model outputs is normally:
+        heatmaps: B x 19 x out_h x out_w
+        pafs:     B x 38 x out_h x out_w
+
+    Returns:
+        heatmaps: B x out_h x out_w x 19
+        pafs:     B x out_h x out_w x 38
+    """
+    target_w, target_h = target_dim
+    out_h = target_h // stride
+    out_w = target_w // stride
+
+    if not isinstance(results, (list, tuple)):
+        results = list(results)
+    if len(results) < 2:
+        raise ValueError("MIGraphX results must contain at least heatmaps and PAFs")
+
+    heat_raw = np.asarray(results[-2], dtype=np.float32)
+    paf_raw = np.asarray(results[-1], dtype=np.float32)
+
+    heat_per_sample = 19 * out_h * out_w
+    paf_per_sample = 38 * out_h * out_w
+
+    if batch_size is None:
+        if heat_raw.size % heat_per_sample != 0:
+            raise ValueError(
+                f"Cannot infer heatmap batch size from output size={heat_raw.size}, "
+                f"per_sample={heat_per_sample}, raw_shape={heat_raw.shape}"
+            )
+        batch_size = int(heat_raw.size // heat_per_sample)
+
+    batch_size = int(batch_size)
+    if batch_size <= 0:
+        raise ValueError(f"Invalid batch_size={batch_size}")
+
+    if paf_raw.size != batch_size * paf_per_sample:
+        raise ValueError(
+            f"PAF output size mismatch: size={paf_raw.size}, "
+            f"expected={batch_size * paf_per_sample}, raw_shape={paf_raw.shape}"
+        )
+
+    if heat_raw.ndim == 4 and heat_raw.shape[0] == batch_size and heat_raw.shape[1] == 19:
+        heat_bchw = heat_raw
+    elif heat_raw.ndim == 4 and heat_raw.shape[0] == batch_size and heat_raw.shape[-1] == 19:
+        heat_bchw = np.transpose(heat_raw, (0, 3, 1, 2))
+    else:
+        heat_bchw = heat_raw.reshape(batch_size, 19, out_h, out_w)
+
+    if paf_raw.ndim == 4 and paf_raw.shape[0] == batch_size and paf_raw.shape[1] == 38:
+        paf_bchw = paf_raw
+    elif paf_raw.ndim == 4 and paf_raw.shape[0] == batch_size and paf_raw.shape[-1] == 38:
+        paf_bchw = np.transpose(paf_raw, (0, 3, 1, 2))
+    else:
+        paf_bchw = paf_raw.reshape(batch_size, 38, out_h, out_w)
+
+    heat_bhwc = np.moveaxis(heat_bchw, 1, -1)
+    paf_bhwc = np.moveaxis(paf_bchw, 1, -1)
+    return np.ascontiguousarray(heat_bhwc), np.ascontiguousarray(paf_bhwc)
+
+
+def _resize_dst_buffer(height: int, width: int, channels: int, dtype) -> np.ndarray:
+    dt = np.dtype(dtype)
+    key = (int(height), int(width), int(channels), dt.str)
+    arr = _RESIZE_BUFFER_CACHE.get(key)
+    if arr is None or arr.shape != (height, width, channels) or arr.dtype != dt:
+        arr = np.empty((height, width, channels), dtype=dt)
+        _RESIZE_BUFFER_CACHE[key] = arr
+    return arr
+
+
 def resize_fullres(
     heatmaps: np.ndarray,
     pafs: np.ndarray,
@@ -364,25 +479,30 @@ def resize_fullres(
     timings: TimingDict,
     heatmap_dtype=np.float32,
     paf_dtype=np.float32,
+    heatmap_channels: Optional[int] = None,
+    use_dst: bool = False,
 ) -> Tuple[np.ndarray, np.ndarray]:
     orig_h, orig_w = original_hw
 
     with Timer() as t:
-        heatmaps_full = cv2.resize(
-            np.ascontiguousarray(heatmaps, dtype=np.float32),
-            (orig_w, orig_h),
-            interpolation=cv2.INTER_CUBIC,
-        )
-        heatmaps_full = np.ascontiguousarray(heatmaps_full, dtype=heatmap_dtype)
+        heatmaps_src = heatmaps[:, :, :heatmap_channels] if heatmap_channels is not None else heatmaps
+        heatmaps_src = np.ascontiguousarray(heatmaps_src, dtype=np.float32)
+        if use_dst and np.dtype(heatmap_dtype) == np.dtype(np.float32):
+            heatmaps_full = _resize_dst_buffer(orig_h, orig_w, heatmaps_src.shape[2], np.float32)
+            cv2.resize(heatmaps_src, (orig_w, orig_h), dst=heatmaps_full, interpolation=cv2.INTER_CUBIC)
+        else:
+            heatmaps_full = cv2.resize(heatmaps_src, (orig_w, orig_h), interpolation=cv2.INTER_CUBIC)
+            heatmaps_full = np.ascontiguousarray(heatmaps_full, dtype=heatmap_dtype)
     timings["resize_heatmaps"] = t.ms
 
     with Timer() as t:
-        pafs_full = cv2.resize(
-            np.ascontiguousarray(pafs, dtype=np.float32),
-            (orig_w, orig_h),
-            interpolation=cv2.INTER_CUBIC,
-        )
-        pafs_full = np.ascontiguousarray(pafs_full, dtype=paf_dtype)
+        pafs_src = np.ascontiguousarray(pafs, dtype=np.float32)
+        if use_dst and np.dtype(paf_dtype) == np.dtype(np.float32):
+            pafs_full = _resize_dst_buffer(orig_h, orig_w, pafs_src.shape[2], np.float32)
+            cv2.resize(pafs_src, (orig_w, orig_h), dst=pafs_full, interpolation=cv2.INTER_CUBIC)
+        else:
+            pafs_full = cv2.resize(pafs_src, (orig_w, orig_h), interpolation=cv2.INTER_CUBIC)
+            pafs_full = np.ascontiguousarray(pafs_full, dtype=paf_dtype)
     timings["resize_pafs"] = t.ms
 
     return heatmaps_full, pafs_full
@@ -557,6 +677,185 @@ def extract_keypoints_gpu_nms(
 
     _sync_if_gpu(device)
     return all_kpts, total
+
+
+def extract_keypoints_gpu_nms_batch(
+    heatmaps_batch: Sequence[np.ndarray],
+    *,
+    max_keypoints_per_type: int = 20,
+    threshold: float = 0.1,
+    nms_radius: int = 6,
+    torch_device: str = "auto",
+    require_gpu: bool = False,
+    nms_impl: str = "2d",
+    compute_dtype: str = "float32",
+) -> List[Tuple[List[List[Tuple[float, float, float, int]]], int]]:
+    """Batched Torch max_pool2d NMS over HWC heatmaps.
+
+    Input can be either:
+        - list/tuple of H x W x C arrays
+        - B x H x W x C numpy array
+
+    Returns one OpenPose-compatible keypoint list per batch item.
+    """
+    _ensure_torch_imported()
+    device = _resolve_torch_device(torch_device, require_gpu=require_gpu)
+
+    if isinstance(heatmaps_batch, np.ndarray):
+        if heatmaps_batch.ndim != 4:
+            raise ValueError(f"heatmaps_batch must be BxHxWxC, got shape={heatmaps_batch.shape}")
+        heatmaps_list = [heatmaps_batch[i] for i in range(heatmaps_batch.shape[0])]
+    else:
+        heatmaps_list = list(heatmaps_batch)
+
+    if len(heatmaps_list) == 0:
+        return []
+
+    if compute_dtype == "float16":
+        np_dtype = np.float16
+        torch_dtype = torch.float16
+    elif compute_dtype == "float32":
+        np_dtype = np.float32
+        torch_dtype = torch.float32
+    else:
+        raise ValueError(f"Unsupported compute_dtype: {compute_dtype}")
+
+    stacked = np.stack(
+        [np.ascontiguousarray(h[:, :, :18], dtype=np_dtype) for h in heatmaps_list],
+        axis=0,
+    )
+
+    # B x H x W x 18 -> B x 18 x H x W
+    hm = torch.from_numpy(stacked).permute(0, 3, 1, 2).contiguous()
+    hm = hm.to(device=device, dtype=torch_dtype)
+
+    if require_gpu and hm.device.type != "cuda":
+        raise RuntimeError("gpu-nms expected a CUDA/ROCm tensor, but the heatmap tensor is on CPU.")
+
+    radius = int(nms_radius)
+    k = 2 * radius + 1
+    if nms_impl == "2d":
+        pooled = F.max_pool2d(hm, kernel_size=k, stride=1, padding=radius)
+    elif nms_impl == "separable":
+        pooled = F.max_pool2d(hm, kernel_size=(k, 1), stride=1, padding=(radius, 0))
+        pooled = F.max_pool2d(pooled, kernel_size=(1, k), stride=1, padding=(0, radius))
+    else:
+        raise ValueError(f"Unsupported nms_impl: {nms_impl}. Use '2d' or 'separable'.")
+
+    peaks = (hm == pooled) & (hm > float(threshold))
+
+    results: List[Tuple[List[List[Tuple[float, float, float, int]]], int]] = []
+    for b in range(int(hm.shape[0])):
+        all_kpts: List[List[Tuple[float, float, float, int]]] = []
+        total = 0
+
+        for kpt_idx in range(18):
+            coords = torch.nonzero(peaks[b, kpt_idx], as_tuple=False)
+            if coords.numel() == 0:
+                all_kpts.append([])
+                continue
+
+            ys = coords[:, 0]
+            xs = coords[:, 1]
+            scores = hm[b, kpt_idx, ys, xs]
+            keep = min(int(max_keypoints_per_type), int(scores.numel()))
+            top_scores, order = torch.topk(scores, k=keep, largest=True, sorted=True)
+
+            packed = torch.stack(
+                (
+                    xs[order].to(torch.float32),
+                    ys[order].to(torch.float32),
+                    top_scores.to(torch.float32),
+                ),
+                dim=1,
+            )
+            packed_np = packed.detach().cpu().numpy()
+
+            pts = [
+                (
+                    float(packed_np[i, 0]),
+                    float(packed_np[i, 1]),
+                    float(packed_np[i, 2]),
+                    int(total + i),
+                )
+                for i in range(keep)
+            ]
+
+            all_kpts.append(pts)
+            total += len(pts)
+
+        results.append((all_kpts, total))
+
+    _sync_if_gpu(device)
+    return results
+
+
+
+def postprocess_gpu_nms_fullres_batch(
+    items: Sequence[Tuple[np.ndarray, np.ndarray, Tuple[int, int]]],
+    config: Optional[PostprocessConfig] = None,
+) -> List[PostprocessOutput]:
+    """Run GPU-NMS fullres postprocessing on a batch of items.
+
+    Items may have different ``original_hw`` values (e.g. cameras with
+    different source resolutions).  The function groups them by shape,
+    runs a separate GPU NMS kernel for each shape group, then returns
+    results in the original input order.
+    """
+    config = config or PostprocessConfig()
+
+    # --- group items by original_hw so np.stack inside the GPU kernel
+    # never sees arrays of mixed spatial dimensions ---
+    # groups: hw -> list of (original_index, hm_full, paf_full, timings)
+    from collections import defaultdict as _defaultdict
+    groups: dict = _defaultdict(list)
+    for orig_idx, (heatmaps, pafs, original_hw) in enumerate(items):
+        timings = empty_timings()
+        original_hw = tuple(original_hw)
+        hm_full, paf_full = resize_fullres(
+            heatmaps,
+            pafs,
+            original_hw,
+            timings,
+            heatmap_channels=18,
+            use_dst=False,
+        )
+        groups[original_hw].append((orig_idx, hm_full, paf_full, timings))
+
+    outputs_by_idx: Dict[int, PostprocessOutput] = {}
+
+    for original_hw, group in groups.items():
+        idx_list = [g[0] for g in group]
+        hm_list  = [g[1] for g in group]
+        paf_list = [g[2] for g in group]
+        tim_list = [g[3] for g in group]
+
+        with Timer() as t_nms:
+            nms_results = extract_keypoints_gpu_nms_batch(
+                hm_list,
+                max_keypoints_per_type=config.max_keypoints_per_type,
+                threshold=config.threshold,
+                nms_radius=config.nms_radius_fullres,
+                torch_device=config.torch_device,
+                require_gpu=config.require_gpu,
+                nms_impl=config.extra.get("nms_impl", "2d"),
+                compute_dtype=config.extra.get("gpu_compute_dtype", "float32"),
+            )
+        per_item_nms_ms = t_nms.ms / max(1, len(nms_results))
+
+        for orig_idx, (all_kpts, _), pafs_full, timings in zip(idx_list, nms_results, paf_list, tim_list):
+            timings["extract_keypoints"] = per_item_nms_ms
+            timings["extract_keypoints_batch_total"] = t_nms.ms
+            timings["postprocess_batch_size"] = float(len(group))
+            poses, kpts = _group_fast_timed(all_kpts, pafs_full, timings, config.points_per_limb)
+            out = _as_output(poses, kpts, timings)
+            out.timings["total_postprocess"] = sum(
+                float(timings.get(k, 0.0))
+                for k in ("resize_heatmaps", "resize_pafs", "extract_keypoints", "group_total")
+            )
+            outputs_by_idx[orig_idx] = out
+
+    return [outputs_by_idx[i] for i in range(len(items))]
 
 
 def assemble_pose_entries_from_connections(
@@ -784,7 +1083,7 @@ def _postprocess_migraphx_nms(
     limit_k20: bool,
 ) -> PostprocessOutput:
     """Full-res MIGraphX NMS followed by CPU mask extraction and fast grouping."""
-    heatmaps_full, pafs_full = resize_fullres(heatmaps, pafs, original_hw, timings)
+    heatmaps_full, pafs_full = resize_fullres(heatmaps, pafs, original_hw, timings, heatmap_channels=18, use_dst=_use_resize_dst(config))
 
     mxr_path = _resolve_migraphx_nms_path(original_hw, config)
     mx_head = _get_migraphx_nms_head(mxr_path, config.migraphx_nms_input_name)
@@ -808,6 +1107,10 @@ def _postprocess_migraphx_nms(
     return _as_output(poses, kpts, timings)
 
 
+def _use_resize_dst(config: PostprocessConfig) -> bool:
+    return bool(config.extra.get("prealloc_resize_buffers", False))
+
+
 def _postprocess_maps_impl(
     mode: str,
     heatmaps: np.ndarray,
@@ -825,7 +1128,7 @@ def _postprocess_maps_impl(
         )
 
     if canonical == "standard":
-        heatmaps_full, pafs_full = resize_fullres(heatmaps, pafs, original_hw, timings)
+        heatmaps_full, pafs_full = resize_fullres(heatmaps, pafs, original_hw, timings, heatmap_channels=18, use_dst=_use_resize_dst(config))
         with Timer() as t:
             all_kpts = []
             total = 0
@@ -854,6 +1157,7 @@ def _postprocess_maps_impl(
                 heatmaps[:, :, :18],
                 max_keypoints_per_type=config.max_keypoints_per_type,
                 force_cv2=config.force_cv2_batch_extractor,
+                timings=timings,
             )
         timings["extract_keypoints"] = t.ms
         poses, kpts = _group_fast_timed(all_kpts, pafs, timings, config.points_per_limb)
@@ -862,12 +1166,13 @@ def _postprocess_maps_impl(
 
     if canonical in {"optimized_batch_k10", "optimized_batch_k20", "optimized_batch_k20_fast"}:
         k = 10 if canonical == "optimized_batch_k10" else config.max_keypoints_per_type
-        heatmaps_full, pafs_full = resize_fullres(heatmaps, pafs, original_hw, timings)
+        heatmaps_full, pafs_full = resize_fullres(heatmaps, pafs, original_hw, timings, heatmap_channels=18, use_dst=_use_resize_dst(config))
         with Timer() as t:
             all_kpts, _ = _batch_extract(
                 heatmaps_full[:, :, :18],
                 max_keypoints_per_type=k,
                 force_cv2=config.force_cv2_batch_extractor,
+                timings=timings,
             )
         timings["extract_keypoints"] = t.ms
         if canonical == "optimized_batch_k20_fast":
@@ -883,7 +1188,7 @@ def _postprocess_maps_impl(
         return _postprocess_migraphx_nms(heatmaps, pafs, original_hw, config, timings, limit_k20=True)
 
     if canonical == "gpu_nms_fullres_cpu_group":
-        heatmaps_full, pafs_full = resize_fullres(heatmaps, pafs, original_hw, timings)
+        heatmaps_full, pafs_full = resize_fullres(heatmaps, pafs, original_hw, timings, heatmap_channels=18, use_dst=_use_resize_dst(config))
         with Timer() as t:
             all_kpts, _ = extract_keypoints_gpu_nms(
                 heatmaps_full,
@@ -918,12 +1223,13 @@ def _postprocess_maps_impl(
         return _as_output(poses, kpts, timings)
 
     if canonical == "gpu_fullres_paf":
-        heatmaps_full, pafs_full = resize_fullres(heatmaps, pafs, original_hw, timings)
+        heatmaps_full, pafs_full = resize_fullres(heatmaps, pafs, original_hw, timings, heatmap_channels=18, use_dst=_use_resize_dst(config))
         with Timer() as t:
             all_kpts, _ = _batch_extract(
                 heatmaps_full[:, :, :18],
                 max_keypoints_per_type=config.max_keypoints_per_type,
                 force_cv2=config.force_cv2_batch_extractor,
+                timings=timings,
             )
         timings["extract_keypoints"] = t.ms
         with Timer() as t:
