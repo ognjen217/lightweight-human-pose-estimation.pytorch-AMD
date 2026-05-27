@@ -85,6 +85,15 @@ class PostprocessConfig:
     migraphx_nms_mxr: Optional[str] = None
     migraphx_nms_cache_dir: Optional[str] = None
     migraphx_nms_input_name: str = "heatmaps"
+
+    # Manual cubic resize + NMS + TopK MIGraphX head.
+    # This is the accuracy-preserving graph path that avoids unsupported
+    # ONNX Resize(mode="cubic") by implementing bicubic interpolation with
+    # primitive Gather/Mul/Add ops inside the compiled .mxr head.
+    migraphx_manual_cubic_topk_mxr: Optional[str] = None
+    migraphx_manual_cubic_topk_cache_dir: Optional[str] = None
+    migraphx_manual_cubic_topk_input_name: str = "heatmaps"
+
     debug: bool = False
     extra: Dict[str, Any] = field(default_factory=dict)
 
@@ -152,6 +161,22 @@ VARIANT_INFOS: Tuple[VariantInfo, ...] = (
         description="Same as migraphx_nms, but keeps only top K candidates per keypoint type after mask extraction.",
         accuracy_note="K=20-compatible MIGraphX NMS path for comparison against optimized K20 CPU/GPU variants.",
         aliases=("migraphx-nms-k20", "mx-nms-k20", "mx_nms_k20"),
+    ),
+    VariantInfo(
+        canonical="migraphx_manual_cubic_nms_topk",
+        description="Low-res heatmaps -> manual bicubic resize + NMS + TopK inside a compiled MIGraphX graph; CPU PAF resize + group_keypoints_fast.",
+        accuracy_note="Accuracy-preserving candidate for fixed-resolution video/live-feed; requires precompiled per-shape manual-cubic .mxr head.",
+        aliases=(
+            "migraphx-manual-cubic-nms-topk",
+            "migraphx-manual-cubic-nms-topk-k20",
+            "migraphx_manual_cubic_nms_topk_k20",
+            "mx-manual-cubic-topk",
+            "mx-cubic-topk",
+            "mx_cubic_topk",
+            "mx_cubic_topk_k20",
+            "manual-cubic-mx-topk",
+            "manual_cubic_mx_topk",
+        ),
     ),
     VariantInfo(
         canonical="gpu_nms_fullres_cpu_group",
@@ -289,6 +314,9 @@ def empty_timings() -> TimingDict:
         "extract_keypoints": 0.0,
         "mx_nms": 0.0,
         "extract_from_mask": 0.0,
+        "manual_cubic_topk": 0.0,
+        "mx_topk": 0.0,
+        "topk_adapter": 0.0,
         "group_keypoints": 0.0,
         "group_total": 0.0,
         "group_prepare": 0.0,
@@ -1073,6 +1101,154 @@ def _get_migraphx_nms_head(mxr_path: str, input_name: str):
     return _MIGRAPHX_NMS_CACHE[key]
 
 
+_MIGRAPHX_MANUAL_CUBIC_TOPK_CACHE: Dict[Tuple[str, str], Any] = {}
+
+
+def _manual_cubic_topk_params(config: PostprocessConfig) -> Dict[str, Any]:
+    """Read manual-cubic TopK knobs from config.extra with safe defaults."""
+    return {
+        "topk": int(config.extra.get("manual_cubic_topk", config.max_keypoints_per_type)),
+        "threshold": float(config.extra.get("manual_cubic_threshold", config.threshold)),
+        "nms_radius": int(config.extra.get("manual_cubic_nms_radius", config.nms_radius_fullres)),
+        "nms_impl": str(config.extra.get("manual_cubic_nms_impl", config.extra.get("nms_impl", "separable"))),
+        "cubic_a": float(config.extra.get("manual_cubic_a", -0.75)),
+    }
+
+
+def _resolve_migraphx_manual_cubic_topk_path(
+    heatmaps_hw: Tuple[int, int],
+    original_hw: Tuple[int, int],
+    config: PostprocessConfig,
+) -> str:
+    """Return the compiled manual-cubic resize+NMS+TopK .mxr path for this shape."""
+    if config.migraphx_manual_cubic_topk_mxr:
+        path = Path(config.migraphx_manual_cubic_topk_mxr)
+        if not path.exists():
+            raise FileNotFoundError(f"Manual-cubic MIGraphX TopK .mxr not found: {path}")
+        return str(path)
+
+    if not config.migraphx_manual_cubic_topk_cache_dir:
+        raise ValueError(
+            "migraphx_manual_cubic_nms_topk requires either "
+            "PostprocessConfig.migraphx_manual_cubic_topk_mxr or "
+            "PostprocessConfig.migraphx_manual_cubic_topk_cache_dir. "
+            "Precompile the head with modules/migraphx_manual_cubic_topk_compiler.py."
+        )
+
+    in_h, in_w = int(heatmaps_hw[0]), int(heatmaps_hw[1])
+    out_h, out_w = int(original_hw[0]), int(original_hw[1])
+    params = _manual_cubic_topk_params(config)
+
+    try:
+        from modules.migraphx_manual_cubic_topk_compiler import head_name
+    except Exception as exc:
+        raise RuntimeError(
+            "Could not import modules.migraphx_manual_cubic_topk_compiler. "
+            "Keep this module in modules/ when using migraphx_manual_cubic_nms_topk."
+        ) from exc
+
+    filename = head_name(
+        in_h,
+        in_w,
+        out_h,
+        out_w,
+        topk=params["topk"],
+        threshold=params["threshold"],
+        nms_radius=params["nms_radius"],
+        nms_impl=params["nms_impl"],
+        cubic_a=params["cubic_a"],
+    ) + ".mxr"
+
+    path = Path(config.migraphx_manual_cubic_topk_cache_dir) / filename
+    if not path.exists():
+        raise FileNotFoundError(
+            "Missing manual-cubic MIGraphX TopK cache file for this shape.\n"
+            f"  low-res shape: {in_h}x{in_w}\n"
+            f"  full-res shape: {out_h}x{out_w}\n"
+            f"  expected:       {path}\n"
+            "Generate it first with modules/migraphx_manual_cubic_topk_compiler.py."
+        )
+    return str(path)
+
+
+def _get_migraphx_manual_cubic_topk_head(mxr_path: str, input_name: str):
+    """Lazy-load and cache manual-cubic MIGraphX TopK programs by MXR path/input name."""
+    key = (str(mxr_path), str(input_name))
+    if key not in _MIGRAPHX_MANUAL_CUBIC_TOPK_CACHE:
+        from modules.migraphx_manual_cubic_topk import MIGraphXManualCubicTopKHead
+        _MIGRAPHX_MANUAL_CUBIC_TOPK_CACHE[key] = MIGraphXManualCubicTopKHead(
+            str(mxr_path),
+            input_name=input_name,
+        )
+    return _MIGRAPHX_MANUAL_CUBIC_TOPK_CACHE[key]
+
+
+def _postprocess_migraphx_manual_cubic_nms_topk(
+    heatmaps: np.ndarray,
+    pafs: np.ndarray,
+    original_hw: Tuple[int, int],
+    config: PostprocessConfig,
+    timings: TimingDict,
+) -> PostprocessOutput:
+    """Manual bicubic resize + NMS + TopK inside MIGraphX, CPU PAF resize/grouping.
+
+    This is the fixed-resolution live-feed candidate:
+        low-res heatmaps [Hout, Wout, 19]
+        -> compiled .mxr head over first 18 channels
+        -> TopK tensors only, no dense full-res heatmap/mask returned to CPU
+        -> CPU cv2.INTER_CUBIC PAF resize
+        -> group_keypoints_fast
+    """
+    orig_h, orig_w = int(original_hw[0]), int(original_hw[1])
+
+    mxr_path = _resolve_migraphx_manual_cubic_topk_path(
+        heatmaps_hw=heatmaps.shape[:2],
+        original_hw=original_hw,
+        config=config,
+    )
+    mx_head = _get_migraphx_manual_cubic_topk_head(
+        mxr_path,
+        config.migraphx_manual_cubic_topk_input_name,
+    )
+
+    heatmaps_nchw = np.moveaxis(
+        np.ascontiguousarray(heatmaps[:, :, :18], dtype=np.float32),
+        -1,
+        0,
+    )[np.newaxis, ...]
+
+    with Timer() as t:
+        scores, indices = mx_head.run(heatmaps_nchw)
+    timings["manual_cubic_topk"] = t.ms
+    timings["mx_topk"] = t.ms
+    # Keep extract_keypoints populated so older summary code still shows the
+    # keypoint extraction stage for this variant.
+    timings["extract_keypoints"] = t.ms
+
+    with Timer() as t:
+        from modules.migraphx_manual_cubic_topk import topk_to_keypoint_lists
+        all_kpts, _ = topk_to_keypoint_lists(
+            scores,
+            indices,
+            full_width=orig_w,
+            threshold=config.threshold,
+            num_keypoint_types=18,
+        )
+    timings["topk_adapter"] = t.ms
+
+    with Timer() as t:
+        pafs_full = cv2.resize(
+            np.ascontiguousarray(pafs, dtype=np.float32),
+            (orig_w, orig_h),
+            interpolation=cv2.INTER_CUBIC,
+        )
+        pafs_full = np.ascontiguousarray(pafs_full, dtype=np.float32)
+    timings["resize_pafs"] = t.ms
+
+    poses, kpts = _group_fast_timed(all_kpts, pafs_full, timings, config.points_per_limb)
+    return _as_output(poses, kpts, timings)
+
+
 def _postprocess_migraphx_nms(
     heatmaps: np.ndarray,
     pafs: np.ndarray,
@@ -1186,6 +1362,9 @@ def _postprocess_maps_impl(
 
     if canonical == "migraphx_nms_k20":
         return _postprocess_migraphx_nms(heatmaps, pafs, original_hw, config, timings, limit_k20=True)
+
+    if canonical == "migraphx_manual_cubic_nms_topk":
+        return _postprocess_migraphx_manual_cubic_nms_topk(heatmaps, pafs, original_hw, config, timings)
 
     if canonical == "gpu_nms_fullres_cpu_group":
         heatmaps_full, pafs_full = resize_fullres(heatmaps, pafs, original_hw, timings, heatmap_channels=18, use_dst=_use_resize_dst(config))
