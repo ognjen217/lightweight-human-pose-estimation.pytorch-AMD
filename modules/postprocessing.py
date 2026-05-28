@@ -179,6 +179,21 @@ VARIANT_INFOS: Tuple[VariantInfo, ...] = (
         ),
     ),
     VariantInfo(
+        canonical="mx_fused_cubic_topk_fullres_paf",
+        description="Fused MIGraphX postprocess: manual cubic heatmap TopK + full-res-like cubic PAF pair scoring in one .mxr, followed by CPU pose assembly.",
+        accuracy_note="Accuracy-preserving full-res-like PAF path; validated against optimized_batch_k20_fast on shape-controlled COCO subset.",
+        aliases=(
+            "mx-fused-cubic-topk-fullres-paf",
+            "mx_fused_cubic_topk_fullres_paf_k20",
+            "mx-fused-cubic-topk-fullres-paf-k20",
+            "mx_fused_postprocess",
+            "mx-fused-postprocess",
+            "fused-mx-post",
+            "fused-postprocess",
+            "migraphx-fused-postprocess",
+        ),
+    ),
+    VariantInfo(
         canonical="gpu_nms_fullres_cpu_group",
         description="Full-res resize + Torch GPU NMS/keypoint extraction + CPU group_keypoints_fast.",
         accuracy_note="Best tested GPU/hybrid accuracy-preserving path.",
@@ -314,6 +329,9 @@ def empty_timings() -> TimingDict:
         "extract_keypoints": 0.0,
         "mx_nms": 0.0,
         "extract_from_mask": 0.0,
+        "fused_post_mx": 0.0,
+        "topk_adapter": 0.0,
+        "mx_assembly_total": 0.0,
         "manual_cubic_topk": 0.0,
         "mx_topk": 0.0,
         "topk_adapter": 0.0,
@@ -1062,6 +1080,158 @@ def score_paf_connections_gpu(
 
 
 
+
+# ---------------------------------------------------------------------------
+# Fused MIGraphX postprocess:
+#   manual cubic heatmap TopK + full-res-like cubic PAF pair scoring
+# ---------------------------------------------------------------------------
+
+_MIGRAPHX_FUSED_POSTPROCESS_CACHE: Dict[str, Any] = {}
+
+
+def _resolve_fused_postprocess_path(
+    heatmaps: np.ndarray,
+    original_hw: Tuple[int, int],
+    config: PostprocessConfig,
+) -> str:
+    """Resolve fused postprocess .mxr for the current cropped low-res/full-res shape."""
+    explicit = (
+        config.extra.get("fused_postprocess_mxr")
+        or config.extra.get("migraphx_fused_postprocess_mxr")
+    )
+    if explicit:
+        path = Path(str(explicit))
+        if not path.exists():
+            raise FileNotFoundError(f"Fused postprocess .mxr not found: {path}")
+        return str(path)
+
+    cache_dir = (
+        config.extra.get("fused_postprocess_cache_dir")
+        or config.extra.get("migraphx_fused_postprocess_cache_dir")
+    )
+    if not cache_dir:
+        raise ValueError(
+            "Fused MIGraphX postprocess requires config.extra['fused_postprocess_mxr'] "
+            "or config.extra['fused_postprocess_cache_dir']."
+        )
+
+    from modules.migraphx_fused_postprocess_compiler import fused_head_name
+
+    in_h, in_w = int(heatmaps.shape[0]), int(heatmaps.shape[1])
+    full_h, full_w = int(original_hw[0]), int(original_hw[1])
+
+    heatmap_cubic_a = config.extra.get(
+        "heatmap_cubic_a",
+        config.extra.get("cubic_a", config.extra.get("manual_cubic_a", -0.75)),
+    )
+    paf_cubic_a = config.extra.get("paf_cubic_a", -0.75)
+    nms_impl = config.extra.get("nms_impl", "separable")
+
+    name = fused_head_name(
+        in_h,
+        in_w,
+        full_h,
+        full_w,
+        topk=config.max_keypoints_per_type,
+        threshold=config.threshold,
+        nms_radius=config.nms_radius_fullres,
+        nms_impl=nms_impl,
+        heatmap_cubic_a=float(heatmap_cubic_a),
+        points_per_limb=config.points_per_limb,
+        min_paf_score=config.min_paf_score,
+        success_ratio_thr=config.success_ratio_thr,
+        paf_cubic_a=float(paf_cubic_a),
+    )
+    path = Path(str(cache_dir)) / f"{name}.mxr"
+    if not path.exists():
+        raise FileNotFoundError(
+            "Missing fused MIGraphX postprocess .mxr for current shape.\n"
+            f"  low-res:  {in_h}x{in_w}\n"
+            f"  full-res: {full_h}x{full_w}\n"
+            f"  expected: {path}\n"
+            "Generate it with modules/migraphx_fused_postprocess_compiler.py "
+            "or speed/accuracy validation using --compile-fused-head/--compile-heads."
+        )
+    return str(path)
+
+
+def _get_fused_postprocess_head(mxr_path: str):
+    """Lazy-load and cache fused postprocess programs by .mxr path."""
+    key = str(mxr_path)
+    if key not in _MIGRAPHX_FUSED_POSTPROCESS_CACHE:
+        from modules.migraphx_fused_postprocess import MIGraphXFusedPostprocess
+
+        _MIGRAPHX_FUSED_POSTPROCESS_CACHE[key] = MIGraphXFusedPostprocess(key)
+    return _MIGRAPHX_FUSED_POSTPROCESS_CACHE[key]
+
+
+def _postprocess_mx_fused_cubic_topk_fullres_paf(
+    heatmaps: np.ndarray,
+    pafs: np.ndarray,
+    original_hw: Tuple[int, int],
+    config: PostprocessConfig,
+    timings: TimingDict,
+) -> PostprocessOutput:
+    """Run fused MXR postprocess and finish with CPU pose assembly."""
+    mxr_path = _resolve_fused_postprocess_path(heatmaps, original_hw, config)
+    fused = _get_fused_postprocess_head(mxr_path)
+
+    full_w = int(original_hw[1])
+
+    heatmaps_nchw = np.moveaxis(
+        np.ascontiguousarray(heatmaps[:, :, :18], dtype=np.float32),
+        -1,
+        0,
+    )[np.newaxis, ...]
+    pafs_nchw = np.moveaxis(
+        np.ascontiguousarray(pafs, dtype=np.float32),
+        -1,
+        0,
+    )[np.newaxis, ...]
+
+    with Timer() as t:
+        pair_scores, pair_valid, top_scores, top_indices = fused.run(heatmaps_nchw, pafs_nchw)
+    timings["fused_post_mx"] = t.ms
+    timings["mx_nms"] = t.ms
+    timings["group_affinity"] = t.ms
+
+    from modules.mx_pair_assembly import (
+        group_keypoints_from_mx_pair_scores,
+        topk_to_keypoint_lists,
+    )
+
+    with Timer() as t:
+        all_kpts_by_type, _ = topk_to_keypoint_lists(
+            top_scores,
+            top_indices,
+            full_width=full_w,
+            threshold=config.threshold,
+            num_keypoint_types=18,
+        )
+    timings["topk_adapter"] = t.ms
+    timings["extract_keypoints"] = t.ms
+
+    poses, kpts, asm_times = group_keypoints_from_mx_pair_scores(
+        all_kpts_by_type,
+        pair_scores,
+        pair_valid,
+        min_pair_score=float(config.extra.get("min_pair_score", 0.0)),
+        return_timing=True,
+    )
+
+    for key, value in asm_times.items():
+        try:
+            timings[key] = float(value)
+        except Exception:
+            pass
+
+    assembly_total = float(timings.get("mx_assembly_total", 0.0))
+    timings["group_pose"] = assembly_total
+    timings["group_keypoints"] = timings.get("fused_post_mx", 0.0) + assembly_total
+    timings["group_total"] = timings["group_keypoints"]
+
+    return _as_output(poses, kpts, timings)
+
 _MIGRAPHX_NMS_CACHE: Dict[Tuple[str, str], Any] = {}
 
 
@@ -1356,6 +1526,9 @@ def _postprocess_maps_impl(
         else:
             poses, kpts = _group_standard_timed(all_kpts, pafs_full, timings, config.points_per_limb)
         return _as_output(poses, kpts, timings)
+
+    if canonical == "mx_fused_cubic_topk_fullres_paf":
+        return _postprocess_mx_fused_cubic_topk_fullres_paf(heatmaps, pafs, original_hw, config, timings)
 
     if canonical == "migraphx_nms":
         return _postprocess_migraphx_nms(heatmaps, pafs, original_hw, config, timings, limit_k20=False)
