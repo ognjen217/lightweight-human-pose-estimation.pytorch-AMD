@@ -37,18 +37,21 @@ processes when GPU postprocessing is selected.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import csv
 import json
 import math
 import os
 import queue as py_queue
 import time
+import threading
 import traceback
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import multiprocessing as mp
+from multiprocessing import shared_memory
 
 import numpy as np
 
@@ -113,6 +116,594 @@ def json_safe(obj: Any) -> Any:
     return obj
 
 
+def maybe_profile_worker(stage: str, worker_id: Any, fn, *args, **kwargs):
+    profile_dir = os.environ.get("STREAM_CPROFILE_DIR", "")
+    if not profile_dir:
+        return fn(*args, **kwargs)
+
+    import cProfile
+    import pstats
+
+    Path(profile_dir).mkdir(parents=True, exist_ok=True)
+    pid = os.getpid()
+    out_prof = Path(profile_dir) / f"{stage}_{worker_id}_pid{pid}.prof"
+    out_txt = Path(profile_dir) / f"{stage}_{worker_id}_pid{pid}.txt"
+
+    profiler = cProfile.Profile()
+    try:
+        return profiler.runcall(fn, *args, **kwargs)
+    finally:
+        profiler.dump_stats(str(out_prof))
+        with open(out_txt, "w") as f:
+            stats = pstats.Stats(profiler, stream=f)
+            stats.strip_dirs().sort_stats("cumtime").print_stats(80)
+
+class RocTxTracer:
+    """Tiny optional ROCTx wrapper; no-op when roctx is unavailable or disabled."""
+
+    def __init__(self, enabled: bool, prefix: str = ""):
+        self.enabled = bool(enabled)
+        self.prefix = prefix
+        self._roctx = None
+        if self.enabled:
+            try:
+                import roctx
+                self._roctx = roctx
+            except Exception:
+                self.enabled = False
+
+    def label(self, name: str) -> str:
+        return f"{self.prefix}:{name}" if self.prefix else name
+
+    @contextlib.contextmanager
+    def range(self, name: str):
+        if self.enabled and self._roctx is not None:
+            self._roctx.push(self.label(name))
+            try:
+                yield
+            finally:
+                self._roctx.pop()
+        else:
+            yield
+
+    def mark(self, name: str) -> None:
+        if self.enabled and self._roctx is not None:
+            try:
+                self._roctx.mark(self.label(name))
+            except Exception:
+                pass
+
+
+def trace_print(every: int, count: int, msg: str) -> None:
+    if every > 0 and count > 0 and count % every == 0:
+        print(msg, flush=True)
+
+
+def allow_ptrace_attach_if_requested() -> None:
+    if os.environ.get("STREAM_ALLOW_PTRACE_ATTACH") != "1":
+        return
+    try:
+        import ctypes
+        PR_SET_PTRACER = 0x59616D61
+        PR_SET_PTRACER_ANY = ctypes.c_ulong(-1).value
+        libc = ctypes.CDLL(None, use_errno=True)
+        rc = libc.prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY, 0, 0, 0)
+        if rc != 0:
+            err = ctypes.get_errno()
+            print(f"[TRACE pid={os.getpid()}] prctl(PR_SET_PTRACER_ANY) failed errno={err}", flush=True)
+    except Exception as exc:
+        print(f"[TRACE pid={os.getpid()}] ptrace attach opt-in failed: {exc}", flush=True)
+
+
+
+def _dtype_from_name(name: str):
+    return np.float16 if str(name) == "float16" else np.float32
+
+
+def create_shared_map_buffers(num_slots: int, out_h: int, out_w: int, dtype_name: str) -> Tuple[List[Dict[str, Any]], List[shared_memory.SharedMemory]]:
+    dtype = _dtype_from_name(dtype_name)
+    heat_shape = (out_h, out_w, 19)
+    paf_shape = (out_h, out_w, 38)
+    heat_nbytes = int(np.prod(heat_shape) * np.dtype(dtype).itemsize)
+    paf_nbytes = int(np.prod(paf_shape) * np.dtype(dtype).itemsize)
+    descs: List[Dict[str, Any]] = []
+    handles: List[shared_memory.SharedMemory] = []
+    for slot_id in range(max(0, int(num_slots))):
+        heat_shm = shared_memory.SharedMemory(create=True, size=heat_nbytes)
+        paf_shm = shared_memory.SharedMemory(create=True, size=paf_nbytes)
+        handles.extend([heat_shm, paf_shm])
+        descs.append({
+            "slot_id": slot_id,
+            "dtype": np.dtype(dtype).name,
+            "heat_shape": heat_shape,
+            "paf_shape": paf_shape,
+            "heat_name": heat_shm.name,
+            "paf_name": paf_shm.name,
+        })
+    return descs, handles
+
+
+def close_shared_map_buffers(handles: Sequence[shared_memory.SharedMemory]) -> None:
+    for shm in handles:
+        try:
+            shm.close()
+        except Exception:
+            pass
+        try:
+            shm.unlink()
+        except Exception:
+            pass
+
+
+def open_shared_map_buffers(descs: Optional[Sequence[Dict[str, Any]]]):
+    if not descs:
+        return {}, []
+    slots: Dict[int, Dict[str, Any]] = {}
+    handles = []
+    for desc in descs:
+        heat_shm = shared_memory.SharedMemory(name=desc["heat_name"])
+        paf_shm = shared_memory.SharedMemory(name=desc["paf_name"])
+        handles.extend([heat_shm, paf_shm])
+        dtype = np.dtype(desc["dtype"])
+        slots[int(desc["slot_id"])] = {
+            "heat": np.ndarray(tuple(desc["heat_shape"]), dtype=dtype, buffer=heat_shm.buf),
+            "paf": np.ndarray(tuple(desc["paf_shape"]), dtype=dtype, buffer=paf_shm.buf),
+        }
+    return slots, handles
+
+
+def close_shared_map_views(handles: Sequence[shared_memory.SharedMemory]) -> None:
+    for shm in handles:
+        try:
+            shm.close()
+        except Exception:
+            pass
+
+
+def latest_put_with_dropped(q, item):
+    try:
+        q.put_nowait(item)
+        return None
+    except py_queue.Full:
+        pass
+    dropped = None
+    try:
+        dropped = q.get_nowait()
+    except py_queue.Empty:
+        pass
+    try:
+        q.put_nowait(item)
+    except py_queue.Full:
+        try:
+            newer = q.get_nowait()
+            dropped = newer if dropped is None else dropped
+        except py_queue.Empty:
+            pass
+        try:
+            q.put_nowait(item)
+        except py_queue.Full:
+            return item
+    return dropped
+
+
+def release_shared_slot_from_item(item: Any, free_q) -> None:
+    if not isinstance(item, dict) or free_q is None:
+        return
+    slot_id = item.get("shared_map_slot")
+    if slot_id is None:
+        return
+    try:
+        free_q.put_nowait(int(slot_id))
+    except Exception:
+        pass
+
+
+def _fmt_mb(kb: float) -> str:
+    return f"{kb / 1024.0:.1f}M"
+
+
+def _bar(pct: float, width: int = 30) -> str:
+    filled = max(0, min(width, int(round(width * pct / 100.0))))
+    return "█" * filled + "░" * (width - filled)
+
+
+def _read_proc_stat() -> List[List[int]]:
+    rows: List[List[int]] = []
+    try:
+        with open("/proc/stat", "r") as f:
+            for line in f:
+                if not line.startswith("cpu"):
+                    break
+                parts = line.split()
+                if parts[0] == "cpu" or not parts[0][3:].isdigit():
+                    continue
+                rows.append([int(x) for x in parts[1:8]])
+    except Exception:
+        pass
+    return rows
+
+
+def _cpu_pct(prev: Sequence[int], cur: Sequence[int]) -> float:
+    prev_idle = prev[3] + prev[4]
+    cur_idle = cur[3] + cur[4]
+    prev_total = sum(prev)
+    cur_total = sum(cur)
+    total_delta = cur_total - prev_total
+    idle_delta = cur_idle - prev_idle
+    if total_delta <= 0:
+        return 0.0
+    return max(0.0, min(100.0, 100.0 * (total_delta - idle_delta) / total_delta))
+
+
+def _clock_ticks() -> int:
+    try:
+        return int(os.sysconf(os.sysconf_names["SC_CLK_TCK"])
+                   if isinstance(os.sysconf_names, dict) else os.sysconf("SC_CLK_TCK"))
+    except Exception:
+        return 100
+
+
+def _read_pid_cpu_ticks(pid: int) -> Optional[int]:
+    try:
+        with open(f"/proc/{pid}/stat", "r") as f:
+            data = f.read()
+        tail = data[data.rfind(")") + 2:].split()
+        return int(tail[11]) + int(tail[12])
+    except Exception:
+        return None
+
+
+def _read_pid_affinity(pid: int) -> str:
+    try:
+        cpus = sorted(os.sched_getaffinity(pid))
+        if len(cpus) > 16:
+            return f"[{cpus[0]}..{cpus[-1]}] ({len(cpus)})"
+        return "[" + ",".join(str(c) for c in cpus) + "]"
+    except Exception:
+        return "?"
+
+
+def _read_pid_memory_kb(pid: int) -> Dict[str, int]:
+    out = {
+        "rss_kb": 0,
+        "vms_kb": 0,
+        "hwm_kb": 0,
+        "rss_anon_kb": 0,
+        "rss_file_kb": 0,
+        "rss_shmem_kb": 0,
+    }
+    mapping = {
+        "VmRSS:": "rss_kb",
+        "VmSize:": "vms_kb",
+        "VmHWM:": "hwm_kb",
+        "RssAnon:": "rss_anon_kb",
+        "RssFile:": "rss_file_kb",
+        "RssShmem:": "rss_shmem_kb",
+    }
+    try:
+        with open(f"/proc/{pid}/status", "r") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) >= 2 and parts[0] in mapping:
+                    out[mapping[parts[0]]] = int(parts[1])
+    except Exception:
+        pass
+    return out
+
+
+def _read_gpu_busy_pct() -> Optional[float]:
+    candidates = [
+        "/sys/class/drm/card1/device/gpu_busy_percent",
+        "/sys/class/drm/card0/device/gpu_busy_percent",
+    ]
+    for p in candidates:
+        try:
+            with open(p, "r") as f:
+                return float(f.read().strip())
+        except Exception:
+            continue
+    return None
+
+
+def _read_gpu_vram_mb() -> Optional[float]:
+    candidates = [
+        "/sys/class/drm/card1/device/mem_info_vram_used",
+        "/sys/class/drm/card0/device/mem_info_vram_used",
+    ]
+    for p in candidates:
+        try:
+            with open(p, "r") as f:
+                return float(f.read().strip()) / (1024.0 * 1024.0)
+        except Exception:
+            continue
+    return None
+
+
+class SysMonitor:
+    """Lightweight parent-side process/CPU/GPU monitor for stream runs."""
+
+    def __init__(self, interval_s: float = 0.1):
+        self.interval_s = max(0.05, float(interval_s))
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+        self._pid_groups: Dict[int, str] = {}
+        self._pid_affinity: Dict[int, str] = {}
+        self._prev_core = _read_proc_stat()
+        self._prev_pid_ticks: Dict[int, int] = {}
+        self._prev_time = time.perf_counter()
+        self.core_samples: List[List[float]] = []
+        self.gpu_samples: List[float] = []
+        self.vram_samples: List[float] = []
+        self.pid_cpu_samples: Dict[int, List[float]] = defaultdict(list)
+        self.pid_mem_samples: Dict[int, List[Dict[str, int]]] = defaultdict(list)
+
+    def register_pids(self, group: str, pids: Sequence[int]) -> None:
+        with self._lock:
+            for pid in pids:
+                if pid:
+                    pid = int(pid)
+                    self._pid_groups[pid] = group
+                    self._pid_affinity[pid] = _read_pid_affinity(pid)
+
+    def start(self) -> None:
+        self._thread = threading.Thread(target=self._run, name="stream-sys-monitor", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> Dict[str, Any]:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+        return self.summary()
+
+    def _run(self) -> None:
+        hz = _clock_ticks()
+        while not self._stop.wait(self.interval_s):
+            now = time.perf_counter()
+            dt = max(1e-6, now - self._prev_time)
+
+            cur_core = _read_proc_stat()
+            if self._prev_core and cur_core and len(self._prev_core) == len(cur_core):
+                self.core_samples.append([_cpu_pct(a, b) for a, b in zip(self._prev_core, cur_core)])
+            self._prev_core = cur_core
+
+            gpu = _read_gpu_busy_pct()
+            if gpu is not None:
+                self.gpu_samples.append(gpu)
+            vram = _read_gpu_vram_mb()
+            if vram is not None:
+                self.vram_samples.append(vram)
+
+            with self._lock:
+                pids = dict(self._pid_groups)
+
+            for pid in pids:
+                ticks = _read_pid_cpu_ticks(pid)
+                if ticks is None:
+                    continue
+                prev = self._prev_pid_ticks.get(pid)
+                if prev is not None:
+                    self.pid_cpu_samples[pid].append(max(0.0, 100.0 * (ticks - prev) / hz / dt))
+                self._prev_pid_ticks[pid] = ticks
+                mem = _read_pid_memory_kb(pid)
+                if mem.get("rss_kb", 0) or mem.get("vms_kb", 0):
+                    self.pid_mem_samples[pid].append(mem)
+
+            self._prev_time = now
+
+    def summary(self) -> Dict[str, Any]:
+        with self._lock:
+            groups = dict(self._pid_groups)
+            affinities = dict(self._pid_affinity)
+
+        core_avg: List[float] = []
+        if self.core_samples:
+            arr = np.asarray(self.core_samples, dtype=np.float64)
+            core_avg = [float(x) for x in np.mean(arr, axis=0)]
+
+        pids: Dict[int, Dict[str, Any]] = {}
+        for pid, group in groups.items():
+            cpu = self.pid_cpu_samples.get(pid, [])
+            mem = self.pid_mem_samples.get(pid, [])
+            row: Dict[str, Any] = {
+                "group": group,
+                "cpu_avg_pct": mean(cpu),
+                "affinity": affinities.get(pid) or _read_pid_affinity(pid),
+                "samples": len(cpu),
+            }
+            if mem:
+                for key in ["rss_kb", "vms_kb", "hwm_kb", "rss_anon_kb", "rss_file_kb", "rss_shmem_kb"]:
+                    vals = [m.get(key, 0) for m in mem]
+                    row[f"{key}_avg"] = float(np.mean(vals))
+                    row[f"{key}_peak"] = int(max(vals))
+                row["mem_samples"] = len(mem)
+            else:
+                row["mem_samples"] = 0
+            pids[pid] = row
+
+        return {
+            "monitor_interval_s": self.interval_s,
+            "cpu_core_avg_pct": core_avg,
+            "gpu_avg_pct": mean(self.gpu_samples),
+            "gpu_peak_pct": max(self.gpu_samples) if self.gpu_samples else 0.0,
+            "gpu_idle_pct": (100.0 * sum(1 for x in self.gpu_samples if x < 5.0) / len(self.gpu_samples)) if self.gpu_samples else 0.0,
+            "vram_avg_mb": mean(self.vram_samples),
+            "vram_peak_mb": max(self.vram_samples) if self.vram_samples else 0.0,
+            "gpu_samples": len(self.gpu_samples),
+            "pids": pids,
+        }
+
+
+def _process_pid_groups(
+    camera_procs: Sequence[mp.Process],
+    infer_procs: Sequence[mp.Process],
+    post_procs: Sequence[mp.Process],
+    grid_procs: Sequence[mp.Process],
+) -> Dict[str, List[int]]:
+    return {
+        "camera": [p.pid for p in camera_procs if p.pid],
+        "inference": [p.pid for p in infer_procs if p.pid],
+        "postprocess": [p.pid for p in post_procs if p.pid],
+        "grid": [p.pid for p in grid_procs if p.pid],
+    }
+
+
+def _register_processes(monitor: Optional[SysMonitor], pid_groups: Dict[str, List[int]]) -> None:
+    if monitor is None:
+        return
+    for group, pids in pid_groups.items():
+        monitor.register_pids(group, pids)
+
+
+def _pin_pid(pid: int, cpus: Sequence[int]) -> None:
+    if not pid or not cpus:
+        return
+    os.sched_setaffinity(int(pid), set(int(c) for c in cpus))
+
+
+def _pin_process_threads(pid: int, cpus: Sequence[int]) -> int:
+    if not pid or not cpus:
+        return 0
+    task_dir = Path(f"/proc/{int(pid)}/task")
+    if not task_dir.exists():
+        return 0
+    pinned = 0
+    cpu_set = set(int(c) for c in cpus)
+    for task in task_dir.iterdir():
+        if not task.name.isdigit():
+            continue
+        try:
+            os.sched_setaffinity(int(task.name), cpu_set)
+            pinned += 1
+        except Exception:
+            pass
+    return pinned
+
+
+def configure_worker_thread_env(num_threads: int) -> None:
+    n = str(max(1, int(num_threads)))
+    os.environ["STREAM_WORKER_THREADS"] = n
+    for env_name in (
+        "OMP_NUM_THREADS",
+        "OPENBLAS_NUM_THREADS",
+        "MKL_NUM_THREADS",
+        "NUMEXPR_NUM_THREADS",
+        "VECLIB_MAXIMUM_THREADS",
+        "BLIS_NUM_THREADS",
+    ):
+        os.environ[env_name] = n
+    os.environ.setdefault("OMP_PROC_BIND", "true")
+    os.environ.setdefault("OMP_PLACES", "cores")
+
+
+def configure_child_cpu_runtime(num_threads: int = 1) -> None:
+    allow_ptrace_attach_if_requested()
+    configure_worker_thread_env(num_threads)
+    try:
+        import cv2
+        cv2.setNumThreads(max(0, int(num_threads)))
+    except Exception:
+        pass
+    try:
+        import torch
+        torch.set_num_threads(max(1, int(num_threads)))
+        torch.set_num_interop_threads(1)
+    except Exception:
+        pass
+
+
+def pin_stream_processes(pid_groups: Dict[str, List[int]], args) -> None:
+    """Pin each camera, inference, and postprocess worker to distinct CPUs."""
+    if not getattr(args, "pin_cpus", False):
+        return
+    camera_base = int(args.pin_camera_base)
+    inference_base = int(args.pin_inference_base)
+    post_base = int(args.pin_post_base)
+
+    assignments: Dict[int, List[int]] = {}
+    for idx, pid in enumerate(pid_groups.get("camera", [])):
+        assignments[int(pid)] = [camera_base + idx]
+    for idx, pid in enumerate(pid_groups.get("inference", [])):
+        assignments[int(pid)] = [inference_base + idx]
+    for idx, pid in enumerate(pid_groups.get("postprocess", [])):
+        assignments[int(pid)] = [post_base + idx]
+
+    for pid, cpus in assignments.items():
+        _pin_pid(pid, cpus)
+        if getattr(args, "pin_all_threads", False):
+            _pin_process_threads(pid, cpus)
+
+
+def print_affinity_report(pid_groups: Dict[str, List[int]]) -> None:
+    print("\n[CPU AFFINITY]")
+    print(f"{'Group':<14} {'PID':>8} CPUs")
+    print("-" * 52)
+    for group, pids in pid_groups.items():
+        if not pids:
+            continue
+        for pid in pids:
+            print(f"{group:<14} {pid:>8} {_read_pid_affinity(pid)}")
+
+
+def print_system_profile(stats: Dict[str, Any]) -> None:
+    if not stats:
+        return
+    print("\n" + "=" * 150)
+    print("SYSTEM / PROCESS PROFILE")
+    print("=" * 150)
+
+    cores = stats.get("cpu_core_avg_pct") or []
+    if cores:
+        print("\nCPU utilization po jezgru:")
+        print(f"{'core':>6} {'avg%':>8}  bar")
+        print("-" * 50)
+        for idx, pct in enumerate(cores[:32]):
+            print(f"cpu{idx:02d} {pct:>7.1f}%  {_bar(pct)}")
+        if len(cores) > 32:
+            print(f"... ({len(cores) - 32} dodatnih logical CPU jezgara skriveno)")
+
+    pids = stats.get("pids") or {}
+    if pids:
+        print("\nProcesi:")
+        print(
+            f"{'PID':>8} {'Group':<14} {'CPU%':>7} {'RSS avg':>9} {'RSS peak':>9} "
+            f"{'VMS avg':>9} {'HWM':>9}  Affinity"
+        )
+        print("-" * 120)
+        for pid, row in sorted(pids.items(), key=lambda item: (item[1].get("group", ""), int(item[0]))):
+            rss_avg = row.get("rss_kb_avg", 0.0)
+            rss_peak = row.get("rss_kb_peak", 0.0)
+            vms_avg = row.get("vms_kb_avg", 0.0)
+            hwm = row.get("hwm_kb_peak", 0.0)
+            print(
+                f"{int(pid):>8} {row.get('group', ''):<14} {row.get('cpu_avg_pct', 0.0):>6.1f}% "
+                f"{_fmt_mb(rss_avg):>9} {_fmt_mb(rss_peak):>9} {_fmt_mb(vms_avg):>9} {_fmt_mb(hwm):>9}  "
+                f"{row.get('affinity', '?')}"
+            )
+
+        print("\nMemory breakdown po procesu (avg):")
+        print(f"{'PID':>8} {'Group':<14} {'Anon':>9} {'File':>9} {'Shmem':>9} {'Samples':>8}")
+        print("-" * 76)
+        for pid, row in sorted(pids.items(), key=lambda item: (item[1].get("group", ""), int(item[0]))):
+            print(
+                f"{int(pid):>8} {row.get('group', ''):<14} "
+                f"{_fmt_mb(row.get('rss_anon_kb_avg', 0.0)):>9} "
+                f"{_fmt_mb(row.get('rss_file_kb_avg', 0.0)):>9} "
+                f"{_fmt_mb(row.get('rss_shmem_kb_avg', 0.0)):>9} "
+                f"{row.get('mem_samples', 0):>8}"
+            )
+
+    gpu_samples = int(stats.get("gpu_samples", 0) or 0)
+    if gpu_samples:
+        print("\nGPU:")
+        print(f"Avg GPU%:   {stats.get('gpu_avg_pct', 0.0):6.1f}%  {_bar(stats.get('gpu_avg_pct', 0.0))}")
+        print(f"Peak GPU%:  {stats.get('gpu_peak_pct', 0.0):6.1f}%")
+        print(f"GPU idle:   {stats.get('gpu_idle_pct', 0.0):6.1f}%  (samples < 5%)")
+        print(f"VRAM avg:   {stats.get('vram_avg_mb', 0.0):6.1f} MB")
+        print(f"VRAM peak:  {stats.get('vram_peak_mb', 0.0):6.1f} MB")
+        print(f"Samples:    {gpu_samples}")
+    print("=" * 150)
+
 def camera_sources(num_cameras: int, videos: Sequence[str]) -> List[str]:
     """Return the default 10-camera mapping requested in the prompt.
 
@@ -160,27 +751,224 @@ def cast_for_migraphx(expected_dtype: str, tensor: np.ndarray) -> np.ndarray:
     return np.ascontiguousarray(tensor.astype(np.float32, copy=False))
 
 
-def decode_migraphx_outputs(results: Any, out_h: int, out_w: int, output_dtype: str) -> Tuple[np.ndarray, np.ndarray]:
+def _as_migraphx_output_array(x: Any) -> np.ndarray:
+    """Convert MIGraphX output argument/list item to numpy without assuming layout."""
+    return np.asarray(x)
+
+
+def decode_migraphx_batch_outputs(
+    results: Any,
+    out_h: int,
+    out_w: int,
+    output_dtype: str,
+    batch_size: Optional[int] = None,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Decode MIGraphX model outputs for batched inference.
+
+    Expected model output for input Bx3xHxW:
+        heatmaps: B x 19 x out_h x out_w
+        pafs:     B x 38 x out_h x out_w
+
+    Returns:
+        heatmaps: B x out_h x out_w x 19
+        pafs:     B x out_h x out_w x 38
+    """
     if not isinstance(results, (list, tuple)):
         results = list(results)
     if len(results) < 2:
         raise RuntimeError("MIGraphX model must return at least heatmaps and PAFs.")
 
-    heatmaps = np.asarray(results[-2], dtype=np.float32).reshape(19, out_h, out_w)
-    pafs = np.asarray(results[-1], dtype=np.float32).reshape(38, out_h, out_w)
+    heat_raw = _as_migraphx_output_array(results[-2])
+    paf_raw = _as_migraphx_output_array(results[-1])
 
-    heatmaps = np.moveaxis(heatmaps, 0, -1)
-    pafs = np.moveaxis(pafs, 0, -1)
+    heat_per_sample = 19 * out_h * out_w
+    paf_per_sample = 38 * out_h * out_w
+
+    if batch_size is None:
+        if heat_raw.size % heat_per_sample != 0:
+            raise RuntimeError(
+                f"Cannot infer heatmap batch size from output size={heat_raw.size}, "
+                f"per_sample={heat_per_sample}, raw_shape={heat_raw.shape}"
+            )
+        batch_size = int(heat_raw.size // heat_per_sample)
+
+    batch_size = int(batch_size)
+    if batch_size <= 0:
+        raise RuntimeError(f"Invalid decoded batch size: {batch_size}")
+
+    if heat_raw.ndim == 4:
+        if heat_raw.shape[0] == batch_size and heat_raw.shape[1] == 19:
+            heat_bchw = heat_raw
+        elif heat_raw.shape[0] == batch_size and heat_raw.shape[-1] == 19:
+            heat_bchw = np.transpose(heat_raw, (0, 3, 1, 2))
+        else:
+            heat_bchw = heat_raw.reshape(batch_size, 19, out_h, out_w)
+    elif heat_raw.ndim == 3:
+        if heat_raw.shape[0] == 19:
+            heat_bchw = heat_raw.reshape(1, 19, out_h, out_w)
+        elif heat_raw.shape[-1] == 19:
+            heat_bchw = np.transpose(heat_raw, (2, 0, 1)).reshape(1, 19, out_h, out_w)
+        else:
+            heat_bchw = heat_raw.reshape(batch_size, 19, out_h, out_w)
+    else:
+        heat_bchw = heat_raw.reshape(batch_size, 19, out_h, out_w)
+
+    if paf_raw.ndim == 4:
+        if paf_raw.shape[0] == batch_size and paf_raw.shape[1] == 38:
+            paf_bchw = paf_raw
+        elif paf_raw.shape[0] == batch_size and paf_raw.shape[-1] == 38:
+            paf_bchw = np.transpose(paf_raw, (0, 3, 1, 2))
+        else:
+            paf_bchw = paf_raw.reshape(batch_size, 38, out_h, out_w)
+    elif paf_raw.ndim == 3:
+        if paf_raw.shape[0] == 38:
+            paf_bchw = paf_raw.reshape(1, 38, out_h, out_w)
+        elif paf_raw.shape[-1] == 38:
+            paf_bchw = np.transpose(paf_raw, (2, 0, 1)).reshape(1, 38, out_h, out_w)
+        else:
+            paf_bchw = paf_raw.reshape(batch_size, 38, out_h, out_w)
+    else:
+        paf_bchw = paf_raw.reshape(batch_size, 38, out_h, out_w)
+
+    heat_bhwc = np.moveaxis(heat_bchw, 1, -1)
+    paf_bhwc = np.moveaxis(paf_bchw, 1, -1)
 
     if output_dtype == "float16":
         return (
-            np.ascontiguousarray(heatmaps, dtype=np.float16),
-            np.ascontiguousarray(pafs, dtype=np.float16),
+            np.ascontiguousarray(heat_bhwc, dtype=np.float16),
+            np.ascontiguousarray(paf_bhwc, dtype=np.float16),
         )
     return (
-        np.ascontiguousarray(heatmaps, dtype=np.float32),
-        np.ascontiguousarray(pafs, dtype=np.float32),
+        np.ascontiguousarray(heat_bhwc, dtype=np.float32),
+        np.ascontiguousarray(paf_bhwc, dtype=np.float32),
     )
+
+
+def decode_migraphx_outputs(results: Any, out_h: int, out_w: int, output_dtype: str) -> Tuple[np.ndarray, np.ndarray]:
+    """Backward-compatible single-frame decode. Returns HxWx19 and HxWx38."""
+    heat_bhwc, paf_bhwc = decode_migraphx_batch_outputs(
+        results,
+        out_h,
+        out_w,
+        output_dtype,
+        batch_size=1,
+    )
+    return heat_bhwc[0], paf_bhwc[0]
+
+
+def make_migraphx_input_batch(
+    items: Sequence[Dict[str, Any]],
+    expected_dtype: str,
+    compiled_batch_size: int,
+) -> Tuple[np.ndarray, int]:
+    """
+    Build Bx3xHxW input for MIGraphX.
+
+    Each camera item contains input_tensor shaped 1x3xHxW.
+    If compiled_batch_size > number of real items, pad by repeating the last
+    frame. This is useful for static batch MXR files such as b4/b8 models.
+    """
+    if not items:
+        raise RuntimeError("Cannot build MIGraphX batch from empty item list.")
+
+    actual_batch_size = len(items)
+    tensors = []
+    for item in items:
+        x = np.asarray(item["input_tensor"])
+        if x.ndim != 4:
+            raise ValueError(f"input_tensor must be 4D, got shape={x.shape}")
+        if x.shape[0] != 1:
+            raise ValueError(f"Each queued item must be one frame, got shape={x.shape}")
+        tensors.append(x)
+
+    batch = np.concatenate(tensors, axis=0)
+
+    compiled_batch_size = max(1, int(compiled_batch_size))
+    if compiled_batch_size > actual_batch_size:
+        pad_count = compiled_batch_size - actual_batch_size
+        pad = np.repeat(batch[-1:, ...], pad_count, axis=0)
+        batch = np.concatenate([batch, pad], axis=0)
+
+    return cast_for_migraphx(expected_dtype, batch), actual_batch_size
+
+
+def build_inference_output_items_from_batch(
+    *,
+    batch_items: Sequence[Dict[str, Any]],
+    heatmaps_bhwc: np.ndarray,
+    pafs_bhwc: np.ndarray,
+    infer_done_ts: float,
+    inference_ms_total: float,
+    decode_ms_total: float,
+    queue_wait_times_ms: Sequence[float],
+) -> List[Dict[str, Any]]:
+    """Split batched MIGraphX outputs back into per-frame pipeline items."""
+    out_items: List[Dict[str, Any]] = []
+    n = len(batch_items)
+    if n <= 0:
+        return out_items
+
+    for i, item in enumerate(batch_items):
+        out_item = {
+            "camera_id": int(item["camera_id"]),
+            "frame_id": int(item["frame_id"]),
+            "source": item["source"],
+            "capture_ts": float(item["capture_ts"]),
+            "preprocess_done_ts": float(item["preprocess_done_ts"]),
+            "infer_done_ts": infer_done_ts,
+            "original_hw": tuple(item["original_hw"]),
+            "preprocess_ms": float(item["preprocess_ms"]),
+            "queue_pre_to_infer_ms": float(queue_wait_times_ms[i]),
+            "inference_ms": float(inference_ms_total) / float(n),
+            "decode_ms": float(decode_ms_total) / float(n),
+            "batch_inference_ms": float(inference_ms_total),
+            "batch_decode_ms": float(decode_ms_total),
+            "migraphx_batch_size": int(n),
+            "heatmaps": np.ascontiguousarray(heatmaps_bhwc[i]),
+            "pafs": np.ascontiguousarray(pafs_bhwc[i]),
+        }
+        if "frame_bgr" in item:
+            out_item["frame_bgr"] = item["frame_bgr"]
+        out_items.append(out_item)
+    return out_items
+
+
+def collect_queue_batch(
+    *,
+    first_item: Dict[str, Any],
+    in_q,
+    batch_size: int,
+    batch_timeout_ms: float,
+) -> Tuple[List[Dict[str, Any]], bool]:
+    """Collect a small batch from a FIFO queue. Returns (items, saw_stop_token)."""
+    batch_size = max(1, int(batch_size))
+    timeout_s = max(0.0, float(batch_timeout_ms)) / 1000.0
+    batch_items = [first_item]
+    saw_stop = False
+
+    if batch_size <= 1:
+        return batch_items, saw_stop
+
+    deadline = time.perf_counter() + timeout_s
+    while len(batch_items) < batch_size:
+        try:
+            if timeout_s > 0.0:
+                remaining = deadline - time.perf_counter()
+                if remaining <= 0.0:
+                    break
+                item = in_q.get(timeout=remaining)
+            else:
+                item = in_q.get_nowait()
+        except py_queue.Empty:
+            break
+
+        if item is None:
+            saw_stop = True
+            break
+        batch_items.append(item)
+
+    return batch_items, saw_stop
 
 
 def resolve_registry_mode(user_mode: str) -> Tuple[str, str, bool]:
@@ -244,6 +1032,311 @@ def compile_migraphx_nms_for_stream_if_requested(args, sources: Sequence[str]) -
         exhaustive_tune=bool(getattr(args, "exhaustive_tune_migraphx_nms", False)),
     )
 
+
+def select_manual_cubic_topk_mxr_for_hw(
+    *,
+    original_hw: Tuple[int, int],
+    target_width: int,
+    target_height: int,
+    stride: int,
+    migraphx_manual_cubic_topk_mxr: str = "",
+    migraphx_manual_cubic_topk_cache_dir: str = "",
+    topk: int = 20,
+    threshold: float = 0.1,
+    nms_radius: int = 6,
+    nms_impl: str = "separable",
+    cubic_a: float = -0.75,
+) -> str:
+    """Resolve the compiled manual-cubic MIGraphX NMS+TopK head for a stream frame.
+
+    For the live multi-camera setup, all cameras normally have one or a small
+    number of fixed full-resolution shapes.  The cache filename must match the
+    low-res model output shape, original frame shape and TopK/NMS parameters.
+    """
+    if migraphx_manual_cubic_topk_mxr:
+        return migraphx_manual_cubic_topk_mxr
+
+    if not migraphx_manual_cubic_topk_cache_dir:
+        return ""
+
+    in_h = int(target_height) // int(stride)
+    in_w = int(target_width) // int(stride)
+    out_h, out_w = int(original_hw[0]), int(original_hw[1])
+
+    try:
+        from modules.migraphx_manual_cubic_topk_compiler import head_name
+
+        name = head_name(
+            in_h,
+            in_w,
+            out_h,
+            out_w,
+            topk=int(topk),
+            threshold=float(threshold),
+            nms_radius=int(nms_radius),
+            nms_impl=str(nms_impl),
+            cubic_a=float(cubic_a),
+        )
+    except Exception:
+        # Fallback mirrors the compiler naming used by the integrated module.
+        thr = str(float(threshold)).replace("-", "m").replace(".", "p")
+        ca = str(float(cubic_a)).replace("-", "m").replace(".", "p")
+        safe_impl = str(nms_impl).replace("-", "_")
+        name = (
+            f"heatmap_manual_cubic_nms_topk_{in_h}x{in_w}_to_{out_h}x{out_w}_"
+            f"k{int(topk)}_thr{thr}_r{int(nms_radius)}_{safe_impl}_a{ca}"
+        )
+
+    return str(Path(migraphx_manual_cubic_topk_cache_dir) / f"{name}.mxr")
+
+
+def _video_shape_candidates(video_path: str) -> List[Tuple[int, int]]:
+    """Return possible frame HxW shapes for a video.
+
+    Some video files/containers expose one shape via metadata and another after
+    actual decode/rotation handling.  The stream workers use ``cap.read()`` and
+    then ``frame.shape[:2]`` as ``original_hw``, so that decoded shape is the
+    important one.  We still include metadata as a fallback and compile all
+    unique candidates to avoid missing-head failures at runtime.
+    """
+    shapes: List[Tuple[int, int]] = []
+    try:
+        import cv2
+        cap = cv2.VideoCapture(str(video_path))
+        if not cap.isOpened():
+            return shapes
+
+        meta_w = int(round(float(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)))
+        meta_h = int(round(float(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)))
+        if meta_h > 0 and meta_w > 0:
+            shapes.append((meta_h, meta_w))
+
+        ret, frame = cap.read()
+        if ret and frame is not None:
+            h, w = frame.shape[:2]
+            shapes.append((int(h), int(w)))
+        cap.release()
+    except Exception:
+        pass
+
+    unique: List[Tuple[int, int]] = []
+    for hw in shapes:
+        if hw not in unique:
+            unique.append(hw)
+    return unique
+
+
+def compile_manual_cubic_topk_for_stream_if_requested(args, sources: Sequence[str]) -> None:
+    """Compile manual-cubic TopK heads for every stream resolution.
+
+    The first version compiled only one source via ``compile_for_video``.  That
+    is not robust enough when filenames/metadata are misleading or when cameras
+    have different decoded frame sizes.  The postprocess worker resolves heads
+    using the actual ``original_hw`` from decoded frames, so this precompile step
+    now compiles one head for every unique decoded/metadata HxW shape found in
+    the selected camera sources.
+    """
+    if not getattr(args, "compile_manual_cubic_topk", False):
+        return
+
+    cache_dir = (
+        getattr(args, "migraphx_manual_cubic_topk_cache_dir", "")
+        or "models/manual_cubic_nms_topk_cache"
+    )
+    if not sources:
+        raise RuntimeError("Cannot compile manual-cubic TopK head: no input video source found.")
+
+    from modules.migraphx_manual_cubic_topk_compiler import compile_manual_cubic_nms_topk_head
+
+    target_w = int(getattr(args, "target_width", 968))
+    target_h = int(getattr(args, "target_height", 544))
+    stride = int(getattr(args, "stride", 8))
+    in_h = target_h // stride
+    in_w = target_w // stride
+
+    topk = int(getattr(args, "manual_cubic_topk", getattr(args, "max_keypoints", 20)))
+    threshold = float(getattr(args, "manual_cubic_threshold", getattr(args, "threshold", 0.1)))
+    nms_radius = int(getattr(args, "manual_cubic_nms_radius", getattr(args, "nms_radius_fullres", 6)))
+    nms_impl = str(getattr(args, "manual_cubic_nms_impl", getattr(args, "nms_impl", "separable")))
+    cubic_a = float(getattr(args, "manual_cubic_a", -0.75))
+
+    shapes: List[Tuple[int, int]] = []
+    for src in sources:
+        for hw in _video_shape_candidates(src):
+            if hw not in shapes:
+                shapes.append(hw)
+
+    if not shapes:
+        raise RuntimeError(
+            "Could not determine any stream frame shape for manual-cubic TopK compilation."
+        )
+
+    print(
+        f"[MX-CUBIC-TOPK] compiling stream heads for shapes: {shapes} "
+        f"from sources={len(sources)}",
+        flush=True,
+    )
+
+    for out_h, out_w in shapes:
+        print(
+            f"[MX-CUBIC-TOPK] compile/check head: {in_h}x{in_w} -> {out_h}x{out_w}",
+            flush=True,
+        )
+        compile_manual_cubic_nms_topk_head(
+            in_h=in_h,
+            in_w=in_w,
+            out_h=int(out_h),
+            out_w=int(out_w),
+            output_dir=cache_dir,
+            channels=18,
+            topk=topk,
+            threshold=threshold,
+            nms_radius=nms_radius,
+            nms_impl=nms_impl,
+            cubic_a=cubic_a,
+            force=bool(getattr(args, "force_compile_manual_cubic_topk", False)),
+            keep_onnx=bool(getattr(args, "keep_manual_cubic_topk_onnx", False)),
+            exhaustive_tune=bool(getattr(args, "exhaustive_tune_manual_cubic_topk", False)),
+        )
+
+
+
+def manual_cubic_topk_enabled_in_infer(user_variant: str, enabled: bool) -> bool:
+    """Return True when manual-cubic TopK should run inside inference worker.
+
+    This keeps all MIGraphX GPU programs in the same process: pose inference
+    followed immediately by the manual-cubic resize+NMS+TopK head.  The
+    postprocess workers then do only CPU work: TopK adapter, PAF resize,
+    grouping and drawing.
+    """
+    if not enabled:
+        return False
+    try:
+        canonical, registry_mode, _ = resolve_registry_mode(user_variant)
+    except Exception:
+        canonical = registry_mode = str(user_variant)
+    return registry_mode == "migraphx_manual_cubic_nms_topk" or canonical == "migraphx_manual_cubic_nms_topk"
+
+
+def _run_manual_cubic_topk_in_inference(
+    *,
+    out_item: Dict[str, Any],
+    target_w: int,
+    target_h: int,
+    stride: int,
+    cache_dir: str,
+    explicit_mxr: str,
+    topk: int,
+    threshold: float,
+    nms_radius: int,
+    nms_impl: str,
+    cubic_a: float,
+    head_cache: Dict[str, Any],
+    tracer: Optional[Any] = None,
+) -> None:
+    """Attach precomputed manual-cubic TopK tensors to one inference output item."""
+    selected_mxr = select_manual_cubic_topk_mxr_for_hw(
+        original_hw=tuple(out_item["original_hw"]),
+        target_width=target_w,
+        target_height=target_h,
+        stride=stride,
+        migraphx_manual_cubic_topk_mxr=explicit_mxr,
+        migraphx_manual_cubic_topk_cache_dir=cache_dir,
+        topk=topk,
+        threshold=threshold,
+        nms_radius=nms_radius,
+        nms_impl=nms_impl,
+        cubic_a=cubic_a,
+    )
+    if not selected_mxr or not Path(selected_mxr).exists():
+        raise FileNotFoundError(
+            "Missing manual-cubic MIGraphX NMS+TopK .mxr for inference-fused stream path. "
+            f"original_hw={tuple(out_item['original_hw'])}, expected={selected_mxr}. "
+            "Run with --compile-manual-cubic-topk first."
+        )
+
+    if selected_mxr not in head_cache:
+        from modules.migraphx_manual_cubic_topk import MIGraphXManualCubicTopKHead
+        head_cache[selected_mxr] = MIGraphXManualCubicTopKHead(selected_mxr)
+
+    heatmaps = np.ascontiguousarray(out_item["heatmaps"][:, :, :18], dtype=np.float32)
+    heatmaps_nchw = np.moveaxis(heatmaps, -1, 0)[np.newaxis, ...]
+
+    with Timer() as t_topk:
+        if tracer is not None:
+            with tracer.range("manual_cubic_topk_in_infer"):
+                scores, indices = head_cache[selected_mxr].run(heatmaps_nchw)
+        else:
+            scores, indices = head_cache[selected_mxr].run(heatmaps_nchw)
+
+    out_item["manual_cubic_topk_scores"] = np.ascontiguousarray(scores)
+    out_item["manual_cubic_topk_indices"] = np.ascontiguousarray(indices)
+    out_item["manual_cubic_mx_topk_ms"] = float(t_topk.ms)
+    out_item["manual_cubic_topk_mxr"] = selected_mxr
+    out_item["manual_cubic_topk_full_width"] = int(out_item["original_hw"][1])
+    out_item["manual_cubic_topk_threshold"] = float(threshold)
+    out_item["manual_cubic_topk_precomputed"] = True
+
+
+def postprocess_precomputed_manual_cubic_topk_item(
+    *,
+    item: Dict[str, Any],
+    pafs: np.ndarray,
+    threshold: float,
+    points_per_limb: int,
+) -> Any:
+    """CPU-only tail for inference-fused manual-cubic TopK stream path.
+
+    Input item already contains TopK scores/indices produced by the MIGraphX
+    head in the inference worker.  This function avoids importing/loading
+    MIGraphX in postprocess workers.
+    """
+    import cv2
+    from modules.keypoints import group_keypoints_fast
+    from modules.migraphx_manual_cubic_topk import topk_to_keypoint_lists
+    from modules.postprocessing import PostprocessOutput
+
+    timings: Dict[str, float] = {}
+    total_start = time.perf_counter()
+    orig_h, orig_w = int(item["original_hw"][0]), int(item["original_hw"][1])
+
+    timings["manual_cubic_mx_topk"] = float(item.get("manual_cubic_mx_topk_ms", 0.0) or 0.0)
+
+    with Timer() as t_adapter:
+        all_kpts, _ = topk_to_keypoint_lists(
+            item["manual_cubic_topk_scores"],
+            item["manual_cubic_topk_indices"],
+            full_width=int(item.get("manual_cubic_topk_full_width", orig_w)),
+            threshold=float(item.get("manual_cubic_topk_threshold", threshold)),
+            num_keypoint_types=18,
+        )
+    timings["topk_adapter"] = t_adapter.ms
+
+    with Timer() as t_paf:
+        pafs_full = cv2.resize(np.ascontiguousarray(pafs, dtype=np.float32), (orig_w, orig_h), interpolation=cv2.INTER_CUBIC)
+        pafs_full = np.ascontiguousarray(pafs_full, dtype=np.float32)
+    timings["resize_pafs"] = t_paf.ms
+
+    with Timer() as t_group:
+        try:
+            out = group_keypoints_fast(all_kpts, pafs_full, points_per_limb=int(points_per_limb), return_timing=True)
+        except TypeError:
+            out = group_keypoints_fast(all_kpts, pafs_full, points_per_limb=int(points_per_limb))
+    timings["group_keypoints"] = t_group.ms
+
+    if isinstance(out, tuple) and len(out) == 3:
+        poses, kpts, group_times = out
+        for key, value in group_times.items():
+            try:
+                timings[str(key)] = float(value)
+            except Exception:
+                pass
+    else:
+        poses, kpts = out
+
+    timings["total_postprocess_cpu_tail"] = (time.perf_counter() - total_start) * 1000.0
+    timings["total_postprocess"] = timings["manual_cubic_mx_topk"] + timings["total_postprocess_cpu_tail"]
+    return PostprocessOutput(np.asarray(poses, dtype=np.float32), np.asarray(kpts, dtype=np.float32), timings)
 
 
 
@@ -519,9 +1612,14 @@ def camera_preprocess_worker(
     camera_fps: float,
     queue_policy: str,
     keep_frame_for_output: bool = False,
+    trace_log_every: int = 0,
+    roctx_enabled: bool = False,
 ) -> None:
     try:
         import cv2
+        tracer = RocTxTracer(roctx_enabled, f"camera:{camera_id}:pid:{os.getpid()}")
+        tracer.mark("worker_start")
+        configure_child_cpu_runtime(int(os.environ.get("STREAM_WORKER_THREADS", "1")))
 
         if not os.path.exists(video_path):
             raise FileNotFoundError(f"Camera {camera_id}: cannot find video {video_path}")
@@ -559,7 +1657,8 @@ def camera_preprocess_worker(
             original_h, original_w = frame.shape[:2]
 
             with Timer() as t_pre:
-                tensor = preprocess_frame(frame, target_w, target_h)
+                with tracer.range("preprocess_frame"):
+                    tensor = preprocess_frame(frame, target_w, target_h)
             preprocess_times.append(t_pre.ms)
 
             item = {
@@ -584,6 +1683,13 @@ def camera_preprocess_worker(
                     enqueued += 1
                 except py_queue.Full:
                     dropped += 1
+
+            trace_print(
+                trace_log_every,
+                attempted,
+                f"[TRACE camera:{camera_id} pid={os.getpid()}] "
+                f"frame={attempted} preprocess={t_pre.ms:.2f}ms enqueued={enqueued} dropped={dropped}",
+            )
 
             if realtime and period_s > 0:
                 next_frame_deadline += period_s
@@ -626,26 +1732,64 @@ def inference_worker(
     target_h: int,
     stride: int,
     shared_dtype: str,
+    shared_map_descs: Optional[Sequence[Dict[str, Any]]] = None,
+    free_map_slots=None,
+    migraphx_batch_size: int = 1,
+    migraphx_batch_timeout_ms: float = 0.0,
+    manual_cubic_topk_in_infer: bool = False,
+    manual_cubic_topk_variant: str = "",
+    migraphx_manual_cubic_topk_mxr: str = "",
+    migraphx_manual_cubic_topk_cache_dir: str = "models/manual_cubic_nms_topk_cache",
+    manual_cubic_topk: int = 20,
+    manual_cubic_threshold: float = 0.1,
+    manual_cubic_nms_radius: int = 6,
+    manual_cubic_nms_impl: str = "separable",
+    manual_cubic_a: float = -0.75,
+    trace_log_every: int = 0,
+    roctx_enabled: bool = False,
 ) -> None:
     try:
+        tracer = RocTxTracer(roctx_enabled, f"infer:{worker_id}:pid:{os.getpid()}")
+        tracer.mark("worker_start")
+        configure_child_cpu_runtime(int(os.environ.get("STREAM_WORKER_THREADS", "1")))
         import migraphx
 
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"Cannot find model: {model_path}")
 
         print(f"[INFER:{worker_id}] Loading MIGraphX model: {model_path}", flush=True)
-        model = migraphx.load(model_path)
+        with tracer.range("migraphx_load"):
+            model = migraphx.load(model_path)
         expected_dtype = str(model.get_parameter_shapes()["input"].type())
         print(f"[INFER:{worker_id}] Model loaded. Expected dtype: {expected_dtype}", flush=True)
+        print(
+            f"[INFER:{worker_id}] MIGraphX inference batch size={int(migraphx_batch_size)} "
+            f"timeout={float(migraphx_batch_timeout_ms):.2f} ms",
+            flush=True,
+        )
 
         out_h = target_h // stride
         out_w = target_w // stride
+        run_manual_cubic_topk_in_infer = manual_cubic_topk_enabled_in_infer(
+            manual_cubic_topk_variant, bool(manual_cubic_topk_in_infer)
+        )
+        manual_cubic_head_cache: Dict[str, Any] = {}
+        manual_cubic_topk_times: List[float] = []
+        if run_manual_cubic_topk_in_infer:
+            print(
+                f"[INFER:{worker_id}] Manual-cubic TopK will run inside inference worker "
+                f"K={int(manual_cubic_topk)} thr={float(manual_cubic_threshold)} "
+                f"radius={int(manual_cubic_nms_radius)} impl={manual_cubic_nms_impl}",
+                flush=True,
+            )
+        shared_slots, shared_handles = open_shared_map_buffers(shared_map_descs)
+        shared_map_misses = 0
         processed = 0
+        batch_runs = 0
+        batch_sizes_seen: List[int] = []
         inference_times: List[float] = []
         decode_times: List[float] = []
         queue_wait_times: List[float] = []
-        skipped_due_backpressure = 0
-        backpressure_idle_loops = 0
         t_worker_start = time.perf_counter()
 
         while True:
@@ -653,54 +1797,140 @@ def inference_worker(
             if item is None:
                 break
 
-            infer_start = time.perf_counter()
-            queue_wait_times.append((infer_start - float(item.get("preprocess_done_ts", infer_start))) * 1000.0)
+            batch_items, saw_stop = collect_queue_batch(
+                first_item=item,
+                in_q=in_q,
+                batch_size=migraphx_batch_size,
+                batch_timeout_ms=migraphx_batch_timeout_ms,
+            )
 
-            input_tensor = cast_for_migraphx(expected_dtype, item["input_tensor"])
+            infer_start = time.perf_counter()
+            batch_queue_wait_ms = [
+                (infer_start - float(bi.get("preprocess_done_ts", infer_start))) * 1000.0
+                for bi in batch_items
+            ]
+            queue_wait_times.extend(batch_queue_wait_ms)
+
+            input_batch, actual_batch_size = make_migraphx_input_batch(
+                batch_items,
+                expected_dtype=expected_dtype,
+                compiled_batch_size=migraphx_batch_size,
+            )
 
             with Timer() as t_inf:
-                results = model.run({"input": input_tensor})
+                with tracer.range(f"migraphx_run_batch{actual_batch_size}"):
+                    results = model.run({"input": input_batch})
             inference_times.append(t_inf.ms)
+            batch_runs += 1
+            batch_sizes_seen.append(actual_batch_size)
 
             with Timer() as t_dec:
-                heatmaps, pafs = decode_migraphx_outputs(results, out_h, out_w, shared_dtype)
+                with tracer.range("decode_migraphx_outputs"):
+                    heatmaps_bhwc, pafs_bhwc = decode_migraphx_batch_outputs(
+                        results,
+                        out_h,
+                        out_w,
+                        shared_dtype,
+                        batch_size=input_batch.shape[0],
+                    )
             decode_times.append(t_dec.ms)
 
-            out_item = {
-                "camera_id": int(item["camera_id"]),
-                "frame_id": int(item["frame_id"]),
-                "source": item["source"],
-                "capture_ts": float(item["capture_ts"]),
-                "preprocess_done_ts": float(item["preprocess_done_ts"]),
-                "infer_done_ts": time.perf_counter(),
-                "original_hw": tuple(item["original_hw"]),
-                "preprocess_ms": float(item["preprocess_ms"]),
-                "queue_pre_to_infer_ms": queue_wait_times[-1],
-                "inference_ms": float(t_inf.ms),
-                "decode_ms": float(t_dec.ms),
-                "heatmaps": heatmaps,
-                "pafs": pafs,
-            }
-            if "frame_bgr" in item:
-                out_item["frame_bgr"] = item["frame_bgr"]
-            out_q.put(out_item)
-            processed += 1
+            out_items = build_inference_output_items_from_batch(
+                batch_items=batch_items,
+                heatmaps_bhwc=heatmaps_bhwc,
+                pafs_bhwc=pafs_bhwc,
+                infer_done_ts=time.perf_counter(),
+                inference_ms_total=t_inf.ms,
+                decode_ms_total=t_dec.ms,
+                queue_wait_times_ms=batch_queue_wait_ms,
+            )
 
+            if run_manual_cubic_topk_in_infer:
+                for out_item in out_items:
+                    _run_manual_cubic_topk_in_inference(
+                        out_item=out_item,
+                        target_w=target_w,
+                        target_h=target_h,
+                        stride=stride,
+                        cache_dir=migraphx_manual_cubic_topk_cache_dir,
+                        explicit_mxr=migraphx_manual_cubic_topk_mxr,
+                        topk=manual_cubic_topk,
+                        threshold=manual_cubic_threshold,
+                        nms_radius=manual_cubic_nms_radius,
+                        nms_impl=manual_cubic_nms_impl,
+                        cubic_a=manual_cubic_a,
+                        head_cache=manual_cubic_head_cache,
+                        tracer=tracer,
+                    )
+                    manual_cubic_topk_times.append(float(out_item.get("manual_cubic_mx_topk_ms", 0.0)))
+                    out_item["infer_done_ts"] = time.perf_counter()
+
+            trace_print(
+                trace_log_every,
+                batch_runs,
+                f"[TRACE infer:{worker_id} pid={os.getpid()}] "
+                f"batch_run={batch_runs} actual_batch={actual_batch_size} "
+                f"queue_avg={mean(batch_queue_wait_ms):.2f}ms infer={t_inf.ms:.2f}ms decode={t_dec.ms:.2f}ms",
+            )
+
+            for out_item in out_items:
+                if shared_slots and free_map_slots is not None:
+                    slot_id = None
+                    try:
+                        slot_id = int(free_map_slots.get(timeout=0.05))
+                        slot = shared_slots[slot_id]
+                        if slot["heat"].shape != out_item["heatmaps"].shape or slot["paf"].shape != out_item["pafs"].shape:
+                            raise ValueError(
+                                f"shared-map slot shape mismatch: "
+                                f"heat {slot['heat'].shape}!={out_item['heatmaps'].shape}, "
+                                f"paf {slot['paf'].shape}!={out_item['pafs'].shape}"
+                            )
+                        np.copyto(slot["heat"], out_item.pop("heatmaps"), casting="same_kind")
+                        np.copyto(slot["paf"], out_item.pop("pafs"), casting="same_kind")
+                        out_item["shared_map_slot"] = slot_id
+                    except Exception:
+                        shared_map_misses += 1
+                        if slot_id is not None:
+                            try:
+                                free_map_slots.put_nowait(slot_id)
+                            except Exception:
+                                pass
+                out_q.put(out_item)
+                processed += 1
+
+            if saw_stop:
+                break
+
+        close_shared_map_views(shared_handles)
         stats_q.put(
             {
                 "stage": "inference",
                 "worker_id": worker_id,
                 "processed": processed,
+                "batch_runs": batch_runs,
+                "avg_real_batch_size": mean(batch_sizes_seen),
+                "p95_real_batch_size": percentile(batch_sizes_seen, 95),
+                "configured_migraphx_batch_size": int(migraphx_batch_size),
+                "migraphx_batch_timeout_ms": float(migraphx_batch_timeout_ms),
+                "shared_map_misses": shared_map_misses,
                 "avg_queue_pre_to_infer_ms": mean(queue_wait_times),
                 "p95_queue_pre_to_infer_ms": percentile(queue_wait_times, 95),
                 "avg_inference_ms": mean(inference_times),
                 "p95_inference_ms": percentile(inference_times, 95),
                 "avg_decode_ms": mean(decode_times),
                 "p95_decode_ms": percentile(decode_times, 95),
+                "avg_manual_cubic_mx_topk_ms": mean(manual_cubic_topk_times),
+                "p95_manual_cubic_mx_topk_ms": percentile(manual_cubic_topk_times, 95),
+                "manual_cubic_topk_in_infer": bool(run_manual_cubic_topk_in_infer),
+                "manual_cubic_topk_heads_loaded": len(manual_cubic_head_cache),
                 "wall_s": time.perf_counter() - t_worker_start,
             }
         )
-        print(f"[INFER:{worker_id}] Done. processed={processed}", flush=True)
+        print(
+            f"[INFER:{worker_id}] Done. processed={processed} batch_runs={batch_runs} "
+            f"avg_real_batch={mean(batch_sizes_seen):.2f}",
+            flush=True,
+        )
 
     except Exception:
         error_q.put({"stage": "inference", "worker_id": worker_id, "traceback": traceback.format_exc()})
@@ -726,8 +1956,24 @@ def postprocess_worker(
     render_output: bool = False,
     migraphx_nms_mxr: str = "",
     migraphx_nms_cache_dir: str = "",
+    migraphx_manual_cubic_topk_mxr: str = "",
+    migraphx_manual_cubic_topk_cache_dir: str = "models/manual_cubic_nms_topk_cache",
+    manual_cubic_topk: int = 20,
+    manual_cubic_threshold: float = 0.1,
+    manual_cubic_nms_radius: int = 6,
+    manual_cubic_nms_impl: str = "separable",
+    manual_cubic_a: float = -0.75,
+    prealloc_resize_buffers: bool = False,
+    trace_log_every: int = 0,
+    roctx_enabled: bool = False,
+    args_target_width: int = 968,
+    args_target_height: int = 544,
+    args_stride: int = 8,
 ) -> None:
     try:
+        tracer = RocTxTracer(roctx_enabled, f"post:{worker_id}:pid:{os.getpid()}")
+        tracer.mark("worker_start")
+        configure_child_cpu_runtime(int(os.environ.get("STREAM_WORKER_THREADS", "1")))
         canonical, registry_mode, wants_torch = resolve_registry_mode(user_variant)
 
         if wants_torch:
@@ -757,6 +2003,12 @@ def postprocess_worker(
                 "nms_impl": nms_impl,
                 "migraphx_nms_mxr": migraphx_nms_mxr,
                 "migraphx_nms_cache_dir": migraphx_nms_cache_dir,
+                "manual_cubic_topk": int(manual_cubic_topk),
+                "manual_cubic_threshold": float(manual_cubic_threshold),
+                "manual_cubic_nms_radius": int(manual_cubic_nms_radius),
+                "manual_cubic_nms_impl": str(manual_cubic_nms_impl),
+                "manual_cubic_a": float(manual_cubic_a),
+                "prealloc_resize_buffers": bool(prealloc_resize_buffers),
             },
         )
 
@@ -764,6 +2016,8 @@ def postprocess_worker(
         # these as direct config attributes, not only inside config.extra.
         config.migraphx_nms_mxr = migraphx_nms_mxr
         config.migraphx_nms_cache_dir = migraphx_nms_cache_dir
+        config.migraphx_manual_cubic_topk_mxr = migraphx_manual_cubic_topk_mxr
+        config.migraphx_manual_cubic_topk_cache_dir = migraphx_manual_cubic_topk_cache_dir
 
         print(
             f"[POST:{worker_id}] user_variant={canonical} registry_mode={registry_mode} "
@@ -801,13 +2055,45 @@ def postprocess_worker(
                     )
                 config.extra["migraphx_nms_mxr"] = selected_mxr
 
-            out = postprocess_from_maps(
-                registry_mode,
-                item["heatmaps"],
-                item["pafs"],
-                tuple(item["original_hw"]),
-                config=config,
-            )
+            if registry_mode == "migraphx_manual_cubic_nms_topk":
+                selected_mxr = select_manual_cubic_topk_mxr_for_hw(
+                    original_hw=tuple(item["original_hw"]),
+                    target_width=args_target_width,
+                    target_height=args_target_height,
+                    stride=args_stride,
+                    migraphx_manual_cubic_topk_mxr=migraphx_manual_cubic_topk_mxr,
+                    migraphx_manual_cubic_topk_cache_dir=migraphx_manual_cubic_topk_cache_dir,
+                    topk=manual_cubic_topk,
+                    threshold=manual_cubic_threshold,
+                    nms_radius=manual_cubic_nms_radius,
+                    nms_impl=manual_cubic_nms_impl,
+                    cubic_a=manual_cubic_a,
+                )
+                if not selected_mxr or not Path(selected_mxr).exists():
+                    raise FileNotFoundError(
+                        "Missing manual-cubic MIGraphX NMS+TopK .mxr for stream resolution. "
+                        f"original_hw={tuple(item['original_hw'])}, expected={selected_mxr}. "
+                        "Run this script with --compile-manual-cubic-topk or run "
+                        "python modules/migraphx_manual_cubic_topk_compiler.py --video <video>."
+                    )
+                config.migraphx_manual_cubic_topk_mxr = selected_mxr
+
+            with tracer.range(f"postprocess_{registry_mode}"):
+                if registry_mode == "migraphx_manual_cubic_nms_topk" and item.get("manual_cubic_topk_precomputed"):
+                    out = postprocess_precomputed_manual_cubic_topk_item(
+                        item=item,
+                        pafs=item["pafs"],
+                        threshold=manual_cubic_threshold,
+                        points_per_limb=config.points_per_limb,
+                    )
+                else:
+                    out = postprocess_from_maps(
+                        registry_mode,
+                        item["heatmaps"],
+                        item["pafs"],
+                        tuple(item["original_hw"]),
+                        config=config,
+                    )
             post_done = time.perf_counter()
 
             timings = dict(out.timings)
@@ -830,6 +2116,7 @@ def postprocess_worker(
                 "queue_infer_to_post_ms": float(queue_wait_ms),
                 "post_ms": post_ms,
                 "e2e_ms": e2e_ms,
+                "post_done_ts": post_done,
                 "num_poses": int(len(out.pose_entries)) if out.pose_entries is not None else 0,
                 "num_keypoints": int(len(out.all_keypoints)) if out.all_keypoints is not None else 0,
             }
@@ -856,6 +2143,13 @@ def postprocess_worker(
 
             result_q.put(row)
             processed += 1
+            trace_print(
+                trace_log_every,
+                processed,
+                f"[TRACE post:{worker_id} pid={os.getpid()}] "
+                f"processed={processed} cam={row['camera_id']} frame={row['frame_id']} "
+                f"queue={queue_wait_ms:.2f}ms post={post_ms:.2f}ms e2e={e2e_ms:.2f}ms poses={row['num_poses']}",
+            )
 
         stats_q.put(
             {
@@ -950,10 +2244,15 @@ def camera_preprocess_latest_worker(
     realtime: bool,
     camera_fps: float,
     keep_frame_for_output: bool = False,
+    trace_log_every: int = 0,
+    roctx_enabled: bool = False,
 ) -> None:
     """Camera worker that maintains a newest-frame-only slot for its camera."""
     try:
         import cv2
+        tracer = RocTxTracer(roctx_enabled, f"camera:{camera_id}:pid:{os.getpid()}")
+        tracer.mark("worker_start")
+        configure_child_cpu_runtime(int(os.environ.get("STREAM_WORKER_THREADS", "1")))
 
         if not os.path.exists(video_path):
             raise FileNotFoundError(f"Camera {camera_id}: cannot find video {video_path}")
@@ -993,7 +2292,8 @@ def camera_preprocess_latest_worker(
             original_h, original_w = frame.shape[:2]
 
             with Timer() as t_pre:
-                tensor = preprocess_frame(frame, target_w, target_h)
+                with tracer.range("preprocess_frame"):
+                    tensor = preprocess_frame(frame, target_w, target_h)
             preprocess_times.append(t_pre.ms)
 
             item = {
@@ -1010,6 +2310,12 @@ def camera_preprocess_latest_worker(
                 item["frame_bgr"] = frame.copy()
             replaced_before_infer += latest_put(q, item)
             published += 1
+            trace_print(
+                trace_log_every,
+                attempted,
+                f"[TRACE camera:{camera_id} pid={os.getpid()} latest] "
+                f"frame={attempted} preprocess={t_pre.ms:.2f}ms published={published} replaced={replaced_before_infer}",
+            )
 
             if realtime and period_s > 0:
                 next_frame_deadline += period_s
@@ -1056,51 +2362,119 @@ def inference_latest_worker(
     camera_done,
     infer_done,
     post_pending,
-    backpressure: bool,
-    stats_q,
-    error_q,
-    target_w: int,
-    target_h: int,
-    stride: int,
-    shared_dtype: str,
+    backpressure_mode: str = "strict",
+    max_pending_age_ms: float = 300.0,
+    post_pending_ts=None,
+    last_processed_ts=None,
+    target_period_s: float = 0.0,
+    stats_q=None,
+    error_q=None,
+    target_w: int = 968,
+    target_h: int = 544,
+    stride: int = 8,
+    shared_dtype: str = "float32",
     poll_sleep_s: float = 0.001,
     migraphx_nms_mxr: str = "",
     migraphx_nms_cache_dir: str = "",
+    shared_map_descs: Optional[Sequence[Dict[str, Any]]] = None,
+    free_map_slots=None,
+    migraphx_batch_size: int = 1,
+    migraphx_batch_timeout_ms: float = 0.0,
+    manual_cubic_topk_in_infer: bool = False,
+    manual_cubic_topk_variant: str = "",
+    migraphx_manual_cubic_topk_mxr: str = "",
+    migraphx_manual_cubic_topk_cache_dir: str = "models/manual_cubic_nms_topk_cache",
+    manual_cubic_topk: int = 20,
+    manual_cubic_threshold: float = 0.1,
+    manual_cubic_nms_radius: int = 6,
+    manual_cubic_nms_impl: str = "separable",
+    manual_cubic_a: float = -0.75,
+    trace_log_every: int = 0,
+    roctx_enabled: bool = False,
 ) -> None:
-    """Round-robin MIGraphX worker over newest-frame slots, one slot per camera.
-
-    Backpressure mode prevents wasteful inference: a camera is eligible for
-    inference only when it does not already have a queued/in-flight
-    postprocess result. This keeps MIGraphX output count close to final output
-    count instead of repeatedly overwriting unprocessed heatmap/PAF maps.
-    """
+    """Round-robin MIGraphX worker over newest-frame slots, with optional batched inference."""
     try:
+        tracer = RocTxTracer(roctx_enabled, f"infer:{worker_id}:pid:{os.getpid()}")
+        tracer.mark("worker_start")
+        configure_child_cpu_runtime(int(os.environ.get("STREAM_WORKER_THREADS", "1")))
         import migraphx
 
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"Cannot find model: {model_path}")
 
         print(f"[INFER:{worker_id}] Loading MIGraphX model: {model_path}", flush=True)
-        model = migraphx.load(model_path)
+        with tracer.range("migraphx_load"):
+            model = migraphx.load(model_path)
         expected_dtype = str(model.get_parameter_shapes()["input"].type())
         print(f"[INFER:{worker_id}] Model loaded. Expected dtype: {expected_dtype}", flush=True)
+        print(
+            f"[INFER:{worker_id}] MIGraphX inference batch size={int(migraphx_batch_size)} "
+            f"timeout={float(migraphx_batch_timeout_ms):.2f} ms",
+            flush=True,
+        )
 
         out_h = target_h // stride
         out_w = target_w // stride
+        run_manual_cubic_topk_in_infer = manual_cubic_topk_enabled_in_infer(
+            manual_cubic_topk_variant, bool(manual_cubic_topk_in_infer)
+        )
+        manual_cubic_head_cache: Dict[str, Any] = {}
+        manual_cubic_topk_times: List[float] = []
+        if run_manual_cubic_topk_in_infer:
+            print(
+                f"[INFER:{worker_id}] Manual-cubic TopK will run inside inference worker "
+                f"K={int(manual_cubic_topk)} thr={float(manual_cubic_threshold)} "
+                f"radius={int(manual_cubic_nms_radius)} impl={manual_cubic_nms_impl}",
+                flush=True,
+            )
+        shared_slots, shared_handles = open_shared_map_buffers(shared_map_descs)
+        shared_map_misses = 0
         ncam = len(in_queues)
         next_cam = worker_id % max(1, ncam)
+        configured_batch_size = max(1, int(migraphx_batch_size))
+        batch_timeout_s = max(0.0, float(migraphx_batch_timeout_ms)) / 1000.0
 
         processed = 0
+        batch_runs = 0
+        batch_sizes_seen: List[int] = []
         replaced_before_post = 0
         skipped_due_backpressure = 0
+        soft_overrides = 0
+        throttle_skips = 0
         backpressure_idle_loops = 0
         inference_times: List[float] = []
         decode_times: List[float] = []
         queue_wait_times: List[float] = []
         t_worker_start = time.perf_counter()
 
-        while True:
-            item = None
+        def _camera_is_eligible(cam_id: int, count_skip: bool = True) -> bool:
+            nonlocal skipped_due_backpressure, soft_overrides, throttle_skips
+
+            if target_period_s > 0.0 and last_processed_ts is not None:
+                last_ts = float(last_processed_ts[cam_id])
+                if last_ts > 0.0 and (time.perf_counter() - last_ts) < target_period_s:
+                    if count_skip:
+                        throttle_skips += 1
+                    return False
+
+            if backpressure_mode != "off" and post_pending is not None and bool(post_pending[cam_id]):
+                if backpressure_mode == "soft" and post_pending_ts is not None:
+                    age_ms = (time.perf_counter() - float(post_pending_ts[cam_id])) * 1000.0
+                    if age_ms <= max_pending_age_ms:
+                        if count_skip:
+                            skipped_due_backpressure += 1
+                        return False
+                    if count_skip:
+                        soft_overrides += 1
+                    return True
+                if count_skip:
+                    skipped_due_backpressure += 1
+                return False
+
+            return True
+
+        def _get_next_item() -> Tuple[Optional[Dict[str, Any]], int]:
+            nonlocal next_cam
             scanned = 0
             skipped_this_scan = 0
             while scanned < ncam:
@@ -1108,16 +2482,21 @@ def inference_latest_worker(
                 next_cam = (next_cam + 1) % ncam
                 scanned += 1
 
-                if backpressure and post_pending is not None and bool(post_pending[cam_id]):
-                    skipped_due_backpressure += 1
-                    skipped_this_scan += 1
+                before_bp = skipped_due_backpressure
+                before_thr = throttle_skips
+                if not _camera_is_eligible(cam_id, count_skip=True):
+                    if skipped_due_backpressure > before_bp or throttle_skips > before_thr:
+                        skipped_this_scan += 1
                     continue
 
                 try:
-                    item = in_queues[cam_id].get_nowait()
-                    break
+                    return in_queues[cam_id].get_nowait(), skipped_this_scan
                 except py_queue.Empty:
                     continue
+            return None, skipped_this_scan
+
+        while True:
+            item, skipped_this_scan = _get_next_item()
 
             if item is None:
                 if all_done(camera_done) and all_queues_empty(in_queues):
@@ -1127,52 +2506,132 @@ def inference_latest_worker(
                 time.sleep(poll_sleep_s)
                 continue
 
-            infer_start = time.perf_counter()
-            queue_wait_times.append((infer_start - float(item.get("preprocess_done_ts", infer_start))) * 1000.0)
+            batch_items = [item]
+            if configured_batch_size > 1:
+                deadline = time.perf_counter() + batch_timeout_s
+                while len(batch_items) < configured_batch_size:
+                    extra, _ = _get_next_item()
+                    if extra is not None:
+                        batch_items.append(extra)
+                        continue
+                    if batch_timeout_s <= 0.0 or time.perf_counter() >= deadline:
+                        break
+                    time.sleep(min(poll_sleep_s, max(0.0, deadline - time.perf_counter())))
 
-            input_tensor = cast_for_migraphx(expected_dtype, item["input_tensor"])
+            infer_start = time.perf_counter()
+            batch_queue_wait_ms = [
+                (infer_start - float(bi.get("preprocess_done_ts", infer_start))) * 1000.0
+                for bi in batch_items
+            ]
+            queue_wait_times.extend(batch_queue_wait_ms)
+
+            input_batch, actual_batch_size = make_migraphx_input_batch(
+                batch_items,
+                expected_dtype=expected_dtype,
+                compiled_batch_size=configured_batch_size,
+            )
 
             with Timer() as t_inf:
-                results = model.run({"input": input_tensor})
+                with tracer.range(f"migraphx_run_batch{actual_batch_size}"):
+                    results = model.run({"input": input_batch})
             inference_times.append(t_inf.ms)
+            batch_runs += 1
+            batch_sizes_seen.append(actual_batch_size)
 
             with Timer() as t_dec:
-                heatmaps, pafs = decode_migraphx_outputs(results, out_h, out_w, shared_dtype)
+                with tracer.range("decode_migraphx_outputs"):
+                    heatmaps_bhwc, pafs_bhwc = decode_migraphx_batch_outputs(
+                        results,
+                        out_h,
+                        out_w,
+                        shared_dtype,
+                        batch_size=input_batch.shape[0],
+                    )
             decode_times.append(t_dec.ms)
 
-            out_item = {
-                "camera_id": int(item["camera_id"]),
-                "frame_id": int(item["frame_id"]),
-                "source": item["source"],
-                "capture_ts": float(item["capture_ts"]),
-                "preprocess_done_ts": float(item["preprocess_done_ts"]),
-                "infer_done_ts": time.perf_counter(),
-                "original_hw": tuple(item["original_hw"]),
-                "preprocess_ms": float(item["preprocess_ms"]),
-                "queue_pre_to_infer_ms": queue_wait_times[-1],
-                "inference_ms": float(t_inf.ms),
-                "decode_ms": float(t_dec.ms),
-                "heatmaps": heatmaps,
-                "pafs": pafs,
-            }
-            if "frame_bgr" in item:
-                out_item["frame_bgr"] = item["frame_bgr"]
-            cam_id = int(item["camera_id"])
-            if backpressure and post_pending is not None:
-                # Mark this camera as having an outstanding postprocess result
-                # before publishing the item, so another inference worker cannot
-                # pick the same camera in the small publication window.
-                post_pending[cam_id] = 1
-                try:
-                    out_queues[cam_id].put_nowait(out_item)
-                except py_queue.Full:
-                    # Should be rare when post_pending is respected. Keep the
-                    # script robust and preserve newest semantics if the queue
-                    # state and flag ever get out of sync.
-                    replaced_before_post += latest_put(out_queues[cam_id], out_item)
-            else:
-                replaced_before_post += latest_put(out_queues[cam_id], out_item)
-            processed += 1
+            out_items = build_inference_output_items_from_batch(
+                batch_items=batch_items,
+                heatmaps_bhwc=heatmaps_bhwc,
+                pafs_bhwc=pafs_bhwc,
+                infer_done_ts=time.perf_counter(),
+                inference_ms_total=t_inf.ms,
+                decode_ms_total=t_dec.ms,
+                queue_wait_times_ms=batch_queue_wait_ms,
+            )
+
+            if run_manual_cubic_topk_in_infer:
+                for out_item in out_items:
+                    _run_manual_cubic_topk_in_inference(
+                        out_item=out_item,
+                        target_w=target_w,
+                        target_h=target_h,
+                        stride=stride,
+                        cache_dir=migraphx_manual_cubic_topk_cache_dir,
+                        explicit_mxr=migraphx_manual_cubic_topk_mxr,
+                        topk=manual_cubic_topk,
+                        threshold=manual_cubic_threshold,
+                        nms_radius=manual_cubic_nms_radius,
+                        nms_impl=manual_cubic_nms_impl,
+                        cubic_a=manual_cubic_a,
+                        head_cache=manual_cubic_head_cache,
+                        tracer=tracer,
+                    )
+                    manual_cubic_topk_times.append(float(out_item.get("manual_cubic_mx_topk_ms", 0.0)))
+                    out_item["infer_done_ts"] = time.perf_counter()
+
+            trace_print(
+                trace_log_every,
+                batch_runs,
+                f"[TRACE infer:{worker_id} pid={os.getpid()} latest] "
+                f"batch_run={batch_runs} actual_batch={actual_batch_size} "
+                f"queue_avg={mean(batch_queue_wait_ms):.2f}ms infer={t_inf.ms:.2f}ms decode={t_dec.ms:.2f}ms",
+            )
+
+            for out_item in out_items:
+                cam_id = int(out_item["camera_id"])
+
+                if shared_slots and free_map_slots is not None:
+                    slot_id = None
+                    try:
+                        slot_id = int(free_map_slots.get_nowait())
+                        slot = shared_slots[slot_id]
+                        if slot["heat"].shape != out_item["heatmaps"].shape or slot["paf"].shape != out_item["pafs"].shape:
+                            raise ValueError(
+                                f"shared-map slot shape mismatch: "
+                                f"heat {slot['heat'].shape}!={out_item['heatmaps'].shape}, "
+                                f"paf {slot['paf'].shape}!={out_item['pafs'].shape}"
+                            )
+                        np.copyto(slot["heat"], out_item.pop("heatmaps"), casting="same_kind")
+                        np.copyto(slot["paf"], out_item.pop("pafs"), casting="same_kind")
+                        out_item["shared_map_slot"] = slot_id
+                    except py_queue.Empty:
+                        shared_map_misses += 1
+                    except Exception:
+                        shared_map_misses += 1
+                        if slot_id is not None:
+                            try:
+                                free_map_slots.put_nowait(slot_id)
+                            except Exception:
+                                pass
+
+                if backpressure_mode != "off" and post_pending is not None:
+                    post_pending[cam_id] = 1
+                    if post_pending_ts is not None:
+                        post_pending_ts[cam_id] = time.perf_counter()
+                    try:
+                        out_queues[cam_id].put_nowait(out_item)
+                    except py_queue.Full:
+                        dropped_item = latest_put_with_dropped(out_queues[cam_id], out_item)
+                        if dropped_item is not None:
+                            replaced_before_post += 1
+                            release_shared_slot_from_item(dropped_item, free_map_slots)
+                else:
+                    dropped_item = latest_put_with_dropped(out_queues[cam_id], out_item)
+                    if dropped_item is not None:
+                        replaced_before_post += 1
+                        release_shared_slot_from_item(dropped_item, free_map_slots)
+
+                processed += 1
 
         infer_done[worker_id] = 1
         stats_q.put(
@@ -1181,9 +2640,18 @@ def inference_latest_worker(
                 "buffer_mode": "latest",
                 "worker_id": worker_id,
                 "processed": processed,
+                "batch_runs": batch_runs,
+                "avg_real_batch_size": mean(batch_sizes_seen),
+                "p95_real_batch_size": percentile(batch_sizes_seen, 95),
+                "configured_migraphx_batch_size": configured_batch_size,
+                "migraphx_batch_timeout_ms": float(migraphx_batch_timeout_ms),
                 "replaced_before_post": replaced_before_post,
-                "backpressure_enabled": bool(backpressure),
+                "shared_map_misses": shared_map_misses,
+                "backpressure_mode": backpressure_mode,
+                "backpressure_enabled": backpressure_mode != "off",
                 "skipped_due_backpressure": skipped_due_backpressure,
+                "soft_backpressure_overrides": soft_overrides,
+                "throttle_skips": throttle_skips,
                 "backpressure_idle_loops": backpressure_idle_loops,
                 "avg_queue_pre_to_infer_ms": mean(queue_wait_times),
                 "p95_queue_pre_to_infer_ms": percentile(queue_wait_times, 95),
@@ -1191,13 +2659,19 @@ def inference_latest_worker(
                 "p95_inference_ms": percentile(inference_times, 95),
                 "avg_decode_ms": mean(decode_times),
                 "p95_decode_ms": percentile(decode_times, 95),
+                "avg_manual_cubic_mx_topk_ms": mean(manual_cubic_topk_times),
+                "p95_manual_cubic_mx_topk_ms": percentile(manual_cubic_topk_times, 95),
+                "manual_cubic_topk_in_infer": bool(run_manual_cubic_topk_in_infer),
+                "manual_cubic_topk_heads_loaded": len(manual_cubic_head_cache),
                 "wall_s": time.perf_counter() - t_worker_start,
             }
         )
+        close_shared_map_views(shared_handles)
         print(
-            f"[INFER:{worker_id}] Done. processed={processed} "
-            f"replaced_before_post={replaced_before_post} "
-            f"backpressure_skips={skipped_due_backpressure}",
+            f"[INFER:{worker_id}] Done. processed={processed} batch_runs={batch_runs} "
+            f"avg_real_batch={mean(batch_sizes_seen):.2f} replaced_before_post={replaced_before_post} "
+            f"backpressure_skips={skipped_due_backpressure} soft_overrides={soft_overrides} "
+            f"throttle_skips={throttle_skips}",
             flush=True,
         )
 
@@ -1216,6 +2690,7 @@ def postprocess_latest_worker(
     in_queues: Sequence[Any],
     infer_done,
     post_pending,
+    last_processed_ts=None,
     result_q,
     stats_q,
     error_q,
@@ -1232,9 +2707,29 @@ def postprocess_latest_worker(
     poll_sleep_s: float = 0.001,
     migraphx_nms_mxr: str = "",
     migraphx_nms_cache_dir: str = "",
+    migraphx_manual_cubic_topk_mxr: str = "",
+    migraphx_manual_cubic_topk_cache_dir: str = "models/manual_cubic_nms_topk_cache",
+    manual_cubic_topk: int = 20,
+    manual_cubic_threshold: float = 0.1,
+    manual_cubic_nms_radius: int = 6,
+    manual_cubic_nms_impl: str = "separable",
+    manual_cubic_a: float = -0.75,
+    shared_map_descs: Optional[Sequence[Dict[str, Any]]] = None,
+    free_map_slots=None,
+    prealloc_resize_buffers: bool = False,
+    gpu_nms_batch_size: int = 1,
+    gpu_nms_batch_timeout_ms: float = 0.0,
+    trace_log_every: int = 0,
+    roctx_enabled: bool = False,
+    args_target_width: int = 968,
+    args_target_height: int = 544,
+    args_stride: int = 8,
 ) -> None:
     """Round-robin postprocess worker over newest decoded-map slots, one slot per camera."""
     try:
+        tracer = RocTxTracer(roctx_enabled, f"post:{worker_id}:pid:{os.getpid()}")
+        tracer.mark("worker_start")
+        configure_child_cpu_runtime(int(os.environ.get("STREAM_WORKER_THREADS", "1")))
         canonical, registry_mode, wants_torch = resolve_registry_mode(user_variant)
 
         if wants_torch:
@@ -1250,7 +2745,7 @@ def postprocess_latest_worker(
                 torch.cuda.synchronize()
                 print(f"[POST:{worker_id}] Torch GPU name: {torch.cuda.get_device_name(0)}", flush=True)
 
-        from modules.postprocessing import PostprocessConfig, postprocess_from_maps
+        from modules.postprocessing import PostprocessConfig, postprocess_from_maps, postprocess_gpu_nms_fullres_batch
 
         config = PostprocessConfig(
             max_keypoints_per_type=max_keypoints,
@@ -1264,6 +2759,12 @@ def postprocess_latest_worker(
                 "nms_impl": nms_impl,
                 "migraphx_nms_mxr": migraphx_nms_mxr,
                 "migraphx_nms_cache_dir": migraphx_nms_cache_dir,
+                "manual_cubic_topk": int(manual_cubic_topk),
+                "manual_cubic_threshold": float(manual_cubic_threshold),
+                "manual_cubic_nms_radius": int(manual_cubic_nms_radius),
+                "manual_cubic_nms_impl": str(manual_cubic_nms_impl),
+                "manual_cubic_a": float(manual_cubic_a),
+                "prealloc_resize_buffers": bool(prealloc_resize_buffers),
             },
         )
 
@@ -1271,12 +2772,29 @@ def postprocess_latest_worker(
         # these as direct config attributes, not only inside config.extra.
         config.migraphx_nms_mxr = migraphx_nms_mxr
         config.migraphx_nms_cache_dir = migraphx_nms_cache_dir
+        config.migraphx_manual_cubic_topk_mxr = migraphx_manual_cubic_topk_mxr
+        config.migraphx_manual_cubic_topk_cache_dir = migraphx_manual_cubic_topk_cache_dir
 
         print(
             f"[POST:{worker_id}] user_variant={canonical} registry_mode={registry_mode} "
             f"nms_impl={nms_impl} gpu_dtype={gpu_compute_dtype}",
             flush=True,
         )
+
+        shared_slots, shared_handles = open_shared_map_buffers(shared_map_descs)
+        batch_size = max(1, int(gpu_nms_batch_size))
+        batch_timeout_s = max(0.0, float(gpu_nms_batch_timeout_ms)) / 1000.0
+        use_gpu_nms_batch = registry_mode == "gpu_nms_fullres_cpu_group" and batch_size > 1
+
+        def _maps_for(batch_item):
+            slot_id = batch_item.get("shared_map_slot") if isinstance(batch_item, dict) else None
+            if slot_id is not None and int(slot_id) in shared_slots:
+                slot = shared_slots[int(slot_id)]
+                return slot["heat"], slot["paf"]
+            return batch_item["heatmaps"], batch_item["pafs"]
+
+        def _release_item(batch_item) -> None:
+            release_shared_slot_from_item(batch_item, free_map_slots)
 
         ncam = len(in_queues)
         next_cam = worker_id % max(1, ncam)
@@ -1305,87 +2823,171 @@ def postprocess_latest_worker(
                 time.sleep(poll_sleep_s)
                 continue
 
+            batch_items = [item]
+            if use_gpu_nms_batch:
+                deadline = time.perf_counter() + batch_timeout_s
+                while len(batch_items) < batch_size:
+                    extra = None
+                    scanned = 0
+                    while scanned < ncam:
+                        cam_id = next_cam
+                        next_cam = (next_cam + 1) % ncam
+                        scanned += 1
+                        try:
+                            extra = in_queues[cam_id].get_nowait()
+                            break
+                        except py_queue.Empty:
+                            continue
+                    if extra is not None:
+                        batch_items.append(extra)
+                        continue
+                    if batch_timeout_s <= 0.0 or time.perf_counter() >= deadline:
+                        break
+                    time.sleep(min(poll_sleep_s, max(0.0, deadline - time.perf_counter())))
+
             post_start = time.perf_counter()
-            queue_wait_ms = (post_start - float(item.get("infer_done_ts", post_start))) * 1000.0
-            queue_wait_times.append(queue_wait_ms)
 
-            if registry_mode in {"migraphx_nms", "migraphx_nms_k20"}:
-                selected_mxr = select_migraphx_nms_mxr_for_hw(
-                    original_hw=tuple(item["original_hw"]),
-                    migraphx_nms_mxr=migraphx_nms_mxr,
-                    migraphx_nms_cache_dir=migraphx_nms_cache_dir,
-                )
-                if not selected_mxr or not Path(selected_mxr).exists():
-                    raise FileNotFoundError(
-                        "Missing MIGraphX NMS .mxr for stream resolution. "
-                        f"original_hw={tuple(item['original_hw'])}, expected={selected_mxr}. "
-                        "Run: python -m modules.migraphx_compiler --video <video> "
-                        "--output-dir models/nms_fullres_cache"
+            try:
+                if registry_mode in {"migraphx_nms", "migraphx_nms_k20"}:
+                    selected_mxr = select_migraphx_nms_mxr_for_hw(
+                        original_hw=tuple(item["original_hw"]),
+                        migraphx_nms_mxr=migraphx_nms_mxr,
+                        migraphx_nms_cache_dir=migraphx_nms_cache_dir,
                     )
-                config.extra["migraphx_nms_mxr"] = selected_mxr
+                    if not selected_mxr or not Path(selected_mxr).exists():
+                        raise FileNotFoundError(
+                            "Missing MIGraphX NMS .mxr for stream resolution. "
+                            f"original_hw={tuple(item['original_hw'])}, expected={selected_mxr}. "
+                            "Run: python -m modules.migraphx_compiler --video <video> "
+                            "--output-dir models/nms_fullres_cache"
+                        )
+                    config.extra["migraphx_nms_mxr"] = selected_mxr
 
-            out = postprocess_from_maps(
-                registry_mode,
-                item["heatmaps"],
-                item["pafs"],
-                tuple(item["original_hw"]),
-                config=config,
-            )
-            post_done = time.perf_counter()
+                if registry_mode == "migraphx_manual_cubic_nms_topk":
+                    selected_mxr = select_manual_cubic_topk_mxr_for_hw(
+                        original_hw=tuple(item["original_hw"]),
+                        target_width=args_target_width,
+                        target_height=args_target_height,
+                        stride=args_stride,
+                        migraphx_manual_cubic_topk_mxr=migraphx_manual_cubic_topk_mxr,
+                        migraphx_manual_cubic_topk_cache_dir=migraphx_manual_cubic_topk_cache_dir,
+                        topk=manual_cubic_topk,
+                        threshold=manual_cubic_threshold,
+                        nms_radius=manual_cubic_nms_radius,
+                        nms_impl=manual_cubic_nms_impl,
+                        cubic_a=manual_cubic_a,
+                    )
+                    if not selected_mxr or not Path(selected_mxr).exists():
+                        raise FileNotFoundError(
+                            "Missing manual-cubic MIGraphX NMS+TopK .mxr for stream resolution. "
+                            f"original_hw={tuple(item['original_hw'])}, expected={selected_mxr}. "
+                            "Run this script with --compile-manual-cubic-topk or run "
+                            "python modules/migraphx_manual_cubic_topk_compiler.py --video <video>."
+                        )
+                    config.migraphx_manual_cubic_topk_mxr = selected_mxr
 
-            timings = dict(out.timings)
-            post_ms = float(timings.get("total_postprocess", (post_done - post_start) * 1000.0))
-            e2e_ms = (post_done - float(item["capture_ts"])) * 1000.0
-            post_times.append(post_ms)
-            e2e_times.append(e2e_ms)
+                with tracer.range(f"postprocess_{registry_mode}_batch{len(batch_items)}"):
+                    if use_gpu_nms_batch and len(batch_items) > 1:
+                        batch_inputs = []
+                        for bi in batch_items:
+                            hm, pf = _maps_for(bi)
+                            batch_inputs.append((hm, pf, tuple(bi["original_hw"])))
+                        batch_outputs = postprocess_gpu_nms_fullres_batch(batch_inputs, config=config)
+                    else:
+                        batch_outputs = []
+                        for bi in batch_items:
+                            hm, pf = _maps_for(bi)
+                            if registry_mode == "migraphx_manual_cubic_nms_topk" and bi.get("manual_cubic_topk_precomputed"):
+                                batch_outputs.append(
+                                    postprocess_precomputed_manual_cubic_topk_item(
+                                        item=bi,
+                                        pafs=pf,
+                                        threshold=manual_cubic_threshold,
+                                        points_per_limb=config.points_per_limb,
+                                    )
+                                )
+                            else:
+                                batch_outputs.append(
+                                    postprocess_from_maps(
+                                        registry_mode,
+                                        hm,
+                                        pf,
+                                        tuple(bi["original_hw"]),
+                                        config=config,
+                                    )
+                                )
+            except Exception:
+                for bi in batch_items:
+                    _release_item(bi)
+                raise
 
-            row: Dict[str, Any] = {
-                "camera_id": int(item["camera_id"]),
-                "frame_id": int(item["frame_id"]),
-                "source": item["source"],
-                "variant": canonical,
-                "registry_mode": registry_mode,
-                "post_worker_id": worker_id,
-                "preprocess_ms": float(item["preprocess_ms"]),
-                "queue_pre_to_infer_ms": float(item["queue_pre_to_infer_ms"]),
-                "inference_ms": float(item["inference_ms"]),
-                "decode_ms": float(item["decode_ms"]),
-                "queue_infer_to_post_ms": float(queue_wait_ms),
-                "post_ms": post_ms,
-                "e2e_ms": e2e_ms,
-                "num_poses": int(len(out.pose_entries)) if out.pose_entries is not None else 0,
-                "num_keypoints": int(len(out.all_keypoints)) if out.all_keypoints is not None else 0,
-            }
-            for key, value in timings.items():
-                row[f"timing_{key}"] = safe_float(value)
+            for bi, out in zip(batch_items, batch_outputs):
+                post_done = time.perf_counter()
+                queue_wait_ms = (post_start - float(bi.get("infer_done_ts", post_start))) * 1000.0
+                queue_wait_times.append(queue_wait_ms)
 
-            if render_output and grid_q is not None and "frame_bgr" in item:
-                # In latest-buffer mode the previous version forgot to publish
-                # drawn frames to the grid writer, so the writer received zero
-                # packets and MP4 output was left invalid/empty.
-                frame_out = item["frame_bgr"].copy()
-                draw_poses_on_frame(frame_out, out.pose_entries, out.all_keypoints)
-                packet = {
-                    "camera_id": int(item["camera_id"]),
-                    "frame_id": int(item["frame_id"]),
-                    "source": item["source"],
-                    "frame_bgr": frame_out,
-                    "e2e_ms": e2e_ms,
+                timings = dict(out.timings)
+                post_ms = float(timings.get("total_postprocess", (post_done - post_start) * 1000.0))
+                e2e_ms = (post_done - float(bi["capture_ts"])) * 1000.0
+                post_times.append(post_ms)
+                e2e_times.append(e2e_ms)
+
+                row: Dict[str, Any] = {
+                    "camera_id": int(bi["camera_id"]),
+                    "frame_id": int(bi["frame_id"]),
+                    "source": bi["source"],
+                    "variant": canonical,
+                    "registry_mode": registry_mode,
+                    "post_worker_id": worker_id,
+                    "preprocess_ms": float(bi["preprocess_ms"]),
+                    "queue_pre_to_infer_ms": float(bi["queue_pre_to_infer_ms"]),
+                    "inference_ms": float(bi["inference_ms"]),
+                    "decode_ms": float(bi["decode_ms"]),
+                    "queue_infer_to_post_ms": float(queue_wait_ms),
                     "post_ms": post_ms,
-                    "num_poses": row["num_poses"],
-                    "num_keypoints": row["num_keypoints"],
+                    "e2e_ms": e2e_ms,
+                    "post_done_ts": post_done,
+                    "num_poses": int(len(out.pose_entries)) if out.pose_entries is not None else 0,
+                    "num_keypoints": int(len(out.all_keypoints)) if out.all_keypoints is not None else 0,
                 }
-                try:
-                    grid_q.put_nowait(packet)
-                except py_queue.Full:
-                    # Grid output is only visualization; never block the benchmark.
-                    pass
+                for key, value in timings.items():
+                    row[f"timing_{key}"] = safe_float(value)
 
-            result_q.put(row)
-            if post_pending is not None:
-                post_pending[int(item["camera_id"])] = 0
-            processed += 1
+                if render_output and grid_q is not None and "frame_bgr" in bi:
+                    frame_out = bi["frame_bgr"].copy()
+                    draw_poses_on_frame(frame_out, out.pose_entries, out.all_keypoints)
+                    packet = {
+                        "camera_id": int(bi["camera_id"]),
+                        "frame_id": int(bi["frame_id"]),
+                        "source": bi["source"],
+                        "frame_bgr": frame_out,
+                        "e2e_ms": e2e_ms,
+                        "post_ms": post_ms,
+                        "num_poses": row["num_poses"],
+                        "num_keypoints": row["num_keypoints"],
+                    }
+                    try:
+                        grid_q.put_nowait(packet)
+                    except py_queue.Full:
+                        pass
 
+                result_q.put(row)
+                cam_done_id = int(bi["camera_id"])
+                if post_pending is not None:
+                    post_pending[cam_done_id] = 0
+                if last_processed_ts is not None:
+                    last_processed_ts[cam_done_id] = time.perf_counter()
+                _release_item(bi)
+                processed += 1
+                trace_print(
+                    trace_log_every,
+                    processed,
+                    f"[TRACE post:{worker_id} pid={os.getpid()} latest] "
+                    f"processed={processed} cam={row['camera_id']} frame={row['frame_id']} "
+                    f"batch={len(batch_items)} queue={queue_wait_ms:.2f}ms post={post_ms:.2f}ms e2e={e2e_ms:.2f}ms poses={row['num_poses']}",
+                )
+
+        close_shared_map_views(shared_handles)
         stats_q.put(
             {
                 "stage": "postprocess",
@@ -1411,6 +3013,35 @@ def postprocess_latest_worker(
 # ---------------------------------------------------------------------------
 # Reporting
 # ---------------------------------------------------------------------------
+def apply_warmup_filter(rows: List[Dict[str, Any]], args) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    warmup_s = max(0.0, float(getattr(args, "warmup_s", 0.0) or 0.0))
+    warmup_frames = max(0, int(getattr(args, "warmup_output_frames", 0) or 0))
+    if not rows or (warmup_s <= 0.0 and warmup_frames <= 0):
+        return rows, {
+            "warmup_s": warmup_s,
+            "warmup_output_frames": warmup_frames,
+            "raw_total_processed_frames": len(rows),
+            "warmup_discarded_frames": 0,
+        }
+
+    ordered = sorted(rows, key=lambda r: (safe_float(r.get("post_done_ts", 0.0)), int(r.get("camera_id", 0)), int(r.get("frame_id", 0))))
+    filtered = ordered
+    if warmup_s > 0.0:
+        ts_values = [safe_float(r.get("post_done_ts", 0.0)) for r in ordered if safe_float(r.get("post_done_ts", 0.0)) > 0.0]
+        if ts_values:
+            cutoff = min(ts_values) + warmup_s
+            filtered = [r for r in filtered if safe_float(r.get("post_done_ts", 0.0)) >= cutoff]
+    if warmup_frames > 0:
+        filtered = filtered[warmup_frames:]
+
+    return filtered, {
+        "warmup_s": warmup_s,
+        "warmup_output_frames": warmup_frames,
+        "raw_total_processed_frames": len(rows),
+        "warmup_discarded_frames": len(rows) - len(filtered),
+    }
+
+
 def summarize(rows: List[Dict[str, Any]], stage_stats: List[Dict[str, Any]], wall_s: float) -> Dict[str, Any]:
     total = len(rows)
     cameras = sorted({int(r["camera_id"]) for r in rows})
@@ -1460,6 +3091,11 @@ def print_summary(summary: Dict[str, Any]) -> None:
     print("10-CAMERA STREAM SIMULATION SUMMARY")
     print("=" * 150)
     print(f"Processed frames:          {summary['total_processed_frames']}")
+    if summary.get("warmup_discarded_frames", 0):
+        print(
+            f"Warmup discarded:         {summary['warmup_discarded_frames']} / "
+            f"{summary.get('raw_total_processed_frames', summary['total_processed_frames'])} frames"
+        )
     print(f"Wall time:                 {summary['wall_s']:.2f} s")
     print(f"Aggregate output FPS:      {summary['aggregate_output_fps']:.2f}")
     print(f"Avg output FPS / camera:   {summary['avg_output_fps_per_camera']:.2f}")
@@ -1505,6 +3141,7 @@ def write_detailed_csv(path: str, rows: List[Dict[str, Any]]) -> None:
         "queue_infer_to_post_ms",
         "post_ms",
         "e2e_ms",
+        "post_done_ts",
         "num_poses",
         "num_keypoints",
     ]
@@ -1529,7 +3166,12 @@ def write_summary_json(path: str, summary: Dict[str, Any]) -> None:
 # Main orchestration
 # ---------------------------------------------------------------------------
 def run_queue(args) -> Dict[str, Any]:
-    ctx = mp.get_context("spawn")
+    if getattr(args, "allow_ptrace_attach", False):
+        os.environ["STREAM_ALLOW_PTRACE_ATTACH"] = "1"
+    else:
+        os.environ.pop("STREAM_ALLOW_PTRACE_ATTACH", None)
+    configure_worker_thread_env(args.worker_threads)
+    ctx = mp.get_context(getattr(args, "mp_start_method", "spawn"))
 
     videos = args.videos or DEFAULT_VIDEO_CYCLE
     sources = camera_sources(args.num_cameras, videos)
@@ -1537,6 +3179,7 @@ def run_queue(args) -> Dict[str, Any]:
     # Validate variant in the parent process without touching Torch CUDA.
     canonical, registry_mode, wants_torch = resolve_registry_mode(args.variant)
     compile_migraphx_nms_for_stream_if_requested(args, sources)
+    compile_manual_cubic_topk_for_stream_if_requested(args, sources)
 
     pre_q = ctx.Queue(maxsize=max(1, int(args.preprocess_queue_size)))
     post_q = ctx.Queue(maxsize=max(1, int(args.postprocess_queue_size)))
@@ -1547,10 +3190,27 @@ def run_queue(args) -> Dict[str, Any]:
     grid_q = ctx.Queue(maxsize=max(1, int(args.grid_queue_size))) if args.grid_video else None
     grid_stop_event = ctx.Event() if args.grid_video else None
 
+    shared_map_descs: List[Dict[str, Any]] = []
+    shared_map_handles: List[shared_memory.SharedMemory] = []
+    free_map_slots = None
+    if getattr(args, "shared_map_slots", 0) > 0:
+        out_h = args.target_height // args.stride
+        out_w = args.target_width // args.stride
+        shared_map_descs, shared_map_handles = create_shared_map_buffers(
+            int(args.shared_map_slots), out_h, out_w, args.shared_dtype
+        )
+        free_map_slots = ctx.Queue(maxsize=int(args.shared_map_slots))
+        for slot_id in range(int(args.shared_map_slots)):
+            free_map_slots.put(slot_id)
+
     camera_procs = []
     grid_procs = []
     infer_procs = []
     post_procs = []
+    monitor = SysMonitor(args.profile_interval_s) if args.profile_system else None
+    system_profile: Dict[str, Any] = {}
+    if monitor is not None:
+        monitor.start()
 
     print("\nStarting multi-camera stream simulation")
     print("---------------------------------------")
@@ -1611,6 +3271,8 @@ def run_queue(args) -> Dict[str, Any]:
                 camera_fps=args.camera_fps,
                 queue_policy=args.queue_policy,
                 keep_frame_for_output=bool(args.grid_video),
+                trace_log_every=args.trace_log_every,
+                roctx_enabled=args.roctx,
             ),
             name=f"camera_preprocess_{cam_id}",
         )
@@ -1631,6 +3293,21 @@ def run_queue(args) -> Dict[str, Any]:
                 target_h=args.target_height,
                 stride=args.stride,
                 shared_dtype=args.shared_dtype,
+                shared_map_descs=shared_map_descs,
+                free_map_slots=free_map_slots,
+                migraphx_batch_size=args.migraphx_batch_size,
+                migraphx_batch_timeout_ms=args.migraphx_batch_timeout_ms,
+                manual_cubic_topk_in_infer=args.manual_cubic_topk_in_infer,
+                manual_cubic_topk_variant=args.variant,
+                migraphx_manual_cubic_topk_mxr=args.migraphx_manual_cubic_topk_mxr,
+                migraphx_manual_cubic_topk_cache_dir=args.migraphx_manual_cubic_topk_cache_dir,
+                manual_cubic_topk=args.manual_cubic_topk,
+                manual_cubic_threshold=args.manual_cubic_threshold,
+                manual_cubic_nms_radius=args.manual_cubic_nms_radius,
+                manual_cubic_nms_impl=args.manual_cubic_nms_impl,
+                manual_cubic_a=args.manual_cubic_a,
+                trace_log_every=args.trace_log_every,
+                roctx_enabled=args.roctx,
             ),
             name=f"migraphx_inference_{worker_id}",
         )
@@ -1659,11 +3336,30 @@ def run_queue(args) -> Dict[str, Any]:
                 render_output=bool(args.grid_video),
                 migraphx_nms_mxr=args.migraphx_nms_mxr,
                 migraphx_nms_cache_dir=args.migraphx_nms_cache_dir,
+                migraphx_manual_cubic_topk_mxr=args.migraphx_manual_cubic_topk_mxr,
+                migraphx_manual_cubic_topk_cache_dir=args.migraphx_manual_cubic_topk_cache_dir,
+                manual_cubic_topk=args.manual_cubic_topk,
+                manual_cubic_threshold=args.manual_cubic_threshold,
+                manual_cubic_nms_radius=args.manual_cubic_nms_radius,
+                manual_cubic_nms_impl=args.manual_cubic_nms_impl,
+                manual_cubic_a=args.manual_cubic_a,
+                prealloc_resize_buffers=args.prealloc_resize_buffers,
+                args_target_width=args.target_width,
+                args_target_height=args.target_height,
+                args_stride=args.stride,
+                trace_log_every=args.trace_log_every,
+                roctx_enabled=args.roctx,
             ),
             name=f"postprocess_{worker_id}",
         )
         p.start()
         post_procs.append(p)
+
+    pid_groups = _process_pid_groups(camera_procs, infer_procs, post_procs, grid_procs)
+    pin_stream_processes(pid_groups, args)
+    _register_processes(monitor, pid_groups)
+    if args.pin_cpus or args.report_affinity:
+        print_affinity_report(pid_groups)
 
     rows: List[Dict[str, Any]] = []
     stage_stats: List[Dict[str, Any]] = []
@@ -1746,38 +3442,60 @@ def run_queue(args) -> Dict[str, Any]:
             if p.is_alive():
                 p.terminate()
                 p.join(timeout=2.0)
+        if monitor is not None:
+            system_profile = monitor.stop()
+        close_shared_map_buffers(shared_map_handles)
 
     wall_s = time.perf_counter() - t0
-    summary = summarize(rows, stage_stats, wall_s)
+    summary_rows, warmup_info = apply_warmup_filter(rows, args)
+    summary = summarize(summary_rows, stage_stats, wall_s)
+    summary.update(warmup_info)
     summary["variant"] = canonical
     summary["registry_mode"] = registry_mode
     summary["model"] = args.model
     summary["num_cameras"] = args.num_cameras
     summary["infer_workers"] = args.infer_workers
     summary["post_workers"] = args.post_workers
+    summary["mp_start_method"] = getattr(args, "mp_start_method", "spawn")
     summary["queue_policy"] = args.queue_policy
     summary["buffer_mode"] = "queue"
+    summary["shared_map_slots"] = getattr(args, "shared_map_slots", 0)
+    summary["migraphx_batch_size"] = getattr(args, "migraphx_batch_size", 1)
+    summary["migraphx_batch_timeout_ms"] = getattr(args, "migraphx_batch_timeout_ms", 0.0)
+    summary["manual_cubic_topk_in_infer"] = bool(getattr(args, "manual_cubic_topk_in_infer", False))
+    summary["roctx"] = bool(getattr(args, "roctx", False))
+    summary["trace_log_every"] = int(getattr(args, "trace_log_every", 0) or 0)
+    summary["allow_ptrace_attach"] = bool(getattr(args, "allow_ptrace_attach", False))
     summary["grid_video"] = args.grid_video
     summary["grid_rows"] = args.grid_rows if args.grid_video else 0
     summary["grid_cols"] = args.grid_cols if args.grid_video else 0
     summary["realtime"] = args.realtime
     summary["camera_sources"] = sources
+    if system_profile:
+        summary["system_profile"] = system_profile
 
     print_summary(summary)
-    write_detailed_csv(args.detailed_csv, rows)
+    print_system_profile(system_profile)
+    write_detailed_csv(args.detailed_csv, summary_rows)
     write_summary_json(args.summary_json, summary)
     return summary
 
 
 def run_latest(args) -> Dict[str, Any]:
     """Run the pipeline with newest-frame-only slots per camera between stages."""
-    ctx = mp.get_context("spawn")
+    if getattr(args, "allow_ptrace_attach", False):
+        os.environ["STREAM_ALLOW_PTRACE_ATTACH"] = "1"
+    else:
+        os.environ.pop("STREAM_ALLOW_PTRACE_ATTACH", None)
+    configure_worker_thread_env(args.worker_threads)
+    ctx = mp.get_context(getattr(args, "mp_start_method", "spawn"))
 
     videos = args.videos or DEFAULT_VIDEO_CYCLE
     sources = camera_sources(args.num_cameras, videos)
 
     canonical, registry_mode, wants_torch = resolve_registry_mode(args.variant)
     compile_migraphx_nms_for_stream_if_requested(args, sources)
+    compile_manual_cubic_topk_for_stream_if_requested(args, sources)
 
     pre_queues = [ctx.Queue(maxsize=1) for _ in range(args.num_cameras)]
     post_queues = [ctx.Queue(maxsize=1) for _ in range(args.num_cameras)]
@@ -1790,12 +3508,38 @@ def run_latest(args) -> Dict[str, Any]:
     camera_done = ctx.Array("b", [0] * args.num_cameras)
     infer_done = ctx.Array("b", [0] * args.infer_workers)
     post_pending = ctx.Array("b", [0] * args.num_cameras)
-    backpressure_enabled = not bool(args.disable_backpressure)
+    post_pending_ts = ctx.Array("d", [0.0] * args.num_cameras)
+    last_processed_ts = ctx.Array("d", [0.0] * args.num_cameras)
+    # --disable-backpressure is a legacy alias for --backpressure-mode off.
+    backpressure_mode = "off" if bool(getattr(args, "disable_backpressure", False)) else args.backpressure_mode
+    backpressure_enabled = backpressure_mode != "off"
+    target_period_s = (
+        1.0 / args.target_output_fps_per_camera
+        if getattr(args, "target_output_fps_per_camera", 0.0) > 0.0
+        else 0.0
+    )
+
+    shared_map_descs: List[Dict[str, Any]] = []
+    shared_map_handles: List[shared_memory.SharedMemory] = []
+    free_map_slots = None
+    if getattr(args, "shared_map_slots", 0) > 0:
+        out_h = args.target_height // args.stride
+        out_w = args.target_width // args.stride
+        shared_map_descs, shared_map_handles = create_shared_map_buffers(
+            int(args.shared_map_slots), out_h, out_w, args.shared_dtype
+        )
+        free_map_slots = ctx.Queue(maxsize=int(args.shared_map_slots))
+        for slot_id in range(int(args.shared_map_slots)):
+            free_map_slots.put(slot_id)
 
     camera_procs = []
     infer_procs = []
     post_procs = []
     grid_procs = []
+    monitor = SysMonitor(args.profile_interval_s) if args.profile_system else None
+    system_profile: Dict[str, Any] = {}
+    if monitor is not None:
+        monitor.start()
 
     print("\nStarting multi-camera stream simulation")
     print("---------------------------------------")
@@ -1807,7 +3551,11 @@ def run_latest(args) -> Dict[str, Any]:
     print(f"Infer workers: {args.infer_workers}")
     print(f"Post workers:  {args.post_workers}")
     print(f"Buffer mode:   latest")
-    print(f"Backpressure:  {'enabled' if backpressure_enabled else 'disabled'}")
+    print(f"Backpressure:  {backpressure_mode}")
+    if backpressure_mode == "soft":
+        print(f"Max pending:   {args.max_pending_age_ms:.0f} ms")
+    if target_period_s > 0.0:
+        print(f"Target FPS/cam:{args.target_output_fps_per_camera:.2f}  (period={target_period_s*1000:.0f} ms)")
     print(f"Realtime:      {args.realtime}")
     if args.grid_video:
         print(f"Grid video:    {args.grid_video} ({args.grid_cols}x{args.grid_rows})")
@@ -1856,6 +3604,8 @@ def run_latest(args) -> Dict[str, Any]:
                 realtime=args.realtime,
                 camera_fps=args.camera_fps,
                 keep_frame_for_output=bool(args.grid_video),
+                trace_log_every=args.trace_log_every,
+                roctx_enabled=args.roctx,
             ),
             name=f"camera_preprocess_latest_{cam_id}",
         )
@@ -1873,13 +3623,32 @@ def run_latest(args) -> Dict[str, Any]:
                 camera_done=camera_done,
                 infer_done=infer_done,
                 post_pending=post_pending,
-                backpressure=backpressure_enabled,
+                backpressure_mode=backpressure_mode,
+                max_pending_age_ms=args.max_pending_age_ms,
+                post_pending_ts=post_pending_ts,
+                last_processed_ts=last_processed_ts,
+                target_period_s=target_period_s,
                 stats_q=stats_q,
                 error_q=error_q,
                 target_w=args.target_width,
                 target_h=args.target_height,
                 stride=args.stride,
                 shared_dtype=args.shared_dtype,
+                shared_map_descs=shared_map_descs,
+                free_map_slots=free_map_slots,
+                migraphx_batch_size=args.migraphx_batch_size,
+                migraphx_batch_timeout_ms=args.migraphx_batch_timeout_ms,
+                manual_cubic_topk_in_infer=args.manual_cubic_topk_in_infer,
+                manual_cubic_topk_variant=args.variant,
+                migraphx_manual_cubic_topk_mxr=args.migraphx_manual_cubic_topk_mxr,
+                migraphx_manual_cubic_topk_cache_dir=args.migraphx_manual_cubic_topk_cache_dir,
+                manual_cubic_topk=args.manual_cubic_topk,
+                manual_cubic_threshold=args.manual_cubic_threshold,
+                manual_cubic_nms_radius=args.manual_cubic_nms_radius,
+                manual_cubic_nms_impl=args.manual_cubic_nms_impl,
+                manual_cubic_a=args.manual_cubic_a,
+                trace_log_every=args.trace_log_every,
+                roctx_enabled=args.roctx,
             ),
             name=f"migraphx_inference_latest_{worker_id}",
         )
@@ -1895,6 +3664,7 @@ def run_latest(args) -> Dict[str, Any]:
                 in_queues=post_queues,
                 infer_done=infer_done,
                 post_pending=post_pending,
+                last_processed_ts=last_processed_ts,
                 result_q=result_q,
                 stats_q=stats_q,
                 error_q=error_q,
@@ -1910,11 +3680,34 @@ def run_latest(args) -> Dict[str, Any]:
                 render_output=bool(args.grid_video),
                 migraphx_nms_mxr=args.migraphx_nms_mxr,
                 migraphx_nms_cache_dir=args.migraphx_nms_cache_dir,
+                migraphx_manual_cubic_topk_mxr=args.migraphx_manual_cubic_topk_mxr,
+                migraphx_manual_cubic_topk_cache_dir=args.migraphx_manual_cubic_topk_cache_dir,
+                manual_cubic_topk=args.manual_cubic_topk,
+                manual_cubic_threshold=args.manual_cubic_threshold,
+                manual_cubic_nms_radius=args.manual_cubic_nms_radius,
+                manual_cubic_nms_impl=args.manual_cubic_nms_impl,
+                manual_cubic_a=args.manual_cubic_a,
+                shared_map_descs=shared_map_descs,
+                free_map_slots=free_map_slots,
+                prealloc_resize_buffers=args.prealloc_resize_buffers,
+                gpu_nms_batch_size=args.gpu_nms_batch_size,
+                gpu_nms_batch_timeout_ms=args.gpu_nms_batch_timeout_ms,
+                trace_log_every=args.trace_log_every,
+                roctx_enabled=args.roctx,
+                args_target_width=args.target_width,
+                args_target_height=args.target_height,
+                args_stride=args.stride,
             ),
             name=f"postprocess_latest_{worker_id}",
         )
         p.start()
         post_procs.append(p)
+
+    pid_groups = _process_pid_groups(camera_procs, infer_procs, post_procs, grid_procs)
+    pin_stream_processes(pid_groups, args)
+    _register_processes(monitor, pid_groups)
+    if args.pin_cpus or args.report_affinity:
+        print_affinity_report(pid_groups)
 
     rows: List[Dict[str, Any]] = []
     stage_stats: List[Dict[str, Any]] = []
@@ -1986,26 +3779,55 @@ def run_latest(args) -> Dict[str, Any]:
             if p.is_alive():
                 p.terminate()
                 p.join(timeout=2.0)
+        if monitor is not None:
+            system_profile = monitor.stop()
+        close_shared_map_buffers(shared_map_handles)
 
     wall_s = time.perf_counter() - t0
-    summary = summarize(rows, stage_stats, wall_s)
+    summary_rows, warmup_info = apply_warmup_filter(rows, args)
+    summary = summarize(summary_rows, stage_stats, wall_s)
+    summary.update(warmup_info)
     summary["variant"] = canonical
     summary["registry_mode"] = registry_mode
     summary["model"] = args.model
     summary["num_cameras"] = args.num_cameras
     summary["infer_workers"] = args.infer_workers
     summary["post_workers"] = args.post_workers
+    summary["mp_start_method"] = getattr(args, "mp_start_method", "spawn")
     summary["queue_policy"] = args.queue_policy
     summary["buffer_mode"] = "latest"
     summary["grid_video"] = args.grid_video
     summary["grid_rows"] = args.grid_rows if args.grid_video else 0
     summary["grid_cols"] = args.grid_cols if args.grid_video else 0
+    summary["backpressure_mode"] = backpressure_mode
     summary["backpressure_enabled"] = backpressure_enabled
+    summary["max_pending_age_ms"] = args.max_pending_age_ms if backpressure_mode == "soft" else None
+    summary["target_output_fps_per_camera"] = getattr(args, "target_output_fps_per_camera", 0.0)
+    summary["shared_map_slots"] = getattr(args, "shared_map_slots", 0)
+    summary["migraphx_batch_size"] = getattr(args, "migraphx_batch_size", 1)
+    summary["migraphx_batch_timeout_ms"] = getattr(args, "migraphx_batch_timeout_ms", 0.0)
+    summary["manual_cubic_topk_in_infer"] = bool(getattr(args, "manual_cubic_topk_in_infer", False))
+    summary["prealloc_resize_buffers"] = bool(getattr(args, "prealloc_resize_buffers", False))
+    summary["gpu_nms_batch_size"] = getattr(args, "gpu_nms_batch_size", 1)
+    summary["gpu_nms_batch_timeout_ms"] = getattr(args, "gpu_nms_batch_timeout_ms", 0.0)
+    summary["migraphx_manual_cubic_topk_cache_dir"] = getattr(args, "migraphx_manual_cubic_topk_cache_dir", "")
+    summary["migraphx_manual_cubic_topk_mxr"] = getattr(args, "migraphx_manual_cubic_topk_mxr", "")
+    summary["manual_cubic_topk"] = getattr(args, "manual_cubic_topk", 20)
+    summary["manual_cubic_threshold"] = getattr(args, "manual_cubic_threshold", 0.1)
+    summary["manual_cubic_nms_radius"] = getattr(args, "manual_cubic_nms_radius", 6)
+    summary["manual_cubic_nms_impl"] = getattr(args, "manual_cubic_nms_impl", "separable")
+    summary["manual_cubic_a"] = getattr(args, "manual_cubic_a", -0.75)
+    summary["roctx"] = bool(getattr(args, "roctx", False))
+    summary["trace_log_every"] = int(getattr(args, "trace_log_every", 0) or 0)
+    summary["allow_ptrace_attach"] = bool(getattr(args, "allow_ptrace_attach", False))
     summary["realtime"] = args.realtime
     summary["camera_sources"] = sources
+    if system_profile:
+        summary["system_profile"] = system_profile
 
     print_summary(summary)
-    write_detailed_csv(args.detailed_csv, rows)
+    print_system_profile(system_profile)
+    write_detailed_csv(args.detailed_csv, summary_rows)
     write_summary_json(args.summary_json, summary)
     return summary
 
@@ -2027,7 +3849,7 @@ def parse_args():
         help=(
             "Postprocess variant. Examples: standard, optimized_batch_k20_fast, "
             "lowres_cpu_group, gpu_nms_fullres_two_process, gpu_nms_lowres_two_process, "
-            "migraphx-nms, migraphx-nms-k20."
+            "migraphx-nms, migraphx-nms-k20, migraphx_manual_cubic_nms_topk / mx_cubic_topk."
         ),
     )
     parser.add_argument("--videos", nargs="*", default=DEFAULT_VIDEO_CYCLE)
@@ -2041,15 +3863,69 @@ def parse_args():
     parser.add_argument(
         "--disable-backpressure",
         action="store_true",
+        help="Legacy alias for --backpressure-mode off.",
+    )
+    parser.add_argument(
+        "--backpressure-mode",
+        choices=["off", "strict", "soft"],
+        default="strict",
         help=(
-            "Only used with --buffer-mode latest. By default, inference skips a camera "
-            "while that camera already has a queued/in-flight postprocess result. "
-            "This flag disables that guard and restores overwrite-before-post behavior."
+            "Backpressure policy for --buffer-mode latest. "
+            "'off': never skip cameras (max throughput, results may be overwritten). "
+            "'strict': skip a camera while its post_pending flag is set (original behaviour). "
+            "'soft': skip only while the pending result is fresher than --max-pending-age-ms; "
+            "allows re-inference once a result has been sitting too long. "
+            "--disable-backpressure is a legacy alias for 'off'."
+        ),
+    )
+    parser.add_argument(
+        "--max-pending-age-ms",
+        type=float,
+        default=300.0,
+        help=(
+            "Used with --backpressure-mode soft. A camera whose pending postprocess result "
+            "is older than this threshold (ms) is eligible for re-inference even though "
+            "post_pending is still set. Prevents slow post workers from starving cameras. "
+            "Default: 300 ms."
+        ),
+    )
+    parser.add_argument(
+        "--target-output-fps-per-camera",
+        type=float,
+        default=0.0,
+        help=(
+            "When > 0, the inference scheduler skips cameras that were fully postprocessed "
+            "more recently than 1/fps seconds ago. Useful to cap per-camera processing rate "
+            "and ensure fair share across cameras in mixed-difficulty scenes. 0 = disabled."
         ),
     )
 
     parser.add_argument("--infer-workers", type=int, default=1)
     parser.add_argument("--post-workers", type=int, default=1)
+    parser.add_argument(
+        "--mp-start-method",
+        choices=["spawn", "fork", "forkserver"],
+        default="spawn",
+        help="Multiprocessing start method. Keep spawn for normal runs; fork is useful for rocprofv3 direct profiling to avoid child re-exec profiler registration issues.",
+    )
+    parser.add_argument(
+        "--migraphx-batch-size",
+        type=int,
+        default=1,
+        help=(
+            "Batch size used by MIGraphX inference workers. Use 1 for old behavior. "
+            "For static batch MXR models, set this to the compiled batch size, e.g. 2/4/8."
+        ),
+    )
+    parser.add_argument(
+        "--migraphx-batch-timeout-ms",
+        type=float,
+        default=0.0,
+        help=(
+            "Maximum time an inference worker waits to fill a MIGraphX batch. "
+            "Use a small value such as 2-8 ms for live simulation."
+        ),
+    )
     parser.add_argument("--preprocess-queue-size", type=int, default=30)
     parser.add_argument("--postprocess-queue-size", type=int, default=30)
 
@@ -2057,6 +3933,12 @@ def parse_args():
     parser.add_argument("--target-height", type=int, default=544)
     parser.add_argument("--stride", type=int, default=8)
     parser.add_argument("--shared-dtype", choices=["float32", "float16"], default="float32")
+    parser.add_argument(
+        "--shared-map-slots",
+        type=int,
+        default=0,
+        help="Latest-mode only: preallocate this many shared-memory heatmap/PAF slots between inference and postprocess. 0 keeps Queue pickle/copy.",
+    )
 
     parser.add_argument("--torch-device", choices=["auto", "cuda", "cpu"], default="cuda")
     parser.add_argument("--require-gpu", action="store_true")
@@ -2066,6 +3948,23 @@ def parse_args():
     parser.add_argument("--nms-radius-lowres", type=int, default=1)
     parser.add_argument("--nms-impl", choices=["2d", "separable"], default="separable")
     parser.add_argument("--gpu-compute-dtype", choices=["float32", "float16"], default="float32")
+    parser.add_argument(
+        "--prealloc-resize-buffers",
+        action="store_true",
+        help="Reuse persistent cv2.resize dst buffers inside each postprocess worker when supported by OpenCV.",
+    )
+    parser.add_argument(
+        "--gpu-nms-batch-size",
+        type=int,
+        default=1,
+        help="Latest-mode gpu_nms_fullres_two_process only: batch this many frames per post worker for Torch max_pool NMS. 1 disables batching.",
+    )
+    parser.add_argument(
+        "--gpu-nms-batch-timeout-ms",
+        type=float,
+        default=0.0,
+        help="Maximum wait to fill a gpu_nms batch before running it. Keep small, e.g. 2-8 ms, for live feeds.",
+    )
     parser.add_argument(
         "--migraphx-nms-mxr",
         default="",
@@ -2086,6 +3985,40 @@ def parse_args():
     parser.add_argument("--exhaustive-tune-migraphx-nms", action="store_true")
 
     parser.add_argument(
+        "--migraphx-manual-cubic-topk-mxr",
+        default="",
+        help="Optional explicit compiled manual-cubic MIGraphX NMS+TopK .mxr path.",
+    )
+    parser.add_argument(
+        "--migraphx-manual-cubic-topk-cache-dir",
+        default="models/manual_cubic_nms_topk_cache",
+        help="Directory containing manual-cubic heatmap NMS+TopK .mxr files.",
+    )
+    parser.add_argument(
+        "--compile-manual-cubic-topk",
+        action="store_true",
+        help="Compile the stream-resolution manual-cubic MIGraphX NMS+TopK head before starting the stream.",
+    )
+    parser.add_argument("--force-compile-manual-cubic-topk", action="store_true")
+    parser.add_argument("--keep-manual-cubic-topk-onnx", action="store_true")
+    parser.add_argument("--exhaustive-tune-manual-cubic-topk", action="store_true")
+    parser.add_argument("--manual-cubic-topk", type=int, default=20)
+    parser.add_argument("--manual-cubic-threshold", type=float, default=0.1)
+    parser.add_argument("--manual-cubic-nms-radius", type=int, default=6)
+    parser.add_argument("--manual-cubic-nms-impl", choices=["2d", "separable"], default="separable")
+    parser.add_argument("--manual-cubic-a", type=float, default=-0.75)
+    parser.add_argument(
+        "--manual-cubic-topk-in-infer",
+        action="store_true",
+        help=(
+            "For migraphx_manual_cubic_nms_topk, run the manual-cubic TopK .mxr head "
+            "inside the MIGraphX inference worker and leave only CPU grouping/PAF resize "
+            "to postprocess workers. This avoids separate MIGraphX GPU contexts in "
+            "postprocess processes and is recommended for live multi-camera runs."
+        ),
+    )
+
+    parser.add_argument(
         "--grid-video",
         default="",
         help=(
@@ -2100,6 +4033,48 @@ def parse_args():
     parser.add_argument("--grid-video-fps", type=float, default=10.0)
     parser.add_argument("--grid-video-codec", default="mp4v")
     parser.add_argument("--grid-queue-size", type=int, default=256)
+
+    parser.add_argument("--pin-cpus", action="store_true", help="Pin each camera, inference worker, and postprocess worker to distinct CPU cores.")
+    parser.add_argument("--pin-camera-base", type=int, default=0, help="First CPU core for camera workers when --pin-cpus is set.")
+    parser.add_argument("--pin-inference-base", type=int, default=10, help="First CPU core for inference workers when --pin-cpus is set.")
+    parser.add_argument("--pin-post-base", type=int, default=12, help="First CPU core for postprocess workers when --pin-cpus is set.")
+    parser.add_argument("--pin-all-threads", action="store_true", help="Also pin existing native threads under /proc/<pid>/task for each worker after startup.")
+    parser.add_argument("--worker-threads", type=int, default=1, help="Set OpenCV/OpenMP/OpenBLAS/NumExpr/PyTorch CPU thread pools per worker. Default: 1.")
+    parser.add_argument("--warmup-s", type=float, default=0.0, help="Discard output rows whose postprocess completion is within this many seconds of the first output row.")
+    parser.add_argument("--warmup-output-frames", type=int, default=0, help="Discard this many additional earliest output rows before computing the summary.")
+
+    parser.add_argument(
+        "--profile-system",
+        action="store_true",
+        help="Collect parent-side per-PID CPU/memory, affinity, per-core CPU, GPU busy, and VRAM stats.",
+    )
+    parser.add_argument(
+        "--profile-interval-s",
+        type=float,
+        default=0.1,
+        help="Sampling interval for --profile-system. Default: 0.1 s.",
+    )
+    parser.add_argument(
+        "--report-affinity",
+        action="store_true",
+        help="Print worker CPU affinity after all child processes are started.",
+    )
+    parser.add_argument(
+        "--roctx",
+        action="store_true",
+        help="Emit ROCTx ranges around preprocess, MIGraphX load/run/decode, and postprocess work for rocprofv3 marker traces.",
+    )
+    parser.add_argument(
+        "--trace-log-every",
+        type=int,
+        default=0,
+        help="Print per-worker timing trace every N processed frames/batches. 0 disables these verbose logs.",
+    )
+    parser.add_argument(
+        "--allow-ptrace-attach",
+        action="store_true",
+        help="Let same-user tools such as rocprofv3 --attach attach to worker processes on Yama ptrace_scope systems.",
+    )
 
     parser.add_argument("--print-every", type=int, default=100)
     parser.add_argument("--detailed-csv", default="outputs/stream_10cam_detailed.csv")
