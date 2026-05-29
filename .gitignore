@@ -28,3 +28,48 @@ __pycache__/
 # Numba cache
 *.nbc
 *.nbi
+
+# Local datasets / videos / generated outputs
+coco/
+coco2017_postprocess_bench/
+outputs/
+build/
+.rocprofv3/
+.vscode/
+venv/
+
+# Large media / model artifacts
+*.mp4
+*.prof
+*.log
+*.mxr
+*.onnx
+*.onnx.data
+*.pth
+
+# Generated caches
+models/*cache*/
+models/fused_postprocess_cache/
+models/fused_postprocess_coco_cache/
+models/fused_postprocess_pruned_cache/
+models/manual_cubic_nms_topk_cache/
+models/manual_cubic_nms_topk_coco_cache/
+models/nms_fullres_cache/
+models/nms_fullres_cache_separable/
+models/nms_topk_cache/
+models/paf_fullres_pair_scorer_cache/
+models/paf_fullres_pair_scorer_coco_cache/
+models/paf_pair_scorer_cache/
+models/paf_pair_scorer_coco_cache/
+models/resize_nms_topk_cache/
+models/resize_nms_topk_coco_cache/
+models/resize_nms_topk_coco_cache_k20_thr008/
+
+# Temporary experiment files
+detections.json
+results_fp16_ref1.json
+mem_*.log
+rss_*.log
+output_pose*.mp4
+report.txt
+"postprocess optimization report.txt"

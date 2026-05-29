@@ -57,9 +57,9 @@ import numpy as np
 
 
 DEFAULT_VIDEO_CYCLE = [
-    "cctv_1280x720_24fps_1.mp4",
-    "cctv_1280x720_24fps_original.mp4",
-    "cctv_1280x720_24fps_3.mp4",
+    "cctv_1280x720_24fps_2.mp4",
+    "cctv_1280x720_24fps_2.mp4",
+    "cctv_1280x720_24fps_2.mp4",
     "cctv_1280x720_24fps_2.mp4",
 ]
 
@@ -612,26 +612,139 @@ def configure_child_cpu_runtime(num_threads: int = 1) -> None:
         pass
 
 
+
+def _parse_cpu_list(spec: str) -> List[int]:
+    # Parse CPU list specs such as '2-11', '0,1,12-15,17'.
+    out: List[int] = []
+    seen = set()
+    for part in str(spec or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            a, b = part.split("-", 1)
+            lo, hi = int(a), int(b)
+            if hi < lo:
+                lo, hi = hi, lo
+            values = range(lo, hi + 1)
+        else:
+            values = [int(part)]
+        for cpu in values:
+            if cpu < 0:
+                raise ValueError(f"CPU index must be non-negative, got {cpu}")
+            if cpu not in seen:
+                seen.add(cpu)
+                out.append(cpu)
+    return out
+
+
+def _fmt_cpu_list(cpus: Sequence[int]) -> str:
+    cpus = sorted(set(int(c) for c in cpus))
+    if not cpus:
+        return "[]"
+    ranges = []
+    start = prev = cpus[0]
+    for c in cpus[1:]:
+        if c == prev + 1:
+            prev = c
+            continue
+        ranges.append(f"{start}" if start == prev else f"{start}-{prev}")
+        start = prev = c
+    ranges.append(f"{start}" if start == prev else f"{start}-{prev}")
+    return ",".join(ranges)
+
+
+def _role_cpus_from_args(args, role: str, fallback_base: int, count: int) -> List[int]:
+    attr = f"pin_{role}_cores"
+    spec = str(getattr(args, attr, "") or "").strip()
+    if spec:
+        cpus = _parse_cpu_list(spec)
+        if not cpus:
+            raise ValueError(f"--{attr.replace('_', '-')} produced an empty CPU list")
+        return cpus
+    return [int(fallback_base) + i for i in range(max(1, int(count)))]
+
+
+def _assign_round_robin(pids: Sequence[int], cpus: Sequence[int]) -> Dict[int, List[int]]:
+    cpus = list(cpus)
+    if not cpus:
+        return {}
+    out: Dict[int, List[int]] = {}
+    for idx, pid in enumerate(pids):
+        if pid:
+            out[int(pid)] = [int(cpus[idx % len(cpus)])]
+    return out
+
+
 def pin_stream_processes(pid_groups: Dict[str, List[int]], args) -> None:
-    """Pin each camera, inference, and postprocess worker to distinct CPUs."""
+    # Pin camera, inference, postprocess, grid and optionally main process.
     if not getattr(args, "pin_cpus", False):
         return
-    camera_base = int(args.pin_camera_base)
-    inference_base = int(args.pin_inference_base)
-    post_base = int(args.pin_post_base)
+
+    camera_pids = [int(p) for p in pid_groups.get("camera", []) if p]
+    inference_pids = [int(p) for p in pid_groups.get("inference", []) if p]
+    post_pids = [int(p) for p in pid_groups.get("postprocess", []) if p]
+    grid_pids = [int(p) for p in pid_groups.get("grid", []) if p]
+
+    camera_cores = _role_cpus_from_args(
+        args,
+        "camera",
+        int(getattr(args, "pin_camera_base", 0)),
+        max(1, len(camera_pids)),
+    )
+    inference_cores = _role_cpus_from_args(
+        args,
+        "inference",
+        int(getattr(args, "pin_inference_base", 10)),
+        max(1, len(inference_pids)),
+    )
+    post_cores = _role_cpus_from_args(
+        args,
+        "post",
+        int(getattr(args, "pin_post_base", 12)),
+        max(1, len(post_pids)),
+    )
+
+    grid_spec = str(getattr(args, "pin_grid_cores", "") or "").strip()
+    grid_cores = _parse_cpu_list(grid_spec) if grid_spec else []
 
     assignments: Dict[int, List[int]] = {}
-    for idx, pid in enumerate(pid_groups.get("camera", [])):
-        assignments[int(pid)] = [camera_base + idx]
-    for idx, pid in enumerate(pid_groups.get("inference", [])):
-        assignments[int(pid)] = [inference_base + idx]
-    for idx, pid in enumerate(pid_groups.get("postprocess", [])):
-        assignments[int(pid)] = [post_base + idx]
+    assignments.update(_assign_round_robin(camera_pids, camera_cores))
+    assignments.update(_assign_round_robin(inference_pids, inference_cores))
+    assignments.update(_assign_round_robin(post_pids, post_cores))
+    if grid_pids and grid_cores:
+        assignments.update(_assign_round_robin(grid_pids, grid_cores))
 
-    for pid, cpus in assignments.items():
-        _pin_pid(pid, cpus)
-        if getattr(args, "pin_all_threads", False):
-            _pin_process_threads(pid, cpus)
+    main_spec = str(getattr(args, "pin_main_cores", "") or "").strip()
+    if main_spec:
+        main_cores = _parse_cpu_list(main_spec)
+        if main_cores:
+            _pin_pid(os.getpid(), main_cores)
+            if getattr(args, "pin_all_threads", False):
+                _pin_process_threads(os.getpid(), main_cores)
+            print(f"[PIN] main PID {os.getpid()} -> {_fmt_cpu_list(main_cores)}", flush=True)
+
+    print("[PIN] CPU affinity assignments", flush=True)
+    print(f"  camera cores:    {_fmt_cpu_list(camera_cores)}", flush=True)
+    print(f"  inference cores: {_fmt_cpu_list(inference_cores)}", flush=True)
+    print(f"  post cores:      {_fmt_cpu_list(post_cores)}", flush=True)
+    if grid_cores:
+        print(f"  grid cores:      {_fmt_cpu_list(grid_cores)}", flush=True)
+
+    for pid, cpus in sorted(assignments.items()):
+        try:
+            _pin_pid(pid, cpus)
+            pinned_threads = 0
+            if getattr(args, "pin_all_threads", False):
+                pinned_threads = _pin_process_threads(pid, cpus)
+            print(
+                f"[PIN] PID {pid} -> {_fmt_cpu_list(cpus)}"
+                + (f" threads={pinned_threads}" if getattr(args, "pin_all_threads", False) else ""),
+                flush=True,
+            )
+        except Exception as exc:
+            print(f"[PIN] failed PID {pid} -> {_fmt_cpu_list(cpus)}: {exc}", flush=True)
+
 
 
 def print_affinity_report(pid_groups: Dict[str, List[int]]) -> None:
@@ -703,6 +816,82 @@ def print_system_profile(stats: Dict[str, Any]) -> None:
         print(f"VRAM peak:  {stats.get('vram_peak_mb', 0.0):6.1f} MB")
         print(f"Samples:    {gpu_samples}")
     print("=" * 150)
+
+
+
+def _flatten_dict_for_csv(prefix: str, value: Any, out: Dict[str, Any]) -> None:
+    """Flatten a small nested dict into one CSV row."""
+    if isinstance(value, dict):
+        for k, v in value.items():
+            key = f"{prefix}_{k}" if prefix else str(k)
+            _flatten_dict_for_csv(key, v, out)
+    elif isinstance(value, (list, tuple)):
+        # Keep large arrays/lists compact in CSV; full data stays in JSON.
+        out[prefix] = json.dumps(json_safe(value))
+    else:
+        out[prefix] = value
+
+
+def write_system_profile_outputs(
+    *,
+    system_profile: Dict[str, Any],
+    json_path: str = "",
+    csv_path: str = "",
+) -> None:
+    """Optionally save system monitor summary as standalone JSON/CSV files."""
+    if not system_profile:
+        return
+
+    if json_path:
+        ensure_parent(json_path)
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(json_safe(system_profile), f, indent=2)
+        print(f"System profile JSON saved: {json_path}", flush=True)
+
+    if csv_path:
+        ensure_parent(csv_path)
+        rows: List[Dict[str, Any]] = []
+        base = {
+            "monitor_interval_s": system_profile.get("monitor_interval_s", 0.0),
+            "gpu_avg_pct": system_profile.get("gpu_avg_pct", 0.0),
+            "gpu_peak_pct": system_profile.get("gpu_peak_pct", 0.0),
+            "gpu_idle_pct": system_profile.get("gpu_idle_pct", 0.0),
+            "vram_avg_mb": system_profile.get("vram_avg_mb", 0.0),
+            "vram_peak_mb": system_profile.get("vram_peak_mb", 0.0),
+            "gpu_samples": system_profile.get("gpu_samples", 0),
+        }
+        pids = system_profile.get("pids") or {}
+        if pids:
+            for pid, pdata in pids.items():
+                row = dict(base)
+                row["pid"] = int(pid)
+                for k, v in dict(pdata).items():
+                    row[str(k)] = v
+                rows.append(row)
+        else:
+            rows.append(base)
+
+        fieldnames = sorted({k for row in rows for k in row.keys()})
+        with open(csv_path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(rows)
+        print(f"System profile CSV saved: {csv_path}", flush=True)
+
+
+def apply_parent_profiling_env(args) -> None:
+    """Configure env flags consumed by child workers before processes are spawned."""
+    if getattr(args, "allow_ptrace_attach", False):
+        os.environ["STREAM_ALLOW_PTRACE_ATTACH"] = "1"
+    else:
+        os.environ.pop("STREAM_ALLOW_PTRACE_ATTACH", None)
+
+    cprofile_dir = str(getattr(args, "cprofile_dir", "") or getattr(args, "profile_cprofile_dir", "") or "")
+    if cprofile_dir:
+        os.environ["STREAM_CPROFILE_DIR"] = cprofile_dir
+        Path(cprofile_dir).mkdir(parents=True, exist_ok=True)
+    else:
+        os.environ.pop("STREAM_CPROFILE_DIR", None)
 
 def camera_sources(num_cameras: int, videos: Sequence[str]) -> List[str]:
     """Return the default 10-camera mapping requested in the prompt.
@@ -1201,6 +1390,213 @@ def compile_manual_cubic_topk_for_stream_if_requested(args, sources: Sequence[st
 
 
 
+
+
+def select_fused_pruned_postprocess_mxr_for_hw(
+    *,
+    original_hw: Tuple[int, int],
+    target_width: int,
+    target_height: int,
+    stride: int,
+    explicit_mxr: str = "",
+    cache_dir: str = "models/fused_postprocess_pruned_cache",
+    topk: int = 20,
+    limb_topm: int = 20,
+    threshold: float = 0.1,
+    nms_radius: int = 6,
+    nms_impl: str = "separable",
+    heatmap_cubic_a: float = -0.75,
+    points_per_limb: int = 8,
+    min_paf_score: float = 0.05,
+    success_ratio_thr: float = 0.8,
+    paf_cubic_a: float = -0.75,
+    min_pair_score: float = 0.0,
+) -> str:
+    if explicit_mxr:
+        return explicit_mxr
+    from modules.migraphx_fused_postprocess_pruned_compiler import pruned_head_name
+    in_h = int(target_height) // int(stride)
+    in_w = int(target_width) // int(stride)
+    full_h, full_w = int(original_hw[0]), int(original_hw[1])
+    name = pruned_head_name(
+        in_h, in_w, full_h, full_w,
+        topk=topk,
+        limb_topm=limb_topm,
+        threshold=threshold,
+        nms_radius=nms_radius,
+        nms_impl=nms_impl,
+        heatmap_cubic_a=heatmap_cubic_a,
+        points_per_limb=points_per_limb,
+        min_paf_score=min_paf_score,
+        success_ratio_thr=success_ratio_thr,
+        paf_cubic_a=paf_cubic_a,
+        min_pair_score=min_pair_score,
+    )
+    return str(Path(cache_dir) / f"{name}.mxr")
+
+
+def compile_fused_pruned_postprocess_for_stream_if_requested(args, sources: Sequence[str]) -> None:
+    if not getattr(args, "compile_fused_pruned_postprocess", False):
+        return
+    from modules.migraphx_fused_postprocess_pruned_compiler import compile_pruned_fused_postprocess_head
+
+    target_w = int(getattr(args, "target_width", 968))
+    target_h = int(getattr(args, "target_height", 544))
+    stride = int(getattr(args, "stride", 8))
+    in_h = target_h // stride
+    in_w = target_w // stride
+    shapes: List[Tuple[int, int]] = []
+    for src in sources:
+        for hw in _video_shape_candidates(src):
+            if hw not in shapes:
+                shapes.append(hw)
+
+    print(f"[MX-FUSED-PRUNED] compiling stream heads for shapes: {shapes}", flush=True)
+    for full_h, full_w in shapes:
+        print(f"[MX-FUSED-PRUNED] compile/check head: {in_h}x{in_w} -> {full_h}x{full_w}", flush=True)
+        compile_pruned_fused_postprocess_head(
+            in_h=in_h,
+            in_w=in_w,
+            full_h=int(full_h),
+            full_w=int(full_w),
+            output_dir=getattr(args, "migraphx_fused_pruned_postprocess_cache_dir", "models/fused_postprocess_pruned_cache"),
+            topk=int(getattr(args, "max_keypoints", 20)),
+            limb_topm=int(getattr(args, "limb_topm", 20)),
+            threshold=float(getattr(args, "threshold", 0.1)),
+            nms_radius=int(getattr(args, "nms_radius_fullres", 6)),
+            nms_impl=str(getattr(args, "nms_impl", "separable")),
+            heatmap_cubic_a=float(getattr(args, "manual_cubic_a", -0.75)),
+            points_per_limb=int(getattr(args, "fused_points_per_limb", 8)),
+            min_paf_score=float(getattr(args, "fused_min_paf_score", 0.05)),
+            success_ratio_thr=float(getattr(args, "fused_success_ratio_thr", 0.8)),
+            paf_cubic_a=float(getattr(args, "fused_paf_cubic_a", -0.75)),
+            min_pair_score=float(getattr(args, "min_pair_score", 0.0)),
+            exhaustive_tune=bool(getattr(args, "exhaustive_tune_fused_pruned_postprocess", False)),
+            force=bool(getattr(args, "force_compile_fused_pruned_postprocess", False)),
+            keep_onnx=bool(getattr(args, "keep_fused_pruned_postprocess_onnx", False)),
+        )
+
+
+def select_fused_postprocess_mxr_for_hw(
+    *,
+    original_hw: Tuple[int, int],
+    target_width: int,
+    target_height: int,
+    stride: int,
+    migraphx_fused_postprocess_mxr: str = "",
+    migraphx_fused_postprocess_cache_dir: str = "",
+    topk: int = 20,
+    threshold: float = 0.1,
+    nms_radius: int = 6,
+    nms_impl: str = "separable",
+    heatmap_cubic_a: float = -0.75,
+    points_per_limb: int = 8,
+    min_paf_score: float = 0.05,
+    success_ratio_thr: float = 0.8,
+    paf_cubic_a: float = -0.75,
+) -> str:
+    """Resolve fused postprocess .mxr for a stream frame shape."""
+    if migraphx_fused_postprocess_mxr:
+        return migraphx_fused_postprocess_mxr
+
+    if not migraphx_fused_postprocess_cache_dir:
+        return ""
+
+    in_h = int(target_height) // int(stride)
+    in_w = int(target_width) // int(stride)
+    full_h, full_w = int(original_hw[0]), int(original_hw[1])
+
+    from modules.migraphx_fused_postprocess_compiler import fused_head_name
+
+    name = fused_head_name(
+        in_h,
+        in_w,
+        full_h,
+        full_w,
+        topk=int(topk),
+        threshold=float(threshold),
+        nms_radius=int(nms_radius),
+        nms_impl=str(nms_impl),
+        heatmap_cubic_a=float(heatmap_cubic_a),
+        points_per_limb=int(points_per_limb),
+        min_paf_score=float(min_paf_score),
+        success_ratio_thr=float(success_ratio_thr),
+        paf_cubic_a=float(paf_cubic_a),
+    )
+    return str(Path(migraphx_fused_postprocess_cache_dir) / f"{name}.mxr")
+
+
+def compile_fused_postprocess_for_stream_if_requested(args, sources: Sequence[str]) -> None:
+    """Compile fused postprocess heads for every stream resolution."""
+    if not getattr(args, "compile_fused_postprocess", False):
+        return
+
+    cache_dir = (
+        getattr(args, "migraphx_fused_postprocess_cache_dir", "")
+        or "models/fused_postprocess_cache"
+    )
+    if not sources:
+        raise RuntimeError("Cannot compile fused postprocess head: no input video source found.")
+
+    from modules.migraphx_fused_postprocess_compiler import compile_fused_postprocess_head
+
+    target_w = int(getattr(args, "target_width", 968))
+    target_h = int(getattr(args, "target_height", 544))
+    stride = int(getattr(args, "stride", 8))
+    in_h = target_h // stride
+    in_w = target_w // stride
+
+    topk = int(getattr(args, "max_keypoints", 20))
+    threshold = float(getattr(args, "threshold", 0.1))
+    nms_radius = int(getattr(args, "nms_radius_fullres", 6))
+    nms_impl = str(getattr(args, "nms_impl", "separable"))
+    heatmap_cubic_a = float(getattr(args, "manual_cubic_a", -0.75))
+    points_per_limb = int(getattr(args, "fused_points_per_limb", 8))
+    min_paf_score = float(getattr(args, "fused_min_paf_score", 0.05))
+    success_ratio_thr = float(getattr(args, "fused_success_ratio_thr", 0.8))
+    paf_cubic_a = float(getattr(args, "fused_paf_cubic_a", -0.75))
+
+    shapes: List[Tuple[int, int]] = []
+    for src in sources:
+        for hw in _video_shape_candidates(src):
+            if hw not in shapes:
+                shapes.append(hw)
+
+    if not shapes:
+        raise RuntimeError("Could not determine any stream frame shape for fused postprocess compilation.")
+
+    print(
+        f"[MX-FUSED-POST] compiling stream heads for shapes: {shapes} "
+        f"from sources={len(sources)}",
+        flush=True,
+    )
+
+    for full_h, full_w in shapes:
+        print(
+            f"[MX-FUSED-POST] compile/check head: {in_h}x{in_w} -> {full_h}x{full_w}",
+            flush=True,
+        )
+        compile_fused_postprocess_head(
+            in_h=in_h,
+            in_w=in_w,
+            full_h=int(full_h),
+            full_w=int(full_w),
+            output_dir=cache_dir,
+            topk=topk,
+            threshold=threshold,
+            nms_radius=nms_radius,
+            nms_impl=nms_impl,
+            heatmap_cubic_a=heatmap_cubic_a,
+            points_per_limb=points_per_limb,
+            min_paf_score=min_paf_score,
+            success_ratio_thr=success_ratio_thr,
+            paf_cubic_a=paf_cubic_a,
+            exhaustive_tune=bool(getattr(args, "exhaustive_tune_fused_postprocess", False)),
+            force=bool(getattr(args, "force_compile_fused_postprocess", False)),
+            keep_onnx=bool(getattr(args, "keep_fused_postprocess_onnx", False)),
+        )
+
+
 def manual_cubic_topk_enabled_in_infer(user_variant: str, enabled: bool) -> bool:
     """Return True when manual-cubic TopK should run inside inference worker.
 
@@ -1339,6 +1735,352 @@ def postprocess_precomputed_manual_cubic_topk_item(
     return PostprocessOutput(np.asarray(poses, dtype=np.float32), np.asarray(kpts, dtype=np.float32), timings)
 
 
+
+
+def fused_postprocess_enabled_in_infer(user_variant: str, enabled: bool) -> bool:
+    """Return True when fused MIGraphX postprocess should run inside inference worker.
+
+    This keeps both GPU programs in the same Python process:
+        pose_model.mxr -> fused_postprocess.mxr
+
+    Postprocess workers then receive only small arrays:
+        pair_scores, pair_valid, top_scores, top_indices
+    and perform CPU-only pose assembly.
+    """
+    if not enabled:
+        return False
+    try:
+        canonical, registry_mode, _ = resolve_registry_mode(user_variant)
+    except Exception:
+        canonical = registry_mode = str(user_variant)
+    return registry_mode == "mx_fused_cubic_topk_fullres_paf" or canonical == "mx_fused_cubic_topk_fullres_paf"
+
+
+def _run_fused_postprocess_in_inference(
+    *,
+    out_item: Dict[str, Any],
+    target_w: int,
+    target_h: int,
+    stride: int,
+    cache_dir: str,
+    explicit_mxr: str,
+    topk: int,
+    threshold: float,
+    nms_radius: int,
+    nms_impl: str,
+    heatmap_cubic_a: float,
+    points_per_limb: int,
+    min_paf_score: float,
+    success_ratio_thr: float,
+    paf_cubic_a: float,
+    head_cache: Dict[str, Any],
+    tracer: Optional[Any] = None,
+) -> None:
+    """Attach fused postprocess outputs to one inference output item.
+
+    The item must contain decoded low-resolution HWC maps. This function runs
+    the fused MIGraphX postprocess head in the same process that just executed
+    the pose model, then removes the large heatmap/PAF arrays from the queued
+    item so post workers only process the small postprocess outputs.
+    """
+    selected_mxr = select_fused_postprocess_mxr_for_hw(
+        original_hw=tuple(out_item["original_hw"]),
+        target_width=target_w,
+        target_height=target_h,
+        stride=stride,
+        migraphx_fused_postprocess_mxr=explicit_mxr,
+        migraphx_fused_postprocess_cache_dir=cache_dir,
+        topk=topk,
+        threshold=threshold,
+        nms_radius=nms_radius,
+        nms_impl=nms_impl,
+        heatmap_cubic_a=heatmap_cubic_a,
+        points_per_limb=points_per_limb,
+        min_paf_score=min_paf_score,
+        success_ratio_thr=success_ratio_thr,
+        paf_cubic_a=paf_cubic_a,
+    )
+    if not selected_mxr or not Path(selected_mxr).exists():
+        raise FileNotFoundError(
+            "Missing fused MIGraphX postprocess .mxr for inference-fused stream path. "
+            f"original_hw={tuple(out_item['original_hw'])}, expected={selected_mxr}. "
+            "Run with --compile-fused-postprocess first."
+        )
+
+    if selected_mxr not in head_cache:
+        from modules.migraphx_fused_postprocess import MIGraphXFusedPostprocess
+        head_cache[selected_mxr] = MIGraphXFusedPostprocess(selected_mxr)
+
+    heatmaps = np.ascontiguousarray(out_item["heatmaps"][:, :, :18], dtype=np.float32)
+    pafs = np.ascontiguousarray(out_item["pafs"], dtype=np.float32)
+
+    heatmaps_nchw = np.moveaxis(heatmaps, -1, 0)[np.newaxis, ...]
+    pafs_nchw = np.moveaxis(pafs, -1, 0)[np.newaxis, ...]
+
+    with Timer() as t_fused:
+        if tracer is not None:
+            with tracer.range("fused_postprocess_in_infer"):
+                pair_scores, pair_valid, top_scores, top_indices = head_cache[selected_mxr].run(
+                    heatmaps_nchw,
+                    pafs_nchw,
+                )
+        else:
+            pair_scores, pair_valid, top_scores, top_indices = head_cache[selected_mxr].run(
+                heatmaps_nchw,
+                pafs_nchw,
+            )
+
+    out_item["fused_pair_scores"] = np.ascontiguousarray(pair_scores, dtype=np.float32)
+    out_item["fused_pair_valid"] = np.ascontiguousarray(pair_valid, dtype=np.float32)
+    out_item["fused_top_scores"] = np.ascontiguousarray(top_scores, dtype=np.float32)
+    out_item["fused_top_indices"] = np.ascontiguousarray(top_indices, dtype=np.float32)
+
+    out_item["fused_post_mx_ms"] = float(t_fused.ms)
+    out_item["fused_postprocess_mxr"] = selected_mxr
+    out_item["fused_full_width"] = int(out_item["original_hw"][1])
+    out_item["fused_threshold"] = float(threshold)
+    out_item["fused_postprocess_precomputed"] = True
+
+    # These large arrays are no longer needed by postprocess workers in the
+    # fused-in-infer path. Removing them avoids queue/shared-memory pressure.
+    out_item.pop("heatmaps", None)
+    out_item.pop("pafs", None)
+
+
+def postprocess_precomputed_fused_postprocess_item(
+    *,
+    item: Dict[str, Any],
+    threshold: float,
+) -> Any:
+    """CPU-only tail for the fused-postprocess-in-infer stream path.
+
+    Input item already contains:
+        fused_pair_scores, fused_pair_valid, fused_top_scores, fused_top_indices
+
+    It returns the standard PostprocessOutput object so the reporting code can
+    remain unchanged.
+    """
+    from modules.mx_pair_assembly import (
+        group_keypoints_from_mx_pair_scores,
+        topk_to_keypoint_lists,
+    )
+    from modules.postprocessing import PostprocessOutput
+
+    timings: Dict[str, float] = {}
+    t_total = time.perf_counter()
+
+    timings["fused_post_mx"] = float(item.get("fused_post_mx_ms", 0.0) or 0.0)
+    timings["mx_nms"] = timings["fused_post_mx"]
+    timings["group_affinity"] = timings["fused_post_mx"]
+
+    with Timer() as t_adapter:
+        all_kpts_by_type, _ = topk_to_keypoint_lists(
+            item["fused_top_scores"],
+            item["fused_top_indices"],
+            full_width=int(item.get("fused_full_width", item["original_hw"][1])),
+            threshold=float(item.get("fused_threshold", threshold)),
+            num_keypoint_types=18,
+        )
+    timings["topk_adapter"] = t_adapter.ms
+    timings["extract_keypoints"] = t_adapter.ms
+
+    poses, kpts, asm_times = group_keypoints_from_mx_pair_scores(
+        all_kpts_by_type,
+        item["fused_pair_scores"],
+        item["fused_pair_valid"],
+        min_pair_score=0.0,
+        return_timing=True,
+    )
+
+    for key, value in asm_times.items():
+        try:
+            timings[str(key)] = float(value)
+        except Exception:
+            pass
+
+    assembly_total = float(timings.get("mx_assembly_total", 0.0))
+    timings["group_pose"] = assembly_total
+    timings["group_keypoints"] = timings["fused_post_mx"] + assembly_total
+    timings["group_total"] = timings["group_keypoints"]
+    timings["total_postprocess_cpu_tail"] = (time.perf_counter() - t_total) * 1000.0
+    timings["total_postprocess"] = (
+        timings["fused_post_mx"]
+        + timings["topk_adapter"]
+        + assembly_total
+    )
+
+    return PostprocessOutput(
+        np.asarray(poses, dtype=np.float32),
+        np.asarray(kpts, dtype=np.float32),
+        timings,
+    )
+
+
+
+
+
+# ---------------------------------------------------------------------------
+# Fused-pruned postprocess in inference worker
+# ---------------------------------------------------------------------------
+
+def fused_pruned_postprocess_enabled_in_infer(user_variant: str, enabled: bool) -> bool:
+    if not enabled:
+        return False
+    try:
+        canonical, registry_mode, _ = resolve_registry_mode(user_variant)
+    except Exception:
+        canonical = registry_mode = str(user_variant)
+    return (
+        canonical == "mx_fused_cubic_topk_fullres_paf_pruned"
+        or registry_mode == "mx_fused_cubic_topk_fullres_paf_pruned"
+    )
+
+
+def _get_fused_pruned_infer_head(mxr_path: str, cache: Dict[str, Any]):
+    key = str(mxr_path)
+    if key not in cache:
+        from modules.migraphx_fused_postprocess_pruned import MIGraphXFusedPostprocessPruned
+        cache[key] = MIGraphXFusedPostprocessPruned(key)
+    return cache[key]
+
+
+def _run_fused_pruned_postprocess_in_inference(
+    *,
+    out_item: Dict[str, Any],
+    target_w: int,
+    target_h: int,
+    stride: int,
+    explicit_mxr: str,
+    cache_dir: str,
+    topk: int,
+    limb_topm: int,
+    threshold: float,
+    nms_radius: int,
+    nms_impl: str,
+    heatmap_cubic_a: float,
+    points_per_limb: int,
+    min_paf_score: float,
+    success_ratio_thr: float,
+    paf_cubic_a: float,
+    min_pair_score: float,
+    head_cache: Dict[str, Any],
+    tracer: Optional[Any] = None,
+) -> None:
+    import numpy as _np
+
+    selected_mxr = select_fused_pruned_postprocess_mxr_for_hw(
+        original_hw=tuple(out_item["original_hw"]),
+        target_width=int(target_w),
+        target_height=int(target_h),
+        stride=int(stride),
+        explicit_mxr=explicit_mxr,
+        cache_dir=cache_dir,
+        topk=int(topk),
+        limb_topm=int(limb_topm),
+        threshold=float(threshold),
+        nms_radius=int(nms_radius),
+        nms_impl=str(nms_impl),
+        heatmap_cubic_a=float(heatmap_cubic_a),
+        points_per_limb=int(points_per_limb),
+        min_paf_score=float(min_paf_score),
+        success_ratio_thr=float(success_ratio_thr),
+        paf_cubic_a=float(paf_cubic_a),
+        min_pair_score=float(min_pair_score),
+    )
+    if not selected_mxr or not Path(selected_mxr).exists():
+        raise FileNotFoundError(
+            "Missing fused-pruned MIGraphX postprocess .mxr for inference-fused stream path. "
+            f"original_hw={tuple(out_item['original_hw'])}, expected={selected_mxr}. "
+            "Compile it first, e.g. with compile_pruned_from_existing_onnx.py."
+        )
+
+    fused = _get_fused_pruned_infer_head(selected_mxr, head_cache)
+
+    heatmaps = _np.asarray(out_item["heatmaps"], dtype=_np.float32)
+    pafs = _np.asarray(out_item["pafs"], dtype=_np.float32)
+
+    heatmaps_nchw = _np.moveaxis(
+        _np.ascontiguousarray(heatmaps[:, :, :18], dtype=_np.float32),
+        -1,
+        0,
+    )[_np.newaxis, ...]
+    pafs_nchw = _np.moveaxis(
+        _np.ascontiguousarray(pafs, dtype=_np.float32),
+        -1,
+        0,
+    )[_np.newaxis, ...]
+
+    with Timer() as t_fused:
+        if tracer is not None:
+            with tracer.range("fused_pruned_postprocess_in_infer"):
+                top_scores, top_indices, a_idx, b_idx, pair_score, pair_valid = fused.run(
+                    heatmaps_nchw,
+                    pafs_nchw,
+                )
+        else:
+            top_scores, top_indices, a_idx, b_idx, pair_score, pair_valid = fused.run(
+                heatmaps_nchw,
+                pafs_nchw,
+            )
+
+    out_item["fused_pruned_precomputed"] = True
+    out_item["fused_pruned_mxr"] = str(selected_mxr)
+    out_item["fused_pruned_mx_ms"] = float(t_fused.ms)
+    out_item["fused_pruned_top_scores"] = _np.asarray(top_scores, dtype=_np.float32)
+    out_item["fused_pruned_top_indices"] = _np.asarray(top_indices)
+    out_item["fused_pruned_a_idx"] = _np.asarray(a_idx, dtype=_np.int64)
+    out_item["fused_pruned_b_idx"] = _np.asarray(b_idx, dtype=_np.int64)
+    out_item["fused_pruned_pair_score"] = _np.asarray(pair_score, dtype=_np.float32)
+    out_item["fused_pruned_pair_valid"] = _np.asarray(pair_valid, dtype=_np.float32)
+
+    out_item.pop("heatmaps", None)
+    out_item.pop("pafs", None)
+
+
+def postprocess_precomputed_fused_pruned_item(
+    *,
+    item: Dict[str, Any],
+    threshold: float,
+    min_pair_score: float = 0.0,
+):
+    from modules.postprocessing import PostprocessOutput
+    from modules.mx_pair_assembly_pruned import assemble_poses_from_pruned_pairs
+
+    with Timer() as t_cpu:
+        poses, kpts, asm_times = assemble_poses_from_pruned_pairs(
+            item["fused_pruned_top_scores"],
+            item["fused_pruned_top_indices"],
+            item["fused_pruned_a_idx"],
+            item["fused_pruned_b_idx"],
+            item["fused_pruned_pair_score"],
+            item["fused_pruned_pair_valid"],
+            full_width=int(item["original_hw"][1]),
+            threshold=float(threshold),
+            min_pair_score=float(min_pair_score),
+            return_timing=True,
+        )
+
+    timings: Dict[str, float] = {
+        "fused_pruned_mx_in_infer": float(item.get("fused_pruned_mx_ms", 0.0)),
+        "pruned_cpu_tail": float(t_cpu.ms),
+        "topk_adapter": float(asm_times.get("topk_adapter", 0.0)),
+        "mx_assembly_total": float(asm_times.get("mx_assembly_total", t_cpu.ms)),
+        "group_pose": float(t_cpu.ms),
+        "group_keypoints": float(t_cpu.ms),
+        "group_total": float(t_cpu.ms),
+        "total_postprocess": float(t_cpu.ms),
+    }
+    for k, v in asm_times.items():
+        try:
+            timings[str(k)] = float(v)
+        except Exception:
+            pass
+
+    return PostprocessOutput(
+        np.asarray(poses, dtype=np.float32),
+        np.asarray(kpts, dtype=np.float32),
+        timings,
+    )
 
 # ---------------------------------------------------------------------------
 # Optional security-monitor grid video output
@@ -1737,6 +2479,7 @@ def inference_worker(
     migraphx_batch_size: int = 1,
     migraphx_batch_timeout_ms: float = 0.0,
     manual_cubic_topk_in_infer: bool = False,
+    fused_postprocess_in_infer: bool = False,
     manual_cubic_topk_variant: str = "",
     migraphx_manual_cubic_topk_mxr: str = "",
     migraphx_manual_cubic_topk_cache_dir: str = "models/manual_cubic_nms_topk_cache",
@@ -1745,9 +2488,18 @@ def inference_worker(
     manual_cubic_nms_radius: int = 6,
     manual_cubic_nms_impl: str = "separable",
     manual_cubic_a: float = -0.75,
+    migraphx_fused_postprocess_mxr: str = "",
+    migraphx_fused_postprocess_cache_dir: str = "models/fused_postprocess_cache",
+    fused_paf_cubic_a: float = -0.75,
+    fused_points_per_limb: int = 8,
+    fused_min_paf_score: float = 0.05,
+    fused_success_ratio_thr: float = 0.8,
     trace_log_every: int = 0,
     roctx_enabled: bool = False,
 ) -> None:
+    # Fused postprocess kwargs are accepted here only because process-spawn code
+    # passes the same extension kwargs to inference and postprocess workers.
+    # Inference workers do not use them; fused postprocess runs in post workers.
     try:
         tracer = RocTxTracer(roctx_enabled, f"infer:{worker_id}:pid:{os.getpid()}")
         tracer.mark("worker_start")
@@ -1767,9 +2519,28 @@ def inference_worker(
             f"timeout={float(migraphx_batch_timeout_ms):.2f} ms",
             flush=True,
         )
+        print(
+            f"[INFER:{worker_id}] DEBUG fused_pruned_postprocess_in_infer="
+            f"{fused_pruned_postprocess_in_infer} "
+            f"variant_for_pruned={manual_cubic_topk_variant!r} "
+            f"cache={migraphx_fused_pruned_postprocess_cache_dir!r}",
+            flush=True,
+        )
 
         out_h = target_h // stride
         out_w = target_w // stride
+
+        run_fused_pruned_postprocess_in_infer = bool(fused_pruned_postprocess_in_infer)
+        
+        fused_pruned_head_cache: Dict[str, Any] = {}
+        fused_pruned_times: List[float] = []
+        if run_fused_pruned_postprocess_in_infer:
+            print(
+                f"[INFER:{worker_id}] Fused-pruned postprocess will run inside inference worker "
+                f"K={int(pruned_topk)} M={int(limb_topm)} thr={float(pruned_threshold)} "
+                f"radius={int(pruned_nms_radius)} impl={pruned_nms_impl}",
+                flush=True,
+            )
         run_manual_cubic_topk_in_infer = manual_cubic_topk_enabled_in_infer(
             manual_cubic_topk_variant, bool(manual_cubic_topk_in_infer)
         )
@@ -1780,6 +2551,19 @@ def inference_worker(
                 f"[INFER:{worker_id}] Manual-cubic TopK will run inside inference worker "
                 f"K={int(manual_cubic_topk)} thr={float(manual_cubic_threshold)} "
                 f"radius={int(manual_cubic_nms_radius)} impl={manual_cubic_nms_impl}",
+                flush=True,
+            )
+        run_fused_postprocess_in_infer = fused_postprocess_enabled_in_infer(
+            manual_cubic_topk_variant, bool(fused_postprocess_in_infer)
+        )
+        fused_postprocess_head_cache: Dict[str, Any] = {}
+        fused_postprocess_times: List[float] = []
+        if run_fused_postprocess_in_infer:
+            print(
+                f"[INFER:{worker_id}] Fused postprocess will run inside inference worker "
+                f"K={int(manual_cubic_topk)} thr={float(manual_cubic_threshold)} "
+                f"radius={int(manual_cubic_nms_radius)} impl={manual_cubic_nms_impl} "
+                f"paf_cubic_a={float(fused_paf_cubic_a)}",
                 flush=True,
             )
         shared_slots, shared_handles = open_shared_map_buffers(shared_map_descs)
@@ -1874,7 +2658,10 @@ def inference_worker(
             )
 
             for out_item in out_items:
-                if shared_slots and free_map_slots is not None:
+                if out_item.get("fused_postprocess_precomputed") or out_item.get("fused_pruned_precomputed"):
+                    out_item.pop("heatmaps", None)
+                    out_item.pop("pafs", None)
+                elif shared_slots and free_map_slots is not None:
                     slot_id = None
                     try:
                         slot_id = int(free_map_slots.get(timeout=0.05))
@@ -1923,6 +2710,10 @@ def inference_worker(
                 "p95_manual_cubic_mx_topk_ms": percentile(manual_cubic_topk_times, 95),
                 "manual_cubic_topk_in_infer": bool(run_manual_cubic_topk_in_infer),
                 "manual_cubic_topk_heads_loaded": len(manual_cubic_head_cache),
+                "avg_fused_post_mx_ms": mean(fused_postprocess_times),
+                "p95_fused_post_mx_ms": percentile(fused_postprocess_times, 95),
+                "fused_postprocess_in_infer": bool(run_fused_postprocess_in_infer),
+                "fused_postprocess_heads_loaded": len(fused_postprocess_head_cache),
                 "wall_s": time.perf_counter() - t_worker_start,
             }
         )
@@ -1963,6 +2754,12 @@ def postprocess_worker(
     manual_cubic_nms_radius: int = 6,
     manual_cubic_nms_impl: str = "separable",
     manual_cubic_a: float = -0.75,
+    migraphx_fused_postprocess_mxr: str = "",
+    migraphx_fused_postprocess_cache_dir: str = "models/fused_postprocess_cache",
+    fused_paf_cubic_a: float = -0.75,
+    fused_points_per_limb: int = 8,
+    fused_min_paf_score: float = 0.05,
+    fused_success_ratio_thr: float = 0.8,
     prealloc_resize_buffers: bool = False,
     trace_log_every: int = 0,
     roctx_enabled: bool = False,
@@ -1998,6 +2795,9 @@ def postprocess_worker(
             nms_radius_lowres=nms_radius_lowres,
             torch_device=torch_device,
             require_gpu=bool(require_gpu and wants_torch and torch_device == "cuda"),
+            points_per_limb=int(fused_points_per_limb),
+            min_paf_score=float(fused_min_paf_score),
+            success_ratio_thr=float(fused_success_ratio_thr),
             extra={
                 "gpu_compute_dtype": gpu_compute_dtype,
                 "nms_impl": nms_impl,
@@ -2008,6 +2808,15 @@ def postprocess_worker(
                 "manual_cubic_nms_radius": int(manual_cubic_nms_radius),
                 "manual_cubic_nms_impl": str(manual_cubic_nms_impl),
                 "manual_cubic_a": float(manual_cubic_a),
+                "migraphx_fused_postprocess_mxr": migraphx_fused_postprocess_mxr,
+                "fused_postprocess_mxr": migraphx_fused_postprocess_mxr,
+                "migraphx_fused_postprocess_cache_dir": migraphx_fused_postprocess_cache_dir,
+                "fused_postprocess_cache_dir": migraphx_fused_postprocess_cache_dir,
+                "fused_paf_cubic_a": float(fused_paf_cubic_a),
+                "paf_cubic_a": float(fused_paf_cubic_a),
+                "fused_points_per_limb": int(fused_points_per_limb),
+                "fused_min_paf_score": float(fused_min_paf_score),
+                "fused_success_ratio_thr": float(fused_success_ratio_thr),
                 "prealloc_resize_buffers": bool(prealloc_resize_buffers),
             },
         )
@@ -2078,8 +2887,41 @@ def postprocess_worker(
                     )
                 config.migraphx_manual_cubic_topk_mxr = selected_mxr
 
+            if registry_mode == "mx_fused_cubic_topk_fullres_paf":
+                selected_mxr = select_fused_postprocess_mxr_for_hw(
+                    original_hw=tuple(item["original_hw"]),
+                    target_width=args_target_width,
+                    target_height=args_target_height,
+                    stride=args_stride,
+                    migraphx_fused_postprocess_mxr=migraphx_fused_postprocess_mxr,
+                    migraphx_fused_postprocess_cache_dir=migraphx_fused_postprocess_cache_dir,
+                    topk=max_keypoints,
+                    threshold=threshold,
+                    nms_radius=nms_radius_fullres,
+                    nms_impl=nms_impl,
+                    heatmap_cubic_a=manual_cubic_a,
+                    points_per_limb=fused_points_per_limb,
+                    min_paf_score=fused_min_paf_score,
+                    success_ratio_thr=fused_success_ratio_thr,
+                    paf_cubic_a=fused_paf_cubic_a,
+                )
+                if not selected_mxr or not Path(selected_mxr).exists():
+                    raise FileNotFoundError(
+                        "Missing fused MIGraphX postprocess .mxr for stream resolution. "
+                        f"original_hw={tuple(item['original_hw'])}, expected={selected_mxr}. "
+                        "Run this script with --compile-fused-postprocess or run "
+                        "python modules/migraphx_fused_postprocess_compiler.py --video <video>."
+                    )
+                config.extra["fused_postprocess_mxr"] = selected_mxr
+                config.extra["migraphx_fused_postprocess_mxr"] = selected_mxr
+
             with tracer.range(f"postprocess_{registry_mode}"):
-                if registry_mode == "migraphx_manual_cubic_nms_topk" and item.get("manual_cubic_topk_precomputed"):
+                if registry_mode == "mx_fused_cubic_topk_fullres_paf" and item.get("fused_postprocess_precomputed"):
+                    out = postprocess_precomputed_fused_postprocess_item(
+                        item=item,
+                        threshold=threshold,
+                    )
+                elif registry_mode == "migraphx_manual_cubic_nms_topk" and item.get("manual_cubic_topk_precomputed"):
                     out = postprocess_precomputed_manual_cubic_topk_item(
                         item=item,
                         pafs=item["pafs"],
@@ -2381,6 +3223,7 @@ def inference_latest_worker(
     migraphx_batch_size: int = 1,
     migraphx_batch_timeout_ms: float = 0.0,
     manual_cubic_topk_in_infer: bool = False,
+    fused_postprocess_in_infer: bool = False,
     manual_cubic_topk_variant: str = "",
     migraphx_manual_cubic_topk_mxr: str = "",
     migraphx_manual_cubic_topk_cache_dir: str = "models/manual_cubic_nms_topk_cache",
@@ -2389,10 +3232,29 @@ def inference_latest_worker(
     manual_cubic_nms_radius: int = 6,
     manual_cubic_nms_impl: str = "separable",
     manual_cubic_a: float = -0.75,
+    migraphx_fused_postprocess_mxr: str = "",
+    migraphx_fused_postprocess_cache_dir: str = "models/fused_postprocess_cache",
+    fused_paf_cubic_a: float = -0.75,
+    fused_points_per_limb: int = 8,
+    fused_min_paf_score: float = 0.05,
+    fused_success_ratio_thr: float = 0.8,
+    fused_pruned_postprocess_in_infer: bool = False,
+    migraphx_fused_pruned_postprocess_mxr: str = "",
+    migraphx_fused_pruned_postprocess_cache_dir: str = "models/fused_postprocess_pruned_cache",
+    pruned_topk: int = 20,
+    limb_topm: int = 20,
+    pruned_threshold: float = 0.1,
+    pruned_nms_radius: int = 6,
+    pruned_nms_impl: str = "separable",
+    pruned_heatmap_cubic_a: float = -0.75,
+    min_pair_score: float = 0.0,
     trace_log_every: int = 0,
     roctx_enabled: bool = False,
 ) -> None:
     """Round-robin MIGraphX worker over newest-frame slots, with optional batched inference."""
+    # Fused postprocess kwargs are accepted here only because process-spawn code
+    # passes the same extension kwargs to inference and postprocess workers.
+    # Inference workers do not use them; fused postprocess runs in post workers.
     try:
         tracer = RocTxTracer(roctx_enabled, f"infer:{worker_id}:pid:{os.getpid()}")
         tracer.mark("worker_start")
@@ -2412,6 +3274,25 @@ def inference_latest_worker(
             f"timeout={float(migraphx_batch_timeout_ms):.2f} ms",
             flush=True,
         )
+        print(
+            f"[INFER:{worker_id}] LATEST DEBUG fused_pruned_postprocess_in_infer="
+            f"{fused_pruned_postprocess_in_infer} "
+            f"variant_for_pruned={manual_cubic_topk_variant!r} "
+            f"cache={migraphx_fused_pruned_postprocess_cache_dir!r}",
+            flush=True,
+        )
+
+        run_fused_pruned_postprocess_in_infer = bool(fused_pruned_postprocess_in_infer)
+        fused_pruned_head_cache: Dict[str, Any] = {}
+        fused_pruned_times: List[float] = []
+        if run_fused_pruned_postprocess_in_infer:
+            print(
+                f"[INFER:{worker_id}] Fused-pruned postprocess will run inside inference_latest_worker "
+                f"K={int(pruned_topk)} M={int(limb_topm)} thr={float(pruned_threshold)} "
+                f"radius={int(pruned_nms_radius)} impl={pruned_nms_impl}",
+                flush=True,
+            )
+
 
         out_h = target_h // stride
         out_w = target_w // stride
@@ -2425,6 +3306,19 @@ def inference_latest_worker(
                 f"[INFER:{worker_id}] Manual-cubic TopK will run inside inference worker "
                 f"K={int(manual_cubic_topk)} thr={float(manual_cubic_threshold)} "
                 f"radius={int(manual_cubic_nms_radius)} impl={manual_cubic_nms_impl}",
+                flush=True,
+            )
+        run_fused_postprocess_in_infer = fused_postprocess_enabled_in_infer(
+            manual_cubic_topk_variant, bool(fused_postprocess_in_infer)
+        )
+        fused_postprocess_head_cache: Dict[str, Any] = {}
+        fused_postprocess_times: List[float] = []
+        if run_fused_postprocess_in_infer:
+            print(
+                f"[INFER:{worker_id}] Fused postprocess will run inside inference worker "
+                f"K={int(manual_cubic_topk)} thr={float(manual_cubic_threshold)} "
+                f"radius={int(manual_cubic_nms_radius)} impl={manual_cubic_nms_impl} "
+                f"paf_cubic_a={float(fused_paf_cubic_a)}",
                 flush=True,
             )
         shared_slots, shared_handles = open_shared_map_buffers(shared_map_descs)
@@ -2579,6 +3473,32 @@ def inference_latest_worker(
                     manual_cubic_topk_times.append(float(out_item.get("manual_cubic_mx_topk_ms", 0.0)))
                     out_item["infer_done_ts"] = time.perf_counter()
 
+            if run_fused_pruned_postprocess_in_infer:
+                for out_item in out_items:
+                    _run_fused_pruned_postprocess_in_inference(
+                        out_item=out_item,
+                        target_w=target_w,
+                        target_h=target_h,
+                        stride=stride,
+                        explicit_mxr=migraphx_fused_pruned_postprocess_mxr,
+                        cache_dir=migraphx_fused_pruned_postprocess_cache_dir,
+                        topk=pruned_topk,
+                        limb_topm=limb_topm,
+                        threshold=pruned_threshold,
+                        nms_radius=pruned_nms_radius,
+                        nms_impl=pruned_nms_impl,
+                        heatmap_cubic_a=pruned_heatmap_cubic_a,
+                        points_per_limb=fused_points_per_limb,
+                        min_paf_score=fused_min_paf_score,
+                        success_ratio_thr=fused_success_ratio_thr,
+                        paf_cubic_a=fused_paf_cubic_a,
+                        min_pair_score=min_pair_score,
+                        head_cache=fused_pruned_head_cache,
+                        tracer=tracer,
+                    )
+                    fused_pruned_times.append(float(out_item.get("fused_pruned_mx_ms", 0.0)))
+                    out_item["infer_done_ts"] = time.perf_counter()
+
             trace_print(
                 trace_log_every,
                 batch_runs,
@@ -2590,7 +3510,10 @@ def inference_latest_worker(
             for out_item in out_items:
                 cam_id = int(out_item["camera_id"])
 
-                if shared_slots and free_map_slots is not None:
+                if out_item.get("fused_postprocess_precomputed") or out_item.get("fused_pruned_precomputed"):
+                    out_item.pop("heatmaps", None)
+                    out_item.pop("pafs", None)
+                elif shared_slots and free_map_slots is not None:
                     slot_id = None
                     try:
                         slot_id = int(free_map_slots.get_nowait())
@@ -2658,11 +3581,19 @@ def inference_latest_worker(
                 "avg_inference_ms": mean(inference_times),
                 "p95_inference_ms": percentile(inference_times, 95),
                 "avg_decode_ms": mean(decode_times),
+                "avg_fused_pruned_mx_ms": mean(locals().get("fused_pruned_times", [])),
+                "p95_fused_pruned_mx_ms": percentile(locals().get("fused_pruned_times", []), 95),
+                "fused_pruned_postprocess_in_infer": bool(locals().get("run_fused_pruned_postprocess_in_infer", False)),
+                "fused_pruned_heads_loaded": len(locals().get("fused_pruned_head_cache", {})),
                 "p95_decode_ms": percentile(decode_times, 95),
                 "avg_manual_cubic_mx_topk_ms": mean(manual_cubic_topk_times),
                 "p95_manual_cubic_mx_topk_ms": percentile(manual_cubic_topk_times, 95),
                 "manual_cubic_topk_in_infer": bool(run_manual_cubic_topk_in_infer),
                 "manual_cubic_topk_heads_loaded": len(manual_cubic_head_cache),
+                "avg_fused_post_mx_ms": mean(fused_postprocess_times),
+                "p95_fused_post_mx_ms": percentile(fused_postprocess_times, 95),
+                "fused_postprocess_in_infer": bool(run_fused_postprocess_in_infer),
+                "fused_postprocess_heads_loaded": len(fused_postprocess_head_cache),
                 "wall_s": time.perf_counter() - t_worker_start,
             }
         )
@@ -2719,6 +3650,13 @@ def postprocess_latest_worker(
     prealloc_resize_buffers: bool = False,
     gpu_nms_batch_size: int = 1,
     gpu_nms_batch_timeout_ms: float = 0.0,
+    migraphx_fused_postprocess_mxr: str = "",
+    migraphx_fused_postprocess_cache_dir: str = "models/fused_postprocess_cache",
+    fused_paf_cubic_a: float = -0.75,
+    fused_points_per_limb: int = 8,
+    fused_min_paf_score: float = 0.05,
+    fused_success_ratio_thr: float = 0.8,
+    min_pair_score: float = 0.0,
     trace_log_every: int = 0,
     roctx_enabled: bool = False,
     args_target_width: int = 968,
@@ -2754,6 +3692,9 @@ def postprocess_latest_worker(
             nms_radius_lowres=nms_radius_lowres,
             torch_device=torch_device,
             require_gpu=bool(require_gpu and wants_torch and torch_device == "cuda"),
+            points_per_limb=int(fused_points_per_limb),
+            min_paf_score=float(fused_min_paf_score),
+            success_ratio_thr=float(fused_success_ratio_thr),
             extra={
                 "gpu_compute_dtype": gpu_compute_dtype,
                 "nms_impl": nms_impl,
@@ -2764,6 +3705,15 @@ def postprocess_latest_worker(
                 "manual_cubic_nms_radius": int(manual_cubic_nms_radius),
                 "manual_cubic_nms_impl": str(manual_cubic_nms_impl),
                 "manual_cubic_a": float(manual_cubic_a),
+                "migraphx_fused_postprocess_mxr": migraphx_fused_postprocess_mxr,
+                "fused_postprocess_mxr": migraphx_fused_postprocess_mxr,
+                "migraphx_fused_postprocess_cache_dir": migraphx_fused_postprocess_cache_dir,
+                "fused_postprocess_cache_dir": migraphx_fused_postprocess_cache_dir,
+                "fused_paf_cubic_a": float(fused_paf_cubic_a),
+                "paf_cubic_a": float(fused_paf_cubic_a),
+                "fused_points_per_limb": int(fused_points_per_limb),
+                "fused_min_paf_score": float(fused_min_paf_score),
+                "fused_success_ratio_thr": float(fused_success_ratio_thr),
                 "prealloc_resize_buffers": bool(prealloc_resize_buffers),
             },
         )
@@ -2896,6 +3846,24 @@ def postprocess_latest_worker(
                     else:
                         batch_outputs = []
                         for bi in batch_items:
+                            if registry_mode == "mx_fused_cubic_topk_fullres_paf_pruned" and bi.get("fused_pruned_precomputed"):
+                                batch_outputs.append(
+                                    postprocess_precomputed_fused_pruned_item(
+                                        item=bi,
+                                        threshold=threshold,
+                                        min_pair_score=min_pair_score,
+                                    )
+                                )
+                                continue
+                            if registry_mode == "mx_fused_cubic_topk_fullres_paf" and bi.get("fused_postprocess_precomputed"):
+                                batch_outputs.append(
+                                    postprocess_precomputed_fused_postprocess_item(
+                                        item=bi,
+                                        threshold=threshold,
+                                    )
+                                )
+                                continue
+
                             hm, pf = _maps_for(bi)
                             if registry_mode == "migraphx_manual_cubic_nms_topk" and bi.get("manual_cubic_topk_precomputed"):
                                 batch_outputs.append(
@@ -3166,10 +4134,7 @@ def write_summary_json(path: str, summary: Dict[str, Any]) -> None:
 # Main orchestration
 # ---------------------------------------------------------------------------
 def run_queue(args) -> Dict[str, Any]:
-    if getattr(args, "allow_ptrace_attach", False):
-        os.environ["STREAM_ALLOW_PTRACE_ATTACH"] = "1"
-    else:
-        os.environ.pop("STREAM_ALLOW_PTRACE_ATTACH", None)
+    apply_parent_profiling_env(args)
     configure_worker_thread_env(args.worker_threads)
     ctx = mp.get_context(getattr(args, "mp_start_method", "spawn"))
 
@@ -3179,7 +4144,9 @@ def run_queue(args) -> Dict[str, Any]:
     # Validate variant in the parent process without touching Torch CUDA.
     canonical, registry_mode, wants_torch = resolve_registry_mode(args.variant)
     compile_migraphx_nms_for_stream_if_requested(args, sources)
+    compile_fused_pruned_postprocess_for_stream_if_requested(args, sources)
     compile_manual_cubic_topk_for_stream_if_requested(args, sources)
+    compile_fused_postprocess_for_stream_if_requested(args, sources)
 
     pre_q = ctx.Queue(maxsize=max(1, int(args.preprocess_queue_size)))
     post_q = ctx.Queue(maxsize=max(1, int(args.postprocess_queue_size)))
@@ -3298,6 +4265,7 @@ def run_queue(args) -> Dict[str, Any]:
                 migraphx_batch_size=args.migraphx_batch_size,
                 migraphx_batch_timeout_ms=args.migraphx_batch_timeout_ms,
                 manual_cubic_topk_in_infer=args.manual_cubic_topk_in_infer,
+                fused_postprocess_in_infer=args.fused_postprocess_in_infer,
                 manual_cubic_topk_variant=args.variant,
                 migraphx_manual_cubic_topk_mxr=args.migraphx_manual_cubic_topk_mxr,
                 migraphx_manual_cubic_topk_cache_dir=args.migraphx_manual_cubic_topk_cache_dir,
@@ -3306,6 +4274,12 @@ def run_queue(args) -> Dict[str, Any]:
                 manual_cubic_nms_radius=args.manual_cubic_nms_radius,
                 manual_cubic_nms_impl=args.manual_cubic_nms_impl,
                 manual_cubic_a=args.manual_cubic_a,
+                migraphx_fused_postprocess_mxr=args.migraphx_fused_postprocess_mxr,
+                migraphx_fused_postprocess_cache_dir=args.migraphx_fused_postprocess_cache_dir,
+                fused_paf_cubic_a=args.fused_paf_cubic_a,
+                fused_points_per_limb=args.fused_points_per_limb,
+                fused_min_paf_score=args.fused_min_paf_score,
+                fused_success_ratio_thr=args.fused_success_ratio_thr,
                 trace_log_every=args.trace_log_every,
                 roctx_enabled=args.roctx,
             ),
@@ -3343,6 +4317,12 @@ def run_queue(args) -> Dict[str, Any]:
                 manual_cubic_nms_radius=args.manual_cubic_nms_radius,
                 manual_cubic_nms_impl=args.manual_cubic_nms_impl,
                 manual_cubic_a=args.manual_cubic_a,
+                migraphx_fused_postprocess_mxr=args.migraphx_fused_postprocess_mxr,
+                migraphx_fused_postprocess_cache_dir=args.migraphx_fused_postprocess_cache_dir,
+                fused_paf_cubic_a=args.fused_paf_cubic_a,
+                fused_points_per_limb=args.fused_points_per_limb,
+                fused_min_paf_score=args.fused_min_paf_score,
+                fused_success_ratio_thr=args.fused_success_ratio_thr,
                 prealloc_resize_buffers=args.prealloc_resize_buffers,
                 args_target_width=args.target_width,
                 args_target_height=args.target_height,
@@ -3462,7 +4442,9 @@ def run_queue(args) -> Dict[str, Any]:
     summary["shared_map_slots"] = getattr(args, "shared_map_slots", 0)
     summary["migraphx_batch_size"] = getattr(args, "migraphx_batch_size", 1)
     summary["migraphx_batch_timeout_ms"] = getattr(args, "migraphx_batch_timeout_ms", 0.0)
+    summary["fused_pruned_postprocess_in_infer"] = bool(getattr(args, "fused_pruned_postprocess_in_infer", False))
     summary["manual_cubic_topk_in_infer"] = bool(getattr(args, "manual_cubic_topk_in_infer", False))
+    summary["fused_postprocess_in_infer"] = bool(getattr(args, "fused_postprocess_in_infer", False))
     summary["roctx"] = bool(getattr(args, "roctx", False))
     summary["trace_log_every"] = int(getattr(args, "trace_log_every", 0) or 0)
     summary["allow_ptrace_attach"] = bool(getattr(args, "allow_ptrace_attach", False))
@@ -3476,6 +4458,11 @@ def run_queue(args) -> Dict[str, Any]:
 
     print_summary(summary)
     print_system_profile(system_profile)
+    write_system_profile_outputs(
+        system_profile=system_profile,
+        json_path=getattr(args, "system_profile_json", ""),
+        csv_path=getattr(args, "system_profile_csv", ""),
+    )
     write_detailed_csv(args.detailed_csv, summary_rows)
     write_summary_json(args.summary_json, summary)
     return summary
@@ -3483,10 +4470,7 @@ def run_queue(args) -> Dict[str, Any]:
 
 def run_latest(args) -> Dict[str, Any]:
     """Run the pipeline with newest-frame-only slots per camera between stages."""
-    if getattr(args, "allow_ptrace_attach", False):
-        os.environ["STREAM_ALLOW_PTRACE_ATTACH"] = "1"
-    else:
-        os.environ.pop("STREAM_ALLOW_PTRACE_ATTACH", None)
+    apply_parent_profiling_env(args)
     configure_worker_thread_env(args.worker_threads)
     ctx = mp.get_context(getattr(args, "mp_start_method", "spawn"))
 
@@ -3496,6 +4480,7 @@ def run_latest(args) -> Dict[str, Any]:
     canonical, registry_mode, wants_torch = resolve_registry_mode(args.variant)
     compile_migraphx_nms_for_stream_if_requested(args, sources)
     compile_manual_cubic_topk_for_stream_if_requested(args, sources)
+    compile_fused_postprocess_for_stream_if_requested(args, sources)
 
     pre_queues = [ctx.Queue(maxsize=1) for _ in range(args.num_cameras)]
     post_queues = [ctx.Queue(maxsize=1) for _ in range(args.num_cameras)]
@@ -3638,8 +4623,23 @@ def run_latest(args) -> Dict[str, Any]:
                 free_map_slots=free_map_slots,
                 migraphx_batch_size=args.migraphx_batch_size,
                 migraphx_batch_timeout_ms=args.migraphx_batch_timeout_ms,
-                manual_cubic_topk_in_infer=args.manual_cubic_topk_in_infer,
+                fused_pruned_postprocess_in_infer=args.fused_pruned_postprocess_in_infer,
+                migraphx_fused_pruned_postprocess_mxr=args.migraphx_fused_pruned_postprocess_mxr,
+                migraphx_fused_pruned_postprocess_cache_dir=args.migraphx_fused_pruned_postprocess_cache_dir,
                 manual_cubic_topk_variant=args.variant,
+                pruned_topk=args.max_keypoints,
+                limb_topm=args.limb_topm,
+                pruned_threshold=args.threshold,
+                pruned_nms_radius=args.nms_radius_fullres,
+                pruned_nms_impl=args.nms_impl,
+                pruned_heatmap_cubic_a=args.manual_cubic_a,
+                fused_paf_cubic_a=args.fused_paf_cubic_a,
+                fused_points_per_limb=args.fused_points_per_limb,
+                fused_min_paf_score=args.fused_min_paf_score,
+                fused_success_ratio_thr=args.fused_success_ratio_thr,
+                min_pair_score=args.min_pair_score,
+                manual_cubic_topk_in_infer=args.manual_cubic_topk_in_infer,
+                fused_postprocess_in_infer=args.fused_postprocess_in_infer,
                 migraphx_manual_cubic_topk_mxr=args.migraphx_manual_cubic_topk_mxr,
                 migraphx_manual_cubic_topk_cache_dir=args.migraphx_manual_cubic_topk_cache_dir,
                 manual_cubic_topk=args.manual_cubic_topk,
@@ -3647,6 +4647,8 @@ def run_latest(args) -> Dict[str, Any]:
                 manual_cubic_nms_radius=args.manual_cubic_nms_radius,
                 manual_cubic_nms_impl=args.manual_cubic_nms_impl,
                 manual_cubic_a=args.manual_cubic_a,
+                migraphx_fused_postprocess_mxr=args.migraphx_fused_postprocess_mxr,
+                migraphx_fused_postprocess_cache_dir=args.migraphx_fused_postprocess_cache_dir,
                 trace_log_every=args.trace_log_every,
                 roctx_enabled=args.roctx,
             ),
@@ -3687,11 +4689,18 @@ def run_latest(args) -> Dict[str, Any]:
                 manual_cubic_nms_radius=args.manual_cubic_nms_radius,
                 manual_cubic_nms_impl=args.manual_cubic_nms_impl,
                 manual_cubic_a=args.manual_cubic_a,
+                migraphx_fused_postprocess_mxr=args.migraphx_fused_postprocess_mxr,
+                migraphx_fused_postprocess_cache_dir=args.migraphx_fused_postprocess_cache_dir,
+                fused_paf_cubic_a=args.fused_paf_cubic_a,
+                fused_points_per_limb=args.fused_points_per_limb,
+                fused_min_paf_score=args.fused_min_paf_score,
+                fused_success_ratio_thr=args.fused_success_ratio_thr,
                 shared_map_descs=shared_map_descs,
                 free_map_slots=free_map_slots,
                 prealloc_resize_buffers=args.prealloc_resize_buffers,
                 gpu_nms_batch_size=args.gpu_nms_batch_size,
                 gpu_nms_batch_timeout_ms=args.gpu_nms_batch_timeout_ms,
+                min_pair_score=args.min_pair_score,
                 trace_log_every=args.trace_log_every,
                 roctx_enabled=args.roctx,
                 args_target_width=args.target_width,
@@ -3807,6 +4816,7 @@ def run_latest(args) -> Dict[str, Any]:
     summary["migraphx_batch_size"] = getattr(args, "migraphx_batch_size", 1)
     summary["migraphx_batch_timeout_ms"] = getattr(args, "migraphx_batch_timeout_ms", 0.0)
     summary["manual_cubic_topk_in_infer"] = bool(getattr(args, "manual_cubic_topk_in_infer", False))
+    summary["fused_postprocess_in_infer"] = bool(getattr(args, "fused_postprocess_in_infer", False))
     summary["prealloc_resize_buffers"] = bool(getattr(args, "prealloc_resize_buffers", False))
     summary["gpu_nms_batch_size"] = getattr(args, "gpu_nms_batch_size", 1)
     summary["gpu_nms_batch_timeout_ms"] = getattr(args, "gpu_nms_batch_timeout_ms", 0.0)
@@ -3827,6 +4837,11 @@ def run_latest(args) -> Dict[str, Any]:
 
     print_summary(summary)
     print_system_profile(system_profile)
+    write_system_profile_outputs(
+        system_profile=system_profile,
+        json_path=getattr(args, "system_profile_json", ""),
+        csv_path=getattr(args, "system_profile_csv", ""),
+    )
     write_detailed_csv(args.detailed_csv, summary_rows)
     write_summary_json(args.summary_json, summary)
     return summary
@@ -4019,6 +5034,48 @@ def parse_args():
     )
 
     parser.add_argument(
+        "--fused-postprocess-in-infer",
+        action="store_true",
+        help=(
+            "Run fused MIGraphX postprocess immediately after pose_model.mxr inside "
+            "the inference worker. Postprocess workers then perform CPU assembly only."
+        ),
+    )
+    parser.add_argument(
+        "--migraphx-fused-postprocess-mxr",
+        default="",
+        help="Optional explicit fused postprocess .mxr path for mx_fused_cubic_topk_fullres_paf.",
+    )
+    parser.add_argument(
+        "--migraphx-fused-postprocess-cache-dir",
+        default="models/fused_postprocess_cache",
+        help="Directory containing fused_cubic_topk_fullres_paf_<shape>.mxr files.",
+    )
+    parser.add_argument(
+        "--compile-fused-postprocess",
+        action="store_true",
+        help="Compile fused postprocess .mxr heads for all stream resolutions before starting.",
+    )
+    parser.add_argument("--force-compile-fused-postprocess", action="store_true")
+    parser.add_argument("--keep-fused-postprocess-onnx", action="store_true")
+    parser.add_argument("--exhaustive-tune-fused-postprocess", action="store_true")
+    parser.add_argument("--fused-paf-cubic-a", type=float, default=-0.75)
+    parser.add_argument("--fused-points-per-limb", type=int, default=8)
+    parser.add_argument("--fused-min-paf-score", type=float, default=0.05)
+    parser.add_argument("--fused-success-ratio-thr", type=float, default=0.8)
+
+    parser.add_argument("--fused-pruned-postprocess-in-infer", action="store_true",
+                        help="Run fused-pruned MIGraphX postprocess inside inference worker; post workers do CPU-only assembly.")
+    parser.add_argument("--migraphx-fused-pruned-postprocess-mxr", default="")
+    parser.add_argument("--migraphx-fused-pruned-postprocess-cache-dir", default="models/fused_postprocess_pruned_cache")
+    parser.add_argument("--compile-fused-pruned-postprocess", action="store_true")
+    parser.add_argument("--force-compile-fused-pruned-postprocess", action="store_true")
+    parser.add_argument("--keep-fused-pruned-postprocess-onnx", action="store_true")
+    parser.add_argument("--exhaustive-tune-fused-pruned-postprocess", action="store_true")
+    parser.add_argument("--limb-topm", type=int, default=20)
+    parser.add_argument("--min-pair-score", type=float, default=0.0)
+
+    parser.add_argument(
         "--grid-video",
         default="",
         help=(
@@ -4039,6 +5096,32 @@ def parse_args():
     parser.add_argument("--pin-inference-base", type=int, default=10, help="First CPU core for inference workers when --pin-cpus is set.")
     parser.add_argument("--pin-post-base", type=int, default=12, help="First CPU core for postprocess workers when --pin-cpus is set.")
     parser.add_argument("--pin-all-threads", action="store_true", help="Also pin existing native threads under /proc/<pid>/task for each worker after startup.")
+    parser.add_argument(
+        "--pin-camera-cores",
+        default="",
+        help="Explicit CPU set for camera workers, e.g. '2-11'. Cameras are assigned round-robin across this set.",
+    )
+    parser.add_argument(
+        "--pin-inference-cores",
+        default="",
+        help="Explicit CPU set for inference/GPU workers, e.g. '16' or '16-17'.",
+    )
+    parser.add_argument(
+        "--pin-post-cores",
+        default="",
+        help="Explicit CPU set for postprocess workers, e.g. '18' or '18-19'.",
+    )
+    parser.add_argument(
+        "--pin-grid-cores",
+        default="",
+        help="Optional CPU set for grid video writer workers, e.g. '19'.",
+    )
+    parser.add_argument(
+        "--pin-main-cores",
+        default="",
+        help="Optional CPU set for the parent/main process, e.g. '0,1,12-15,17,19-31'.",
+    )
+
     parser.add_argument("--worker-threads", type=int, default=1, help="Set OpenCV/OpenMP/OpenBLAS/NumExpr/PyTorch CPU thread pools per worker. Default: 1.")
     parser.add_argument("--warmup-s", type=float, default=0.0, help="Discard output rows whose postprocess completion is within this many seconds of the first output row.")
     parser.add_argument("--warmup-output-frames", type=int, default=0, help="Discard this many additional earliest output rows before computing the summary.")
@@ -4047,6 +5130,13 @@ def parse_args():
         "--profile-system",
         action="store_true",
         help="Collect parent-side per-PID CPU/memory, affinity, per-core CPU, GPU busy, and VRAM stats.",
+    )
+    parser.add_argument(
+        "--monitor-system",
+        "--profile-cpu-gpu",
+        dest="profile_system",
+        action="store_true",
+        help="Alias for --profile-system.",
     )
     parser.add_argument(
         "--profile-interval-s",
@@ -4058,6 +5148,28 @@ def parse_args():
         "--report-affinity",
         action="store_true",
         help="Print worker CPU affinity after all child processes are started.",
+    )
+    parser.add_argument(
+        "--print-affinity",
+        dest="report_affinity",
+        action="store_true",
+        help="Alias for --report-affinity.",
+    )
+    parser.add_argument(
+        "--system-profile-json",
+        default="",
+        help="Optional standalone JSON output for --profile-system monitor summary.",
+    )
+    parser.add_argument(
+        "--system-profile-csv",
+        default="",
+        help="Optional standalone CSV output for --profile-system per-process monitor summary.",
+    )
+    parser.add_argument(
+        "--cprofile-dir",
+        "--profile-cprofile-dir",
+        default="",
+        help="Enable cProfile inside worker processes and write .prof/.txt files to this directory.",
     )
     parser.add_argument(
         "--roctx",
