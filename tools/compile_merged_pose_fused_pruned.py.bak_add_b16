@@ -1,0 +1,193 @@
+#!/usr/bin/env python3
+"""
+Build and compile monolithic pose+fused-pruned MIGraphX model.
+
+This script does two steps:
+  1. Merge pose ONNX + fused-pruned ONNX into one ONNX.
+  2. Compile that merged ONNX into one MIGraphX .mxr.
+
+Recommended first targets:
+  - B=1 control model
+  - B=2 live candidate, based on recent stream tests
+
+Example:
+  PYTHONPATH=. python tools/compile_merged_pose_fused_pruned.py \
+    --pose-onnx models/fp16_refinment1.onnx \
+    --fused-pruned-onnx models/fused_postprocess_pruned_cache/fused_cubic_topk_fullres_paf_pruned_68x121_to_1080x1920_k20_m20_thr0p1_r6_separable_ham0p75_p8_min0p05_sr0p8_pam0p75_mp0p0.onnx \
+    --batch-size 2 \
+    --output-dir models/merged_pose_fused_pruned
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import time
+from pathlib import Path
+from typing import Any, Dict, List
+
+import onnx
+
+from merge_pose_with_fused_pruned_onnx import merge_pose_with_fused_pruned
+
+
+def _safe_stem(path: str | Path) -> str:
+    return Path(path).stem.replace(" ", "_")
+
+
+def _dims(vi: Any) -> List[Any]:
+    shape = vi.type.tensor_type.shape
+    out = []
+    for d in shape.dim:
+        if d.dim_value:
+            out.append(int(d.dim_value))
+        elif d.dim_param:
+            out.append(str(d.dim_param))
+        else:
+            out.append("?")
+    return out
+
+
+def _first_input_shape(onnx_path: str | Path) -> tuple[str, List[Any]]:
+    model = onnx.load(str(onnx_path), load_external_data=False)
+    if not model.graph.input:
+        raise RuntimeError(f"ONNX has no graph inputs: {onnx_path}")
+    x = model.graph.input[0]
+    return x.name, _dims(x)
+
+
+def _compile_migraphx(
+    *,
+    onnx_path: Path,
+    mxr_path: Path,
+    batch_size: int,
+    input_shape: str,
+    input_name: str,
+    quantize_fp16: bool,
+    exhaustive_tune: bool,
+) -> Dict[str, Any]:
+    import migraphx  # type: ignore
+
+    parse_kwargs: Dict[str, Any] = {}
+
+    if input_shape:
+        dims = [int(x) for x in input_shape.replace("x", ",").split(",") if x.strip()]
+        if len(dims) != 4:
+            raise RuntimeError(f"--input-shape must be N,C,H,W, got: {input_shape}")
+        parse_kwargs["map_input_dims"] = {input_name: dims}
+    else:
+        in_name, dims = _first_input_shape(onnx_path)
+        if input_name == "":
+            input_name = in_name
+        # If batch dimension is dynamic/unknown, override it using the requested batch.
+        if not dims or len(dims) != 4 or not isinstance(dims[0], int) or int(dims[0]) != int(batch_size):
+            # Fall back to standard repo input shape if ONNX input shape is not static.
+            h = int(dims[2]) if len(dims) == 4 and isinstance(dims[2], int) else 544
+            w = int(dims[3]) if len(dims) == 4 and isinstance(dims[3], int) else 968
+            c = int(dims[1]) if len(dims) == 4 and isinstance(dims[1], int) else 3
+            parse_kwargs["map_input_dims"] = {input_name: [int(batch_size), c, h, w]}
+
+    t0 = time.perf_counter()
+    print(f"[compile] parse_onnx: {onnx_path}")
+    if parse_kwargs:
+        print(f"[compile] parse kwargs: {parse_kwargs}")
+    program = migraphx.parse_onnx(str(onnx_path), **parse_kwargs)
+
+    if quantize_fp16:
+        print("[compile] quantize_fp16")
+        migraphx.quantize_fp16(program)
+
+    print("[compile] compile target=gpu")
+    program.compile(migraphx.get_target("gpu"), exhaustive_tune=bool(exhaustive_tune))
+
+    mxr_path.parent.mkdir(parents=True, exist_ok=True)
+    migraphx.save(program, str(mxr_path))
+    elapsed = time.perf_counter() - t0
+    print(f"[compile] saved: {mxr_path}")
+    print(f"[compile] elapsed_s: {elapsed:.2f}")
+
+    return {
+        "onnx": str(onnx_path),
+        "mxr": str(mxr_path),
+        "batch_size": int(batch_size),
+        "input_name": input_name,
+        "input_shape_override": input_shape,
+        "quantize_fp16": bool(quantize_fp16),
+        "exhaustive_tune": bool(exhaustive_tune),
+        "elapsed_s": elapsed,
+        "parse_kwargs": parse_kwargs,
+    }
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--pose-onnx", required=True)
+    ap.add_argument("--fused-pruned-onnx", required=True)
+    ap.add_argument("--batch-size", type=int, choices=[1, 2, 4, 8], required=True)
+    ap.add_argument("--output-dir", default="models/merged_pose_fused_pruned")
+    ap.add_argument("--output-prefix", default="pose_fused_pruned")
+    ap.add_argument("--output-onnx", default="")
+    ap.add_argument("--output-mxr", default="")
+
+    # Merge hints.
+    ap.add_argument("--pose-heatmaps-output", default="")
+    ap.add_argument("--pose-pafs-output", default="")
+    ap.add_argument("--pose-combined-output", default="")
+    ap.add_argument("--fused-heatmaps-input", default="")
+    ap.add_argument("--fused-pafs-input", default="")
+    ap.add_argument("--fused-heatmap-channels", type=int, default=18)
+    ap.add_argument("--use-external-data", action="store_true")
+
+    # MIGraphX compile knobs.
+    ap.add_argument("--input-name", default="")
+    ap.add_argument("--input-shape", default="", help="Optional N,C,H,W override, e.g. 2,3,544,968")
+    ap.add_argument("--quantize-fp16", action="store_true", help="Optional MIGraphX graph quantization to fp16.")
+    ap.add_argument("--exhaustive-tune", action="store_true")
+    ap.add_argument("--merge-only", action="store_true")
+    ap.add_argument("--compile-only", action="store_true", help="Use --output-onnx as existing merged ONNX and compile only.")
+    args = ap.parse_args()
+
+    out_dir = Path(args.output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    default_name = f"{args.output_prefix}_b{args.batch_size}_{_safe_stem(args.fused_pruned_onnx)}"
+    output_onnx = Path(args.output_onnx) if args.output_onnx else out_dir / f"{default_name}.onnx"
+    output_mxr = Path(args.output_mxr) if args.output_mxr else out_dir / f"{default_name}.mxr"
+
+    if not args.compile_only:
+        merge_pose_with_fused_pruned(
+            pose_onnx=args.pose_onnx,
+            fused_pruned_onnx=args.fused_pruned_onnx,
+            output_onnx=output_onnx,
+            batch_size=args.batch_size,
+            pose_heatmaps_output=args.pose_heatmaps_output,
+            pose_pafs_output=args.pose_pafs_output,
+            pose_combined_output=args.pose_combined_output,
+            fused_heatmaps_input=args.fused_heatmaps_input,
+            fused_pafs_input=args.fused_pafs_input,
+            fused_heatmap_channels=args.fused_heatmap_channels,
+            use_external_data=args.use_external_data,
+        )
+
+    if args.merge_only:
+        print("[done] merge-only requested")
+        return
+
+    in_name = args.input_name
+    if not in_name:
+        in_name, _ = _first_input_shape(output_onnx)
+
+    meta = _compile_migraphx(
+        onnx_path=output_onnx,
+        mxr_path=output_mxr,
+        batch_size=args.batch_size,
+        input_shape=args.input_shape,
+        input_name=in_name,
+        quantize_fp16=args.quantize_fp16,
+        exhaustive_tune=args.exhaustive_tune,
+    )
+    output_mxr.with_suffix(".compile_debug.json").write_text(json.dumps(meta, indent=2))
+
+
+if __name__ == "__main__":
+    main()
