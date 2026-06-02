@@ -17,7 +17,6 @@ DEFAULT_IGNORE_DIRS = {
     "node_modules",
     "build",
     "dist",
-    "outputs",
     "runs",
     "logs",
     "rocprof_results",
