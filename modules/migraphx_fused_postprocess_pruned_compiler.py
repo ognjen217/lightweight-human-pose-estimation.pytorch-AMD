@@ -1,35 +1,78 @@
 #!/usr/bin/env python3
-"""
-Compile fused_postprocess_v2 / pruned pair head.
+"""Compile fused_postprocess_v2 / pruned pair head.
 
-Base fused head outputs:
-  pair_scores [*,19,K,K]
-  pair_valid  [*,19,K,K]
-  top_scores  [*,18,K]
-  top_indices [*,18,K]
+The base fused head produces:
+  pair_scores [B,19,K,K] or [1,19,K,K]
+  pair_valid  [B,19,K,K] or [1,19,K,K]
+  top_scores  [B,18,K]
+  top_indices [B,18,K]
 
-This compiler appends an ONNX TopM pruning tail:
+This compiler appends an ONNX TopM pruning tail.
 
-  pair_scores/pair_valid -> per-limb TopM pairs
+For batch_size=1, it keeps the legacy outputs:
+  limb_top_pair_* [19,M]
 
-New outputs:
-  top_scores
-  top_indices
-  limb_top_pair_a_idx   [19,M]
-  limb_top_pair_b_idx   [19,M]
-  limb_top_pair_score   [19,M]
-  limb_top_pair_valid   [19,M]
+For batch_size>1, it emits batched outputs:
+  limb_top_pair_* [B,19,M]
 """
 
 from __future__ import annotations
 
 import argparse
+import inspect
 import json
+import shutil
+import subprocess
 from pathlib import Path
+from typing import Any, Callable
 
 
 def _safe_float_token(x: float) -> str:
     return str(float(x)).replace("-", "m").replace(".", "p")
+
+
+def _compile_onnx_to_mxr(onnx_path: str | Path, mxr_path: str | Path, *, exhaustive_tune: bool = False) -> None:
+    """Compile ONNX -> MXR using Python MIGraphX API when available, otherwise migraphx-driver."""
+    onnx_path = Path(onnx_path)
+    mxr_path = Path(mxr_path)
+    mxr_path.parent.mkdir(parents=True, exist_ok=True)
+
+    import migraphx  # type: ignore
+
+    if hasattr(migraphx, "parse_onnx"):
+        program = migraphx.parse_onnx(str(onnx_path))
+        program.compile(migraphx.get_target("gpu"), exhaustive_tune=bool(exhaustive_tune))
+        migraphx.save(program, str(mxr_path))
+        return
+
+    driver = shutil.which("migraphx-driver") or "/opt/rocm/bin/migraphx-driver"
+    if not Path(driver).exists() and shutil.which(driver) is None:
+        raise RuntimeError(
+            "migraphx.parse_onnx is unavailable and migraphx-driver was not found. "
+            "Check MIGraphX installation."
+        )
+
+    cmd = [driver, "compile", str(onnx_path), "--onnx", "--gpu", "--binary", "-o", str(mxr_path)]
+    print("[migraphx-fallback] " + " ".join(cmd), flush=True)
+    subprocess.check_call(cmd)
+
+
+def _supports_kw(func: Callable[..., Any], kw: str) -> bool:
+    try:
+        return kw in inspect.signature(func).parameters
+    except (TypeError, ValueError):
+        return False
+
+
+def _call_with_optional_batch(func: Callable[..., Any], *args: Any, batch_size: int = 1, **kwargs: Any) -> Any:
+    if _supports_kw(func, "batch_size"):
+        kwargs["batch_size"] = int(batch_size)
+    elif int(batch_size) != 1:
+        raise TypeError(
+            f"{func.__module__}.{func.__name__} does not accept batch_size. "
+            "Patch the fused postprocess compiler before compiling a batched pruned head."
+        )
+    return func(*args, **kwargs)
 
 
 def pruned_head_name(
@@ -49,10 +92,12 @@ def pruned_head_name(
     success_ratio_thr: float,
     paf_cubic_a: float,
     min_pair_score: float = 0.0,
+    batch_size: int = 1,
 ) -> str:
+    batch_token = "" if int(batch_size) == 1 else f"_b{int(batch_size)}"
     return (
         "fused_cubic_topk_fullres_paf_pruned_"
-        f"{int(in_h)}x{int(in_w)}_to_{int(full_h)}x{int(full_w)}_"
+        f"{int(in_h)}x{int(in_w)}_to_{int(full_h)}x{int(full_w)}{batch_token}_"
         f"k{int(topk)}_m{int(limb_topm)}_thr{_safe_float_token(threshold)}_"
         f"r{int(nms_radius)}_{nms_impl}_"
         f"ha{_safe_float_token(heatmap_cubic_a)}_"
@@ -69,7 +114,7 @@ def _find_output_name(model, token: str) -> str:
     raise RuntimeError(f"Could not find output containing token {token!r}. Outputs: {[o.name for o in model.graph.output]}")
 
 
-def _replace_outputs(model, output_names_and_types):
+def _replace_outputs(model, output_names_and_types) -> None:
     from onnx import helper
 
     vi = {}
@@ -92,14 +137,19 @@ def append_pruning_tail(
     limb_topm: int = 20,
     num_limbs: int = 19,
     min_pair_score: float = 0.0,
+    batch_size: int = 1,
     keep_pair_debug_outputs: bool = False,
 ) -> Path:
+    import numpy as np
     import onnx
     from onnx import TensorProto, helper, numpy_helper
-    import numpy as np
 
     fused_onnx = Path(fused_onnx)
     pruned_onnx = Path(pruned_onnx)
+    batch_size = int(batch_size)
+    if batch_size < 1:
+        raise ValueError(f"batch_size must be >= 1, got {batch_size}")
+
     model = onnx.load(str(fused_onnx))
     onnx.checker.check_model(model)
 
@@ -108,11 +158,20 @@ def append_pruning_tail(
     top_scores = _find_output_name(model, "top_scores")
     top_indices = _find_output_name(model, "top_indices")
 
-    def const_tensor(name, arr):
+    def const_tensor(name: str, arr) -> None:
         model.graph.initializer.append(numpy_helper.from_array(np.asarray(arr), name=name))
 
     flat_dim = int(topk) * int(topk)
-    const_tensor("prune_shape_lkk", np.asarray([int(num_limbs), flat_dim], dtype=np.int64))
+    if batch_size == 1:
+        reshape_shape = [int(num_limbs), flat_dim]
+        topk_axis = 1
+        pruned_shape = [int(num_limbs), int(limb_topm)]
+    else:
+        reshape_shape = [batch_size, int(num_limbs), flat_dim]
+        topk_axis = 2
+        pruned_shape = [batch_size, int(num_limbs), int(limb_topm)]
+
+    const_tensor("prune_shape", np.asarray(reshape_shape, dtype=np.int64))
     const_tensor("prune_topm_const", np.asarray([int(limb_topm)], dtype=np.int64))
     const_tensor("prune_k_float", np.asarray(float(topk), dtype=np.float32))
     const_tensor("prune_neg_inf", np.asarray(-1.0e9, dtype=np.float32))
@@ -120,8 +179,8 @@ def append_pruning_tail(
     const_tensor("prune_min_pair_score", np.asarray(float(min_pair_score), dtype=np.float32))
 
     nodes = [
-        helper.make_node("Reshape", [pair_scores, "prune_shape_lkk"], ["prune_pair_scores_flat"], name="prune/reshape_scores"),
-        helper.make_node("Reshape", [pair_valid, "prune_shape_lkk"], ["prune_pair_valid_flat_raw"], name="prune/reshape_valid"),
+        helper.make_node("Reshape", [pair_scores, "prune_shape"], ["prune_pair_scores_flat"], name="prune/reshape_scores"),
+        helper.make_node("Reshape", [pair_valid, "prune_shape"], ["prune_pair_valid_flat_raw"], name="prune/reshape_valid"),
         helper.make_node("Cast", ["prune_pair_valid_flat_raw"], ["prune_pair_valid_flat"], name="prune/cast_valid_float", to=TensorProto.FLOAT),
         helper.make_node("Greater", ["prune_pair_valid_flat", "prune_zero"], ["prune_pair_valid_bool"], name="prune/valid_gt_zero"),
         helper.make_node("Where", ["prune_pair_valid_bool", "prune_pair_scores_flat", "prune_neg_inf"], ["prune_masked_scores"], name="prune/mask_scores"),
@@ -130,7 +189,7 @@ def append_pruning_tail(
             ["prune_masked_scores", "prune_topm_const"],
             ["limb_top_pair_score", "limb_top_pair_flat_idx"],
             name="prune/topm_pairs",
-            axis=1,
+            axis=topk_axis,
             largest=1,
             sorted=1,
         ),
@@ -149,10 +208,10 @@ def append_pruning_tail(
     outputs = [
         (top_scores, TensorProto.FLOAT, None),
         (top_indices, TensorProto.INT64, None),
-        ("limb_top_pair_a_idx", TensorProto.INT64, [int(num_limbs), int(limb_topm)]),
-        ("limb_top_pair_b_idx", TensorProto.INT64, [int(num_limbs), int(limb_topm)]),
-        ("limb_top_pair_score", TensorProto.FLOAT, [int(num_limbs), int(limb_topm)]),
-        ("limb_top_pair_valid", TensorProto.FLOAT, [int(num_limbs), int(limb_topm)]),
+        ("limb_top_pair_a_idx", TensorProto.INT64, pruned_shape),
+        ("limb_top_pair_b_idx", TensorProto.INT64, pruned_shape),
+        ("limb_top_pair_score", TensorProto.FLOAT, pruned_shape),
+        ("limb_top_pair_valid", TensorProto.FLOAT, pruned_shape),
     ]
     if keep_pair_debug_outputs:
         outputs = [(pair_scores, TensorProto.FLOAT, None), (pair_valid, TensorProto.FLOAT, None)] + outputs
@@ -169,9 +228,13 @@ def append_pruning_tail(
                 "pair_valid": pair_valid,
                 "top_scores": top_scores,
                 "top_indices": top_indices,
+                "batch_size": batch_size,
+                "reshape_shape": reshape_shape,
+                "topk_axis": topk_axis,
                 "limb_topm": limb_topm,
                 "topk": topk,
                 "outputs": [x[0] for x in outputs],
+                "output_shape": pruned_shape,
             },
             indent=2,
         )
@@ -198,14 +261,15 @@ def compile_pruned_fused_postprocess_head(
     success_ratio_thr: float = 0.8,
     paf_cubic_a: float = -0.75,
     min_pair_score: float = 0.0,
+    batch_size: int = 1,
     opset: int = 18,
     exhaustive_tune: bool = False,
     force: bool = False,
     keep_onnx: bool = True,
 ) -> Path:
-    import migraphx  # type: ignore
     from modules.migraphx_fused_postprocess_compiler import compile_fused_postprocess_head, fused_head_name
 
+    batch_size = int(batch_size)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     parts_dir = Path(parts_dir) if parts_dir else output_dir / "_parts"
@@ -227,6 +291,7 @@ def compile_pruned_fused_postprocess_head(
         success_ratio_thr=success_ratio_thr,
         paf_cubic_a=paf_cubic_a,
         min_pair_score=min_pair_score,
+        batch_size=batch_size,
     )
     mxr_path = output_dir / f"{name}.mxr"
     onnx_path = output_dir / f"{name}.onnx"
@@ -235,7 +300,8 @@ def compile_pruned_fused_postprocess_head(
         return mxr_path
 
     print("[fused-pruned] compiling/checking base fused postprocess ONNX")
-    compile_fused_postprocess_head(
+    _call_with_optional_batch(
+        compile_fused_postprocess_head,
         in_h=in_h,
         in_w=in_w,
         full_h=full_h,
@@ -254,9 +320,11 @@ def compile_pruned_fused_postprocess_head(
         exhaustive_tune=False,
         force=force,
         keep_onnx=True,
+        batch_size=batch_size,
     )
 
-    base_name = fused_head_name(
+    base_name = _call_with_optional_batch(
+        fused_head_name,
         in_h,
         in_w,
         full_h,
@@ -270,18 +338,24 @@ def compile_pruned_fused_postprocess_head(
         min_paf_score=min_paf_score,
         success_ratio_thr=success_ratio_thr,
         paf_cubic_a=paf_cubic_a,
+        batch_size=batch_size,
     )
     base_onnx = parts_dir / f"{base_name}.onnx"
     if not base_onnx.exists():
         raise FileNotFoundError(f"Expected base fused ONNX not found: {base_onnx}")
 
-    print(f"[fused-pruned] appending TopM pruning tail: K={topk}, M={limb_topm}")
-    append_pruning_tail(base_onnx, onnx_path, topk=topk, limb_topm=limb_topm, min_pair_score=min_pair_score)
+    print(f"[fused-pruned] appending TopM pruning tail: B={batch_size}, K={topk}, M={limb_topm}")
+    append_pruning_tail(
+        base_onnx,
+        onnx_path,
+        topk=topk,
+        limb_topm=limb_topm,
+        min_pair_score=min_pair_score,
+        batch_size=batch_size,
+    )
 
     print(f"[fused-pruned] compiling MIGraphX GPU target: {onnx_path.name} -> {mxr_path.name}")
-    program = migraphx.parse_onnx(str(onnx_path))
-    program.compile(migraphx.get_target("gpu"), exhaustive_tune=bool(exhaustive_tune))
-    migraphx.save(program, str(mxr_path))
+    _compile_onnx_to_mxr(onnx_path, mxr_path, exhaustive_tune=bool(exhaustive_tune))
 
     if not keep_onnx:
         try:
@@ -327,6 +401,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--stride", type=int, default=8)
     p.add_argument("--topk", type=int, default=20)
     p.add_argument("--limb-topm", type=int, default=20)
+    p.add_argument("--batch-size", type=int, default=1)
     p.add_argument("--threshold", type=float, default=0.1)
     p.add_argument("--nms-radius", type=int, default=6)
     p.add_argument("--nms-impl", choices=["2d", "separable"], default="separable")
@@ -350,6 +425,7 @@ def main() -> None:
         parts_dir=args.parts_dir,
         topk=args.topk,
         limb_topm=args.limb_topm,
+        batch_size=args.batch_size,
         threshold=args.threshold,
         nms_radius=args.nms_radius,
         nms_impl=args.nms_impl,
