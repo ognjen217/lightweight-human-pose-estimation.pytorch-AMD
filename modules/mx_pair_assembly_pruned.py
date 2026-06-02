@@ -1,5 +1,18 @@
 #!/usr/bin/env python3
-"""CPU final pose assembly from pruned per-limb pair lists."""
+"""CPU final pose assembly from pruned per-limb pair lists.
+
+Supports both legacy single-frame outputs:
+  top_scores            [18,K] or [1,18,K]
+  limb_top_pair_*       [19,M] or [1,19,M]
+
+and batched outputs:
+  top_scores            [B,18,K]
+  limb_top_pair_*       [B,19,M]
+
+The public assemble_poses_from_pruned_pairs() keeps the old single-frame return
+contract for batch=1. For B>1 it returns lists of per-frame pose arrays,
+keypoint arrays, and optionally timing dictionaries.
+"""
 
 from __future__ import annotations
 
@@ -17,16 +30,39 @@ BODY_PARTS_KPT_IDS = np.array(
 )
 
 
-def _sq2(arr, name):
-    arr = np.squeeze(np.asarray(arr))
+def _to_single_topk(arr, name: str) -> np.ndarray:
+    arr = np.asarray(arr)
+    if arr.ndim == 3 and arr.shape[0] == 1:
+        arr = arr[0]
+    arr = np.squeeze(arr)
     if arr.ndim != 2:
-        raise ValueError(f"{name} should squeeze to 2D, got {arr.shape}")
+        raise ValueError(f"{name} should be [18,K], [1,18,K], [19,M], or [1,19,M], got {arr.shape}")
     return arr
 
 
+def _as_batch_topk(arr, name: str, expected_rank2_first_dim: int) -> np.ndarray:
+    arr = np.asarray(arr)
+    if arr.ndim == 2:
+        if arr.shape[0] != expected_rank2_first_dim:
+            raise ValueError(f"{name} rank-2 first dim should be {expected_rank2_first_dim}, got {arr.shape}")
+        return arr[np.newaxis, ...]
+    if arr.ndim == 3:
+        return arr
+    arr = np.squeeze(arr)
+    if arr.ndim == 2:
+        return arr[np.newaxis, ...]
+    if arr.ndim == 3:
+        return arr
+    raise ValueError(f"{name} should be rank 2 or rank 3, got {arr.shape}")
+
+
 def topk_to_keypoints_pruned(top_scores, top_indices, *, full_width: int, threshold: float = 0.1, num_keypoint_types: int = 18):
-    scores = _sq2(top_scores, "top_scores").astype(np.float32)
-    indices = _sq2(top_indices, "top_indices").astype(np.int64)
+    """Convert single-frame TopK output to keypoint lists.
+
+    Input should represent one frame only: [18,K] or [1,18,K].
+    """
+    scores = _to_single_topk(top_scores, "top_scores").astype(np.float32)
+    indices = _to_single_topk(top_indices, "top_indices").astype(np.int64)
     keypoints_by_type: List[List[int]] = [[] for _ in range(num_keypoint_types)]
     all_keypoints = []
     gid = 0
@@ -47,7 +83,7 @@ def topk_to_keypoints_pruned(top_scores, top_indices, *, full_width: int, thresh
     return keypoints_by_type, arr
 
 
-def assemble_poses_from_pruned_pairs(
+def _assemble_single_pruned(
     top_scores,
     top_indices,
     limb_top_pair_a_idx,
@@ -60,18 +96,23 @@ def assemble_poses_from_pruned_pairs(
     min_pair_score: float = 0.0,
     min_keypoints: int = 3,
     min_avg_score: float = 0.2,
-    return_timing: bool = False,
 ):
     import time
+
     t0 = time.perf_counter()
-    keypoints_by_type, all_keypoints = topk_to_keypoints_pruned(top_scores, top_indices, full_width=full_width, threshold=threshold)
+    keypoints_by_type, all_keypoints = topk_to_keypoints_pruned(
+        top_scores,
+        top_indices,
+        full_width=full_width,
+        threshold=threshold,
+    )
     t_adapter = (time.perf_counter() - t0) * 1000.0
     t1 = time.perf_counter()
 
-    a_idx = _sq2(limb_top_pair_a_idx, "a_idx").astype(np.int64)
-    b_idx = _sq2(limb_top_pair_b_idx, "b_idx").astype(np.int64)
-    score = _sq2(limb_top_pair_score, "pair_score").astype(np.float32)
-    valid = _sq2(limb_top_pair_valid, "pair_valid").astype(np.float32)
+    a_idx = _to_single_topk(limb_top_pair_a_idx, "a_idx").astype(np.int64)
+    b_idx = _to_single_topk(limb_top_pair_b_idx, "b_idx").astype(np.int64)
+    score = _to_single_topk(limb_top_pair_score, "pair_score").astype(np.float32)
+    valid = _to_single_topk(limb_top_pair_valid, "pair_valid").astype(np.float32)
 
     pose_entries: List[np.ndarray] = []
 
@@ -142,6 +183,71 @@ def assemble_poses_from_pruned_pairs(
     pose_arr = np.vstack(filtered).astype(np.float32) if filtered else np.zeros((0, 20), dtype=np.float32)
     t_asm = (time.perf_counter() - t1) * 1000.0
     timings = {"topk_adapter": t_adapter, "mx_assembly_total": t_asm, "group_keypoints": t_asm, "group_total": t_asm}
+    return pose_arr, all_keypoints, timings
+
+
+def assemble_poses_from_pruned_pairs(
+    top_scores,
+    top_indices,
+    limb_top_pair_a_idx,
+    limb_top_pair_b_idx,
+    limb_top_pair_score,
+    limb_top_pair_valid,
+    *,
+    full_width: int,
+    threshold: float = 0.1,
+    min_pair_score: float = 0.0,
+    min_keypoints: int = 3,
+    min_avg_score: float = 0.2,
+    return_timing: bool = False,
+):
+    """Assemble poses from pruned pair outputs.
+
+    Batch behavior:
+      - If all inputs are single-frame, returns the legacy tuple:
+          (pose_arr, all_keypoints) or (pose_arr, all_keypoints, timings)
+      - If inputs are batched [B,...], returns:
+          ([pose_arr_b...], [all_keypoints_b...]) or plus [timings_b...]
+    """
+    top_scores_b = _as_batch_topk(top_scores, "top_scores", 18)
+    top_indices_b = _as_batch_topk(top_indices, "top_indices", 18)
+    a_idx_b = _as_batch_topk(limb_top_pair_a_idx, "a_idx", len(BODY_PARTS_KPT_IDS))
+    b_idx_b = _as_batch_topk(limb_top_pair_b_idx, "b_idx", len(BODY_PARTS_KPT_IDS))
+    score_b = _as_batch_topk(limb_top_pair_score, "pair_score", len(BODY_PARTS_KPT_IDS))
+    valid_b = _as_batch_topk(limb_top_pair_valid, "pair_valid", len(BODY_PARTS_KPT_IDS))
+
+    batch_sizes = {arr.shape[0] for arr in (top_scores_b, top_indices_b, a_idx_b, b_idx_b, score_b, valid_b)}
+    if len(batch_sizes) != 1:
+        raise ValueError(f"Mismatched batch dimensions in pruned assembly inputs: {sorted(batch_sizes)}")
+    batch_size = batch_sizes.pop()
+
+    poses_all = []
+    keypoints_all = []
+    timings_all = []
+    for b in range(batch_size):
+        poses, keypoints, timings = _assemble_single_pruned(
+            top_scores_b[b],
+            top_indices_b[b],
+            a_idx_b[b],
+            b_idx_b[b],
+            score_b[b],
+            valid_b[b],
+            full_width=full_width,
+            threshold=threshold,
+            min_pair_score=min_pair_score,
+            min_keypoints=min_keypoints,
+            min_avg_score=min_avg_score,
+        )
+        poses_all.append(poses)
+        keypoints_all.append(keypoints)
+        timings_all.append(timings)
+
+    # Preserve legacy return shape for non-batched/single-batch callers.
+    if batch_size == 1:
+        if return_timing:
+            return poses_all[0], keypoints_all[0], timings_all[0]
+        return poses_all[0], keypoints_all[0]
+
     if return_timing:
-        return pose_arr, all_keypoints, timings
-    return pose_arr, all_keypoints
+        return poses_all, keypoints_all, timings_all
+    return poses_all, keypoints_all
