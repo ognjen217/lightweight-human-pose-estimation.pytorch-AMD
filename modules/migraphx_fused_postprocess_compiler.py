@@ -2,58 +2,82 @@
 """
 Compile a fused postprocess MIGraphX head:
 
-    heatmaps [1,18,Hm,Wm]
-    pafs     [1,38,Hm,Wm]
+    heatmaps [B,18,Hm,Wm]
+    pafs     [B,38,Hm,Wm]
         ↓
     manual cubic heatmap resize + NMS + TopK
         ↓
     full-res-like cubic PAF pair scoring
         ↓
     outputs:
-      pair_scores [1,19,K,K]
-      pair_valid  [1,19,K,K]
-      top_scores  [1,18,K]
-      top_indices [1,18,K]
+      pair_scores [B,19,K,K]
+      pair_valid  [B,19,K,K]
+      top_scores  [B,18,K]
+      top_indices [B,18,K]
 
-Why this exists
----------------
-The previous Python runtime executed two separate postprocess MXR programs:
-
-    manual_cubic_nms_topk.mxr
-    paf_fullres_pair_scorer.mxr
-
-which caused:
-    GPU -> CPU top_scores/top_indices
-    CPU -> GPU top_scores/top_indices + pafs
-
-This fused compiler merges the two exported ONNX graphs into one ONNX graph and
-then compiles one .mxr.  The handoff from TopK to PAF scoring then happens inside
-one MIGraphX program, i.e. without a Python/CPU round-trip between these two
-postprocess GPU stages.
-
-Important limitation
---------------------
-This does NOT yet fuse pose_model.mxr with the postprocess head.  Standard
-MIGraphX Python `program.run(np.ndarray)` still returns pose outputs to host.
-To achieve full CPU -> GPU -> GPU -> GPU -> CPU, either:
-  1) fuse the original pose ONNX model with this fused postprocess ONNX, or
-  2) implement a C++/HIP device-buffer runtime that chains compiled programs.
-
-This file implements the safest first step: fused postprocess head.
+For batch_size=1 this keeps the legacy file names and behavior.
+For batch_size>1 it requires the component compilers to support `batch_size`.
 """
 
 from __future__ import annotations
 
 import argparse
+import inspect
 import json
+import shutil
+import subprocess
 from pathlib import Path
-from typing import List, Tuple
+from typing import Any, Callable, List, Tuple
 
 import numpy as np
 
 
 def _safe_float_token(x: float) -> str:
     return str(float(x)).replace("-", "m").replace(".", "p")
+
+
+def _compile_onnx_to_mxr(onnx_path: str | Path, mxr_path: str | Path, *, exhaustive_tune: bool = False) -> None:
+    """Compile ONNX -> MXR using Python MIGraphX API when available, otherwise migraphx-driver."""
+    onnx_path = Path(onnx_path)
+    mxr_path = Path(mxr_path)
+    mxr_path.parent.mkdir(parents=True, exist_ok=True)
+
+    import migraphx  # type: ignore
+
+    if hasattr(migraphx, "parse_onnx"):
+        program = migraphx.parse_onnx(str(onnx_path))
+        program.compile(migraphx.get_target("gpu"), exhaustive_tune=bool(exhaustive_tune))
+        migraphx.save(program, str(mxr_path))
+        return
+
+    driver = shutil.which("migraphx-driver") or "/opt/rocm/bin/migraphx-driver"
+    if not Path(driver).exists() and shutil.which(driver) is None:
+        raise RuntimeError(
+            "migraphx.parse_onnx is unavailable and migraphx-driver was not found. "
+            "Check MIGraphX installation."
+        )
+
+    cmd = [driver, "compile", str(onnx_path), "--onnx", "--gpu", "--binary", "-o", str(mxr_path)]
+    print("[migraphx-fallback] " + " ".join(cmd), flush=True)
+    subprocess.check_call(cmd)
+
+
+def _supports_kw(func: Callable[..., Any], kw: str) -> bool:
+    try:
+        return kw in inspect.signature(func).parameters
+    except (TypeError, ValueError):
+        return False
+
+
+def _call_with_optional_batch(func: Callable[..., Any], *args: Any, batch_size: int = 1, **kwargs: Any) -> Any:
+    if _supports_kw(func, "batch_size"):
+        kwargs["batch_size"] = int(batch_size)
+    elif int(batch_size) != 1:
+        raise TypeError(
+            f"{func.__module__}.{func.__name__} does not accept batch_size. "
+            "Patch this component compiler before compiling a batched fused postprocess head."
+        )
+    return func(*args, **kwargs)
 
 
 def fused_head_name(
@@ -71,10 +95,12 @@ def fused_head_name(
     min_paf_score: float,
     success_ratio_thr: float,
     paf_cubic_a: float,
+    batch_size: int = 1,
 ) -> str:
+    batch_token = "" if int(batch_size) == 1 else f"_b{int(batch_size)}"
     return (
         "fused_cubic_topk_fullres_paf_"
-        f"{int(in_h)}x{int(in_w)}_to_{int(full_h)}x{int(full_w)}_"
+        f"{int(in_h)}x{int(in_w)}_to_{int(full_h)}x{int(full_w)}{batch_token}_"
         f"k{int(topk)}_thr{_safe_float_token(threshold)}_r{int(nms_radius)}_{nms_impl}_"
         f"ha{_safe_float_token(heatmap_cubic_a)}_"
         f"p{int(points_per_limb)}_min{_safe_float_token(min_paf_score)}_"
@@ -106,7 +132,6 @@ def _graph_outputs(model) -> List[str]:
 
 def _replace_graph_outputs(model, output_names: List[str]) -> None:
     """Restrict graph outputs to exactly output_names, reusing value_info when possible."""
-    import onnx
     from onnx import helper, TensorProto
 
     vi = {}
@@ -118,7 +143,6 @@ def _replace_graph_outputs(model, output_names: List[str]) -> None:
         if name in vi:
             model.graph.output.append(vi[name])
         else:
-            # Fallback shape is unknown float tensor. MIGraphX usually infers it.
             model.graph.output.append(helper.make_tensor_value_info(name, TensorProto.FLOAT, None))
 
 
@@ -161,12 +185,10 @@ def build_fused_postprocess_onnx(
     if len(paf_outputs) < 2:
         raise RuntimeError(f"Expected PAF scorer ONNX to have at least 2 outputs, got {paf_outputs}")
 
-    # PAF scorer input names should be top_scores/top_indices/pafs, but keep this robust.
     paf_top_scores = next((x for x in paf_inputs if "top_scores" in x), paf_inputs[0])
     paf_top_indices = next((x for x in paf_inputs if "top_indices" in x), paf_inputs[1])
     paf_pafs = next((x for x in paf_inputs if x.endswith("pafs") or x == "pafs" or "paf" in x), paf_inputs[2])
 
-    # Prefix both graphs to avoid name collisions.
     m_topk_p = compose.add_prefix(m_topk, "topk/")
     m_paf_p = compose.add_prefix(m_paf, "paf/")
 
@@ -188,9 +210,6 @@ def build_fused_postprocess_onnx(
         ],
     )
 
-    # Rename external inputs to clean names:
-    #   topk/heatmaps -> heatmaps
-    #   paf/pafs      -> pafs
     _rename_external_inputs(
         merged,
         {
@@ -199,16 +218,14 @@ def build_fused_postprocess_onnx(
         },
     )
 
-    # Keep final PAF scorer outputs and also expose TopK outputs for CPU adapter.
     final_outputs = [
-        paf_outputs_p[0],    # pair_scores
-        paf_outputs_p[1],    # pair_valid
-        top_scores_p,        # top_scores
-        top_indices_p,       # top_indices
+        paf_outputs_p[0],
+        paf_outputs_p[1],
+        top_scores_p,
+        top_indices_p,
     ]
     _replace_graph_outputs(merged, final_outputs)
 
-    # Clean names for graph IO metadata can be nice, but avoid renaming node internals now.
     onnx.checker.check_model(merged)
     _save_onnx(merged, fused_onnx)
 
@@ -249,6 +266,7 @@ def compile_fused_postprocess_head(
     min_paf_score: float = 0.05,
     success_ratio_thr: float = 0.8,
     paf_cubic_a: float = -0.75,
+    batch_size: int = 1,
     opset: int = 18,
     exhaustive_tune: bool = False,
     force: bool = False,
@@ -262,8 +280,8 @@ def compile_fused_postprocess_head(
         compile_paf_fullres_pair_scorer_head,
         head_name as paf_head_name,
     )
-    import migraphx  # type: ignore
 
+    batch_size = int(batch_size)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     parts_dir = Path(parts_dir) if parts_dir else output_dir / "_parts"
@@ -283,6 +301,7 @@ def compile_fused_postprocess_head(
         min_paf_score=min_paf_score,
         success_ratio_thr=success_ratio_thr,
         paf_cubic_a=paf_cubic_a,
+        batch_size=batch_size,
     )
     fused_onnx = output_dir / f"{name}.onnx"
     fused_mxr = output_dir / f"{name}.mxr"
@@ -291,9 +310,9 @@ def compile_fused_postprocess_head(
         print(f"[fused-post] exists, skipping: {fused_mxr}")
         return fused_mxr
 
-    print("[fused-post] exporting component ONNX files")
-    # These calls also compile component MXRs, but we primarily need the ONNX files.
-    compile_manual_cubic_nms_topk_head(
+    print(f"[fused-post] exporting component ONNX files B={batch_size}")
+    _call_with_optional_batch(
+        compile_manual_cubic_nms_topk_head,
         in_h=in_h,
         in_w=in_w,
         out_h=full_h,
@@ -309,8 +328,10 @@ def compile_fused_postprocess_head(
         exhaustive_tune=False,
         force=force,
         keep_onnx=True,
+        batch_size=batch_size,
     )
-    compile_paf_fullres_pair_scorer_head(
+    _call_with_optional_batch(
+        compile_paf_fullres_pair_scorer_head,
         paf_h=in_h,
         paf_w=in_w,
         full_h=full_h,
@@ -325,10 +346,37 @@ def compile_fused_postprocess_head(
         exhaustive_tune=False,
         force=force,
         keep_onnx=True,
+        batch_size=batch_size,
     )
 
-    manual_onnx = parts_dir / f"{manual_head_name(in_h, in_w, full_h, full_w, topk=topk, threshold=threshold, nms_radius=nms_radius, nms_impl=nms_impl, cubic_a=heatmap_cubic_a)}.onnx"
-    paf_onnx = parts_dir / f"{paf_head_name(in_h, in_w, full_h, full_w, topk=topk, points_per_limb=points_per_limb, min_paf_score=min_paf_score, success_ratio_thr=success_ratio_thr, cubic_a=paf_cubic_a)}.onnx"
+    manual_base_name = _call_with_optional_batch(
+        manual_head_name,
+        in_h,
+        in_w,
+        full_h,
+        full_w,
+        topk=topk,
+        threshold=threshold,
+        nms_radius=nms_radius,
+        nms_impl=nms_impl,
+        cubic_a=heatmap_cubic_a,
+        batch_size=batch_size,
+    )
+    paf_base_name = _call_with_optional_batch(
+        paf_head_name,
+        in_h,
+        in_w,
+        full_h,
+        full_w,
+        topk=topk,
+        points_per_limb=points_per_limb,
+        min_paf_score=min_paf_score,
+        success_ratio_thr=success_ratio_thr,
+        cubic_a=paf_cubic_a,
+        batch_size=batch_size,
+    )
+    manual_onnx = parts_dir / f"{manual_base_name}.onnx"
+    paf_onnx = parts_dir / f"{paf_base_name}.onnx"
 
     if not manual_onnx.exists():
         raise FileNotFoundError(f"Manual TopK ONNX not found: {manual_onnx}")
@@ -345,9 +393,7 @@ def compile_fused_postprocess_head(
     print("[fused-post] fused outputs:", info["fused_outputs"])
 
     print(f"[fused-post] compiling MIGraphX GPU target: {fused_onnx.name} -> {fused_mxr.name}")
-    program = migraphx.parse_onnx(str(fused_onnx))
-    program.compile(migraphx.get_target("gpu"), exhaustive_tune=bool(exhaustive_tune))
-    migraphx.save(program, str(fused_mxr))
+    _compile_onnx_to_mxr(fused_onnx, fused_mxr, exhaustive_tune=bool(exhaustive_tune))
 
     if not keep_onnx:
         try:
@@ -376,6 +422,7 @@ def compile_for_video(
     min_paf_score: float = 0.05,
     success_ratio_thr: float = 0.8,
     paf_cubic_a: float = -0.75,
+    batch_size: int = 1,
     opset: int = 18,
     exhaustive_tune: bool = False,
     force: bool = False,
@@ -412,6 +459,7 @@ def compile_for_video(
         min_paf_score=min_paf_score,
         success_ratio_thr=success_ratio_thr,
         paf_cubic_a=paf_cubic_a,
+        batch_size=batch_size,
         opset=opset,
         exhaustive_tune=exhaustive_tune,
         force=force,
@@ -432,6 +480,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--stride", type=int, default=8)
 
     p.add_argument("--topk", type=int, default=20)
+    p.add_argument("--batch-size", type=int, default=1)
     p.add_argument("--threshold", type=float, default=0.1)
     p.add_argument("--nms-radius", type=int, default=6)
     p.add_argument("--nms-impl", choices=["2d", "separable"], default="separable")
@@ -450,51 +499,35 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    common = dict(
+        output_dir=args.output_dir,
+        parts_dir=args.parts_dir,
+        topk=args.topk,
+        batch_size=args.batch_size,
+        threshold=args.threshold,
+        nms_radius=args.nms_radius,
+        nms_impl=args.nms_impl,
+        heatmap_cubic_a=args.heatmap_cubic_a,
+        points_per_limb=args.points_per_limb,
+        min_paf_score=args.min_paf_score,
+        success_ratio_thr=args.success_ratio_thr,
+        paf_cubic_a=args.paf_cubic_a,
+        opset=args.opset,
+        exhaustive_tune=args.exhaustive_tune,
+        force=args.force,
+        keep_onnx=args.keep_onnx,
+    )
     if args.video:
         compile_for_video(
             video=args.video,
             target_width=args.target_width,
             target_height=args.target_height,
             stride=args.stride,
-            output_dir=args.output_dir,
-            parts_dir=args.parts_dir,
-            topk=args.topk,
-            threshold=args.threshold,
-            nms_radius=args.nms_radius,
-            nms_impl=args.nms_impl,
-            heatmap_cubic_a=args.heatmap_cubic_a,
-            points_per_limb=args.points_per_limb,
-            min_paf_score=args.min_paf_score,
-            success_ratio_thr=args.success_ratio_thr,
-            paf_cubic_a=args.paf_cubic_a,
-            opset=args.opset,
-            exhaustive_tune=args.exhaustive_tune,
-            force=args.force,
-            keep_onnx=args.keep_onnx,
+            **common,
         )
     else:
         in_h, in_w, full_h, full_w = args.shape
-        compile_fused_postprocess_head(
-            in_h=in_h,
-            in_w=in_w,
-            full_h=full_h,
-            full_w=full_w,
-            output_dir=args.output_dir,
-            parts_dir=args.parts_dir,
-            topk=args.topk,
-            threshold=args.threshold,
-            nms_radius=args.nms_radius,
-            nms_impl=args.nms_impl,
-            heatmap_cubic_a=args.heatmap_cubic_a,
-            points_per_limb=args.points_per_limb,
-            min_paf_score=args.min_paf_score,
-            success_ratio_thr=args.success_ratio_thr,
-            paf_cubic_a=args.paf_cubic_a,
-            opset=args.opset,
-            exhaustive_tune=args.exhaustive_tune,
-            force=args.force,
-            keep_onnx=args.keep_onnx,
-        )
+        compile_fused_postprocess_head(in_h=in_h, in_w=in_w, full_h=full_h, full_w=full_w, **common)
 
 
 if __name__ == "__main__":
