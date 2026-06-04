@@ -115,9 +115,6 @@ def json_safe(obj: Any) -> Any:
         return float(obj)
     return obj
 
-
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
 def maybe_profile_worker(stage: str, worker_id: Any, fn, *args, **kwargs):
     profile_dir = os.environ.get("STREAM_CPROFILE_DIR", "")
     if not profile_dir:
