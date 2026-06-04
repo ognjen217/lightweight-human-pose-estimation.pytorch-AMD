@@ -1,0 +1,17 @@
+{
+  "pose_onnx": "models/fp16_refinment1.onnx",
+  "post_onnx": "models/fused_postprocess_pruned_batchaware/fused_pruned_batchaware_b1_68x121_to_1080x1920_k20_m20_thr0p1_r6_separable.onnx",
+  "output_onnx": "models/merged_pose_fused_pruned_batchaware/pose_fused_pruned_batchaware_b1_1080x1920_k20_m20_thr0p1_r6_separable.onnx",
+  "batch_size": 1,
+  "graph_inputs": [
+    "input"
+  ],
+  "graph_outputs": [
+    "post/top_scores",
+    "post/top_indices",
+    "post/limb_top_pair_a_idx",
+    "post/limb_top_pair_b_idx",
+    "post/limb_top_pair_score",
+    "post/limb_top_pair_valid"
+  ]
+}
