@@ -193,12 +193,6 @@ def allow_ptrace_attach_if_requested() -> None:
     except Exception as exc:
         print(f"[TRACE pid={os.getpid()}] ptrace attach opt-in failed: {exc}", flush=True)
 
-
-=======
->>>>>>> Stashed changes
-=======
->>>>>>> Stashed changes
-
 def _dtype_from_name(name: str):
     return np.float16 if str(name) == "float16" else np.float32
 
@@ -600,13 +594,11 @@ def configure_worker_thread_env(num_threads: int) -> None:
 
 
 def configure_child_cpu_runtime(num_threads: int = 1) -> None:
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
+
+
     allow_ptrace_attach_if_requested()
-=======
->>>>>>> Stashed changes
-=======
->>>>>>> Stashed changes
+
+
     configure_worker_thread_env(num_threads)
     try:
         import cv2
@@ -1512,14 +1504,12 @@ def camera_preprocess_worker(
 ) -> None:
     try:
         import cv2
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
+
+
         tracer = RocTxTracer(roctx_enabled, f"camera:{camera_id}:pid:{os.getpid()}")
         tracer.mark("worker_start")
-=======
->>>>>>> Stashed changes
-=======
->>>>>>> Stashed changes
+
+
         configure_child_cpu_runtime(int(os.environ.get("STREAM_WORKER_THREADS", "1")))
 
         if not os.path.exists(video_path):
@@ -1642,14 +1632,12 @@ def inference_worker(
     roctx_enabled: bool = False,
 ) -> None:
     try:
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
+
+
         tracer = RocTxTracer(roctx_enabled, f"infer:{worker_id}:pid:{os.getpid()}")
         tracer.mark("worker_start")
-=======
->>>>>>> Stashed changes
-=======
->>>>>>> Stashed changes
+
+
         configure_child_cpu_runtime(int(os.environ.get("STREAM_WORKER_THREADS", "1")))
         import migraphx
 
@@ -1751,7 +1739,7 @@ def inference_worker(
                 _out_item["decode_ms"] = float(t_dec.ms) / float(max(1, len(out_items)))
                 _out_item["batch_decode_ms"] = float(t_dec.ms)
 
-<<<<<<< Updated upstream
+
             trace_print(
                 trace_log_every,
                 batch_runs,
@@ -1759,40 +1747,6 @@ def inference_worker(
                 f"batch_run={batch_runs} actual_batch={actual_batch_size} "
                 f"queue_avg={mean(batch_queue_wait_ms):.2f}ms infer={t_inf.ms:.2f}ms decode={t_dec.ms:.2f}ms",
             )
-=======
-            out_item = {
-                "camera_id": int(item["camera_id"]),
-                "frame_id": int(item["frame_id"]),
-                "source": item["source"],
-                "capture_ts": float(item["capture_ts"]),
-                "preprocess_done_ts": float(item["preprocess_done_ts"]),
-                "infer_done_ts": time.perf_counter(),
-                "original_hw": tuple(item["original_hw"]),
-                "preprocess_ms": float(item["preprocess_ms"]),
-                "queue_pre_to_infer_ms": queue_wait_times[-1],
-                "inference_ms": float(t_inf.ms),
-                "decode_ms": float(t_dec.ms),
-            }
-            if shared_slots and free_map_slots is not None:
-                try:
-                    slot_id = int(free_map_slots.get(timeout=0.05))
-                    slot = shared_slots[slot_id]
-                    slot["heat"][...] = heatmaps
-                    slot["paf"][...] = pafs
-                    out_item["shared_map_slot"] = slot_id
-                except Exception:
-                    shared_map_misses += 1
-                    out_item["heatmaps"] = heatmaps
-                    out_item["pafs"] = pafs
-            else:
-                out_item["heatmaps"] = heatmaps
-                out_item["pafs"] = pafs
-
-            if "frame_bgr" in item:
-                out_item["frame_bgr"] = item["frame_bgr"]
-            out_q.put(out_item)
-            processed += 1
->>>>>>> Stashed changes
 
             for out_item in out_items:
                 if out_item.get("merged_pose_fused_pruned_precomputed") or out_item.get("fused_pruned_precomputed"):
@@ -1878,22 +1832,15 @@ def postprocess_worker(
     migraphx_nms_mxr: str = "",
     migraphx_nms_cache_dir: str = "",
     prealloc_resize_buffers: bool = False,
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
+
+
     trace_log_every: int = 0,
     roctx_enabled: bool = False,
 ) -> None:
     try:
         tracer = RocTxTracer(roctx_enabled, f"post:{worker_id}:pid:{os.getpid()}")
         tracer.mark("worker_start")
-=======
-) -> None:
-    try:
->>>>>>> Stashed changes
-=======
-) -> None:
-    try:
->>>>>>> Stashed changes
+
         configure_child_cpu_runtime(int(os.environ.get("STREAM_WORKER_THREADS", "1")))
         canonical, registry_mode, wants_torch = resolve_registry_mode(user_variant)
 
@@ -2145,14 +2092,12 @@ def camera_preprocess_latest_worker(
     """Camera worker that maintains a newest-frame-only slot for its camera."""
     try:
         import cv2
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
+
+
         tracer = RocTxTracer(roctx_enabled, f"camera:{camera_id}:pid:{os.getpid()}")
         tracer.mark("worker_start")
-=======
->>>>>>> Stashed changes
-=======
->>>>>>> Stashed changes
+
+
         configure_child_cpu_runtime(int(os.environ.get("STREAM_WORKER_THREADS", "1")))
 
         if not os.path.exists(video_path):
@@ -2279,22 +2224,15 @@ def inference_latest_worker(
     migraphx_nms_cache_dir: str = "",
     shared_map_descs: Optional[Sequence[Dict[str, Any]]] = None,
     free_map_slots=None,
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
+
+
     migraphx_batch_size: int = 1,
     migraphx_batch_timeout_ms: float = 0.0,
     merged_pose_fused_pruned: bool = False,
     trace_log_every: int = 0,
     roctx_enabled: bool = False,
 ) -> None:
-    """Round-robin MIGraphX worker over newest-frame slots, with optional batched inference."""
-    try:
-        tracer = RocTxTracer(roctx_enabled, f"infer:{worker_id}:pid:{os.getpid()}")
-        tracer.mark("worker_start")
-=======
-=======
->>>>>>> Stashed changes
-) -> None:
+
     """Round-robin MIGraphX worker over newest-frame slots, one slot per camera.
 
     backpressure_mode:
@@ -2307,10 +2245,9 @@ def inference_latest_worker(
     since its last completed postprocess result.
     """
     try:
-<<<<<<< Updated upstream
->>>>>>> Stashed changes
-=======
->>>>>>> Stashed changes
+        tracer = RocTxTracer(roctx_enabled, f"infer:{worker_id}:pid:{os.getpid()}")
+        tracer.mark("worker_start")
+
         configure_child_cpu_runtime(int(os.environ.get("STREAM_WORKER_THREADS", "1")))
         import migraphx
 
@@ -2391,42 +2328,14 @@ def inference_latest_worker(
                 next_cam = (next_cam + 1) % ncam
                 scanned += 1
 
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
+
+
                 before_bp = skipped_due_backpressure
                 before_thr = throttle_skips
                 if not _camera_is_eligible(cam_id, count_skip=True):
                     if skipped_due_backpressure > before_bp or throttle_skips > before_thr:
                         skipped_this_scan += 1
                     continue
-=======
-=======
->>>>>>> Stashed changes
-                # Per-camera rate throttle: skip if camera was completed too recently.
-                if target_period_s > 0.0 and last_processed_ts is not None:
-                    last_ts = float(last_processed_ts[cam_id])
-                    if last_ts > 0.0 and (time.perf_counter() - last_ts) < target_period_s:
-                        throttle_skips += 1
-                        continue
-
-                # Backpressure check.
-                if backpressure_mode != "off" and post_pending is not None and bool(post_pending[cam_id]):
-                    if backpressure_mode == "soft" and post_pending_ts is not None:
-                        age_ms = (time.perf_counter() - float(post_pending_ts[cam_id])) * 1000.0
-                        if age_ms <= max_pending_age_ms:
-                            skipped_due_backpressure += 1
-                            skipped_this_scan += 1
-                            continue
-                        # Soft override: pending result is stale; allow re-inference.
-                        soft_overrides += 1
-                    else:  # strict
-                        skipped_due_backpressure += 1
-                        skipped_this_scan += 1
-                        continue
-<<<<<<< Updated upstream
->>>>>>> Stashed changes
-=======
->>>>>>> Stashed changes
 
                 try:
                     return in_queues[cam_id].get_nowait(), skipped_this_scan
@@ -2511,7 +2420,7 @@ def inference_latest_worker(
                 _out_item["decode_ms"] = float(t_dec.ms) / float(max(1, len(out_items)))
                 _out_item["batch_decode_ms"] = float(t_dec.ms)
 
-<<<<<<< Updated upstream
+
             trace_print(
                 trace_log_every,
                 batch_runs,
@@ -2562,84 +2471,12 @@ def inference_latest_worker(
                             replaced_before_post += 1
                             release_shared_slot_from_item(dropped_item, free_map_slots)
                 else:
-=======
-            out_item = {
-                "camera_id": int(item["camera_id"]),
-                "frame_id": int(item["frame_id"]),
-                "source": item["source"],
-                "capture_ts": float(item["capture_ts"]),
-                "preprocess_done_ts": float(item["preprocess_done_ts"]),
-                "infer_done_ts": time.perf_counter(),
-                "original_hw": tuple(item["original_hw"]),
-                "preprocess_ms": float(item["preprocess_ms"]),
-                "queue_pre_to_infer_ms": queue_wait_times[-1],
-                "inference_ms": float(t_inf.ms),
-                "decode_ms": float(t_dec.ms),
-            }
-            if shared_slots and free_map_slots is not None:
-                slot_id = None
-                try:
-                    slot_id = int(free_map_slots.get_nowait())
-                    slot = shared_slots[slot_id]
-                    if slot["heat"].shape != heatmaps.shape or slot["paf"].shape != pafs.shape:
-                        raise ValueError(
-                            f"shared-map slot shape mismatch: heat {slot['heat'].shape}!={heatmaps.shape}, "
-                            f"paf {slot['paf'].shape}!={pafs.shape}"
-                        )
-                    np.copyto(slot["heat"], heatmaps, casting="same_kind")
-                    np.copyto(slot["paf"], pafs, casting="same_kind")
-                    out_item["shared_map_slot"] = slot_id
-                except py_queue.Empty:
-                    shared_map_misses += 1
-                    out_item["heatmaps"] = heatmaps
-                    out_item["pafs"] = pafs
-                except Exception:
-                    shared_map_misses += 1
-                    if slot_id is not None:
-                        try:
-                            free_map_slots.put_nowait(slot_id)
-                        except Exception:
-                            pass
-                    out_item["heatmaps"] = heatmaps
-                    out_item["pafs"] = pafs
-            else:
-                out_item["heatmaps"] = heatmaps
-                out_item["pafs"] = pafs
-            if "frame_bgr" in item:
-                out_item["frame_bgr"] = item["frame_bgr"]
-            cam_id = int(item["camera_id"])
-            if backpressure_mode != "off" and post_pending is not None:
-                # Mark this camera as having a pending postprocess result before
-                # publishing so another inference worker cannot pick the same
-                # camera in the small publication window.
-                post_pending[cam_id] = 1
-                if post_pending_ts is not None:
-                    post_pending_ts[cam_id] = time.perf_counter()
-                try:
-                    out_queues[cam_id].put_nowait(out_item)
-                except py_queue.Full:
-<<<<<<< Updated upstream
->>>>>>> Stashed changes
-=======
->>>>>>> Stashed changes
                     dropped_item = latest_put_with_dropped(out_queues[cam_id], out_item)
                     if dropped_item is not None:
                         replaced_before_post += 1
                         release_shared_slot_from_item(dropped_item, free_map_slots)
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
-
                 processed += 1
-=======
-=======
->>>>>>> Stashed changes
-            else:
-                dropped_item = latest_put_with_dropped(out_queues[cam_id], out_item)
-                if dropped_item is not None:
-                    replaced_before_post += 1
-                    release_shared_slot_from_item(dropped_item, free_map_slots)
-            processed += 1
->>>>>>> Stashed changes
+
 
         infer_done[worker_id] = 1
         stats_q.put(
@@ -2673,19 +2510,9 @@ def inference_latest_worker(
         )
         close_shared_map_views(shared_handles)
         print(
-<<<<<<< Updated upstream
             f"[INFER:{worker_id}] Done. processed={processed} batch_runs={batch_runs} "
             f"avg_real_batch={mean(batch_sizes_seen):.2f} replaced_before_post={replaced_before_post} "
             f"backpressure_skips={skipped_due_backpressure} soft_overrides={soft_overrides} "
-=======
-            f"[INFER:{worker_id}] Done. processed={processed} "
-            f"replaced_before_post={replaced_before_post} "
-            f"backpressure_skips={skipped_due_backpressure} "
-            f"soft_overrides={soft_overrides} "
-<<<<<<< Updated upstream
->>>>>>> Stashed changes
-=======
->>>>>>> Stashed changes
             f"throttle_skips={throttle_skips}",
             flush=True,
         )
@@ -2727,25 +2554,17 @@ def postprocess_latest_worker(
     prealloc_resize_buffers: bool = False,
     gpu_nms_batch_size: int = 1,
     gpu_nms_batch_timeout_ms: float = 0.0,
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
+
+
     trace_log_every: int = 0,
     roctx_enabled: bool = False,
 ) -> None:
     """Round-robin postprocess worker over newest decoded-map slots, one slot per camera."""
+
     try:
         tracer = RocTxTracer(roctx_enabled, f"post:{worker_id}:pid:{os.getpid()}")
         tracer.mark("worker_start")
-=======
-) -> None:
-    """Round-robin postprocess worker over newest decoded-map slots, one slot per camera."""
-    try:
->>>>>>> Stashed changes
-=======
-) -> None:
-    """Round-robin postprocess worker over newest decoded-map slots, one slot per camera."""
-    try:
->>>>>>> Stashed changes
+
         configure_child_cpu_runtime(int(os.environ.get("STREAM_WORKER_THREADS", "1")))
         canonical, registry_mode, wants_torch = resolve_registry_mode(user_variant)
 
@@ -2873,8 +2692,8 @@ def postprocess_latest_worker(
                         )
                     config.extra["migraphx_nms_mxr"] = selected_mxr
 
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
+
+
                 with tracer.range(f"postprocess_{registry_mode}_batch{len(batch_items)}"):
                     if use_gpu_nms_batch and len(batch_items) > 1:
                         batch_inputs = []
@@ -2909,10 +2728,24 @@ def postprocess_latest_worker(
                                         config=config,
                                     )
                                 )
-=======
-=======
->>>>>>> Stashed changes
-                if use_gpu_nms_batch and len(batch_items) > 1:
+
+
+                if registry_mode == "mx_merged_pose_fused_pruned":
+                    batch_outputs = []
+                    for bi in batch_items:
+                        if not bi.get("merged_pose_fused_pruned_precomputed"):
+                            raise RuntimeError(
+                                "mx_merged_pose_fused_pruned expects precomputed merged outputs from the inference worker. "
+                                "Use --model <merged_b1.mxr> --variant mx_merged_pose_fused_pruned --migraphx-batch-size 1."
+                            )
+                        batch_outputs.append(
+                            postprocess_precomputed_merged_pose_fused_pruned_item(
+                                item=bi,
+                                threshold=threshold,
+                                min_pair_score=0.0,
+                            )
+                        )
+                elif use_gpu_nms_batch and len(batch_items) > 1:
                     batch_inputs = []
                     for bi in batch_items:
                         hm, pf = _maps_for(bi)
@@ -2921,6 +2754,21 @@ def postprocess_latest_worker(
                 else:
                     batch_outputs = []
                     for bi in batch_items:
+                        if registry_mode == "mx_merged_pose_fused_pruned":
+                            if not bi.get("merged_pose_fused_pruned_precomputed"):
+                                raise RuntimeError(
+                                    "mx_merged_pose_fused_pruned expects precomputed merged outputs from the inference worker. "
+                                    "Use --model <merged_b1.mxr> --variant mx_merged_pose_fused_pruned --migraphx-batch-size 1."
+                                )
+                            batch_outputs.append(
+                                postprocess_precomputed_merged_pose_fused_pruned_item(
+                                    item=bi,
+                                    threshold=threshold,
+                                    min_pair_score=0.0,
+                                )
+                            )
+                            continue
+
                         hm, pf = _maps_for(bi)
                         batch_outputs.append(
                             postprocess_from_maps(
@@ -2931,10 +2779,9 @@ def postprocess_latest_worker(
                                 config=config,
                             )
                         )
-<<<<<<< Updated upstream
->>>>>>> Stashed changes
-=======
->>>>>>> Stashed changes
+
+
+
             except Exception:
                 for bi in batch_items:
                     _release_item(bi)
@@ -2998,8 +2845,8 @@ def postprocess_latest_worker(
                     last_processed_ts[cam_done_id] = time.perf_counter()
                 _release_item(bi)
                 processed += 1
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
+
+
                 trace_print(
                     trace_log_every,
                     processed,
@@ -3007,10 +2854,8 @@ def postprocess_latest_worker(
                     f"processed={processed} cam={row['camera_id']} frame={row['frame_id']} "
                     f"batch={len(batch_items)} queue={queue_wait_ms:.2f}ms post={post_ms:.2f}ms e2e={e2e_ms:.2f}ms poses={row['num_poses']}",
                 )
-=======
->>>>>>> Stashed changes
-=======
->>>>>>> Stashed changes
+
+
 
         close_shared_map_views(shared_handles)
         stats_q.put(
@@ -3191,20 +3036,19 @@ def write_summary_json(path: str, summary: Dict[str, Any]) -> None:
 # Main orchestration
 # ---------------------------------------------------------------------------
 def run_queue(args) -> Dict[str, Any]:
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
+
+
     if getattr(args, "allow_ptrace_attach", False):
         os.environ["STREAM_ALLOW_PTRACE_ATTACH"] = "1"
     else:
         os.environ.pop("STREAM_ALLOW_PTRACE_ATTACH", None)
     configure_worker_thread_env(args.worker_threads)
     ctx = mp.get_context(getattr(args, "mp_start_method", "spawn"))
-=======
-=======
->>>>>>> Stashed changes
+
+
     configure_worker_thread_env(args.worker_threads)
     ctx = mp.get_context("spawn")
->>>>>>> Stashed changes
+
 
     videos = args.videos or DEFAULT_VIDEO_CYCLE
     sources = camera_sources(args.num_cameras, videos)
@@ -3327,17 +3171,15 @@ def run_queue(args) -> Dict[str, Any]:
                 shared_dtype=args.shared_dtype,
                 shared_map_descs=shared_map_descs,
                 free_map_slots=free_map_slots,
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
+
+
                 migraphx_batch_size=args.migraphx_batch_size,
                 migraphx_batch_timeout_ms=args.migraphx_batch_timeout_ms,
                 merged_pose_fused_pruned=(registry_mode == "mx_merged_pose_fused_pruned"),
                 trace_log_every=args.trace_log_every,
                 roctx_enabled=args.roctx,
-=======
->>>>>>> Stashed changes
-=======
->>>>>>> Stashed changes
+
+
             ),
             name=f"migraphx_inference_{worker_id}",
         )
@@ -3367,14 +3209,12 @@ def run_queue(args) -> Dict[str, Any]:
                 migraphx_nms_mxr=args.migraphx_nms_mxr,
                 migraphx_nms_cache_dir=args.migraphx_nms_cache_dir,
                 prealloc_resize_buffers=args.prealloc_resize_buffers,
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
+
+
                 trace_log_every=args.trace_log_every,
                 roctx_enabled=args.roctx,
-=======
->>>>>>> Stashed changes
-=======
->>>>>>> Stashed changes
+
+
             ),
             name=f"postprocess_{worker_id}",
         )
@@ -3470,13 +3310,11 @@ def run_queue(args) -> Dict[str, Any]:
                 p.join(timeout=2.0)
         if monitor is not None:
             system_profile = monitor.stop()
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
+
+
         close_shared_map_buffers(shared_map_handles)
-=======
->>>>>>> Stashed changes
-=======
->>>>>>> Stashed changes
+
+
 
     wall_s = time.perf_counter() - t0
     summary_rows, warmup_info = apply_warmup_filter(rows, args)
@@ -3515,20 +3353,19 @@ def run_queue(args) -> Dict[str, Any]:
 
 def run_latest(args) -> Dict[str, Any]:
     """Run the pipeline with newest-frame-only slots per camera between stages."""
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
+
+
     if getattr(args, "allow_ptrace_attach", False):
         os.environ["STREAM_ALLOW_PTRACE_ATTACH"] = "1"
     else:
         os.environ.pop("STREAM_ALLOW_PTRACE_ATTACH", None)
     configure_worker_thread_env(args.worker_threads)
     ctx = mp.get_context(getattr(args, "mp_start_method", "spawn"))
-=======
-=======
->>>>>>> Stashed changes
+
+
     configure_worker_thread_env(args.worker_threads)
     ctx = mp.get_context("spawn")
->>>>>>> Stashed changes
+
 
     videos = args.videos or DEFAULT_VIDEO_CYCLE
     sources = camera_sources(args.num_cameras, videos)
@@ -3675,17 +3512,15 @@ def run_latest(args) -> Dict[str, Any]:
                 shared_dtype=args.shared_dtype,
                 shared_map_descs=shared_map_descs,
                 free_map_slots=free_map_slots,
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
+
+
                 migraphx_batch_size=args.migraphx_batch_size,
                 migraphx_batch_timeout_ms=args.migraphx_batch_timeout_ms,
                 merged_pose_fused_pruned=(registry_mode == "mx_merged_pose_fused_pruned"),
                 trace_log_every=args.trace_log_every,
                 roctx_enabled=args.roctx,
-=======
->>>>>>> Stashed changes
-=======
->>>>>>> Stashed changes
+
+
             ),
             name=f"migraphx_inference_latest_{worker_id}",
         )
@@ -3722,14 +3557,12 @@ def run_latest(args) -> Dict[str, Any]:
                 prealloc_resize_buffers=args.prealloc_resize_buffers,
                 gpu_nms_batch_size=args.gpu_nms_batch_size,
                 gpu_nms_batch_timeout_ms=args.gpu_nms_batch_timeout_ms,
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
+
+
                 trace_log_every=args.trace_log_every,
                 roctx_enabled=args.roctx,
-=======
->>>>>>> Stashed changes
-=======
->>>>>>> Stashed changes
+
+
             ),
             name=f"postprocess_latest_{worker_id}",
         )
@@ -3837,8 +3670,8 @@ def run_latest(args) -> Dict[str, Any]:
     summary["max_pending_age_ms"] = args.max_pending_age_ms if backpressure_mode == "soft" else None
     summary["target_output_fps_per_camera"] = getattr(args, "target_output_fps_per_camera", 0.0)
     summary["shared_map_slots"] = getattr(args, "shared_map_slots", 0)
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
+
+
     summary["migraphx_batch_size"] = getattr(args, "migraphx_batch_size", 1)
     summary["migraphx_batch_timeout_ms"] = getattr(args, "migraphx_batch_timeout_ms", 0.0)
     summary["merged_pose_fused_pruned"] = (registry_mode == "mx_merged_pose_fused_pruned")
@@ -3848,16 +3681,16 @@ def run_latest(args) -> Dict[str, Any]:
     summary["roctx"] = bool(getattr(args, "roctx", False))
     summary["trace_log_every"] = int(getattr(args, "trace_log_every", 0) or 0)
     summary["allow_ptrace_attach"] = bool(getattr(args, "allow_ptrace_attach", False))
-=======
+
     summary["prealloc_resize_buffers"] = bool(getattr(args, "prealloc_resize_buffers", False))
     summary["gpu_nms_batch_size"] = getattr(args, "gpu_nms_batch_size", 1)
     summary["gpu_nms_batch_timeout_ms"] = getattr(args, "gpu_nms_batch_timeout_ms", 0.0)
->>>>>>> Stashed changes
-=======
+
+
     summary["prealloc_resize_buffers"] = bool(getattr(args, "prealloc_resize_buffers", False))
     summary["gpu_nms_batch_size"] = getattr(args, "gpu_nms_batch_size", 1)
     summary["gpu_nms_batch_timeout_ms"] = getattr(args, "gpu_nms_batch_timeout_ms", 0.0)
->>>>>>> Stashed changes
+
     summary["realtime"] = args.realtime
     summary["camera_sources"] = sources
     if system_profile:
@@ -4063,8 +3896,8 @@ def parse_args():
         action="store_true",
         help="Print worker CPU affinity after all child processes are started.",
     )
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
+
+
     parser.add_argument(
         "--roctx",
         action="store_true",
@@ -4081,10 +3914,8 @@ def parse_args():
         action="store_true",
         help="Let same-user tools such as rocprofv3 --attach attach to worker processes on Yama ptrace_scope systems.",
     )
-=======
->>>>>>> Stashed changes
-=======
->>>>>>> Stashed changes
+
+
 
     parser.add_argument("--print-every", type=int, default=100)
     parser.add_argument("--detailed-csv", default="outputs/stream_10cam_detailed.csv")
