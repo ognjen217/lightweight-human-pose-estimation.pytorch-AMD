@@ -42,7 +42,6 @@ venv/
 *.mp4
 *.prof
 *.log
-*.mxr
 *.onnx
 *.onnx.data
 *.pth

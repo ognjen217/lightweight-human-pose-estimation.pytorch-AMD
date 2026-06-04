@@ -23,6 +23,45 @@ import sys
 import tempfile
 from pathlib import Path
 
+def _compile_onnx_to_mxr(onnx_path, mxr_path):
+    """Compile ONNX -> MXR using Python MIGraphX API when available, otherwise migraphx-driver."""
+    from pathlib import Path
+    import subprocess
+    import shutil
+
+    onnx_path = Path(onnx_path)
+    mxr_path = Path(mxr_path)
+    mxr_path.parent.mkdir(parents=True, exist_ok=True)
+
+    import migraphx  # type: ignore
+
+    if hasattr(migraphx, "parse_onnx"):
+        program = migraphx.parse_onnx(str(onnx_path))
+        program.compile(migraphx.get_target("gpu"))
+        migraphx.save(program, str(mxr_path))
+        return
+
+    driver = shutil.which("migraphx-driver") or "/opt/rocm/bin/migraphx-driver"
+    if not Path(driver).exists() and shutil.which(driver) is None:
+        raise RuntimeError(
+            "migraphx.parse_onnx is unavailable and migraphx-driver was not found. "
+            "Check MIGraphX installation: python -c 'import migraphx; print(migraphx.__file__, dir(migraphx))'"
+        )
+
+    cmd = [
+        driver,
+        "compile",
+        str(onnx_path),
+        "--onnx",
+        "--gpu",
+        "--binary",
+        "-o",
+        str(mxr_path),
+    ]
+    print("[migraphx-fallback] " + " ".join(cmd), flush=True)
+    subprocess.check_call(cmd)
+
+
 
 def _safe_float_token(x: float) -> str:
     return str(float(x)).replace("-", "m").replace(".", "p")
@@ -34,6 +73,7 @@ def head_name(
     out_h: int,
     out_w: int,
     *,
+    batch_size: int = 1,
     topk: int,
     threshold: float,
     nms_radius: int,
@@ -43,19 +83,21 @@ def head_name(
     safe_impl = str(nms_impl).replace("-", "_")
     thr = _safe_float_token(threshold)
     ca = _safe_float_token(cubic_a)
+    batch_token = "" if int(batch_size) == 1 else f"_b{int(batch_size)}"
     return (
         f"heatmap_manual_cubic_nms_topk_"
-        f"{int(in_h)}x{int(in_w)}_to_{int(out_h)}x{int(out_w)}_"
+        f"{int(in_h)}x{int(in_w)}_to_{int(out_h)}x{int(out_w)}"
+        f"{batch_token}_"
         f"k{int(topk)}_thr{thr}_r{int(nms_radius)}_{safe_impl}_a{ca}"
     )
 
 
-def mxr_path(output_dir: Path, in_h: int, in_w: int, out_h: int, out_w: int, *, topk: int, threshold: float, nms_radius: int, nms_impl: str, cubic_a: float) -> Path:
-    return output_dir / f"{head_name(in_h, in_w, out_h, out_w, topk=topk, threshold=threshold, nms_radius=nms_radius, nms_impl=nms_impl, cubic_a=cubic_a)}.mxr"
+def mxr_path(output_dir: Path, in_h: int, in_w: int, out_h: int, out_w: int, *, batch_size: int = 1, topk: int, threshold: float, nms_radius: int, nms_impl: str, cubic_a: float) -> Path:
+    return output_dir / f"{head_name(in_h, in_w, out_h, out_w, batch_size=batch_size, topk=topk, threshold=threshold, nms_radius=nms_radius, nms_impl=nms_impl, cubic_a=cubic_a)}.mxr"
 
 
-def onnx_path(output_dir: Path, in_h: int, in_w: int, out_h: int, out_w: int, *, topk: int, threshold: float, nms_radius: int, nms_impl: str, cubic_a: float) -> Path:
-    return output_dir / f"{head_name(in_h, in_w, out_h, out_w, topk=topk, threshold=threshold, nms_radius=nms_radius, nms_impl=nms_impl, cubic_a=cubic_a)}.onnx"
+def onnx_path(output_dir: Path, in_h: int, in_w: int, out_h: int, out_w: int, *, batch_size: int = 1, topk: int, threshold: float, nms_radius: int, nms_impl: str, cubic_a: float) -> Path:
+    return output_dir / f"{head_name(in_h, in_w, out_h, out_w, batch_size=batch_size, topk=topk, threshold=threshold, nms_radius=nms_radius, nms_impl=nms_impl, cubic_a=cubic_a)}.onnx"
 
 
 def _repo_root() -> Path:
@@ -171,6 +213,7 @@ def main():
     p.add_argument("--out-h", type=int, required=True)
     p.add_argument("--out-w", type=int, required=True)
     p.add_argument("--channels", type=int, default=18)
+    p.add_argument("--batch-size", type=int, default=1)
     p.add_argument("--topk", type=int, default=20)
     p.add_argument("--threshold", type=float, default=0.1)
     p.add_argument("--nms-radius", type=int, default=6)
@@ -191,7 +234,7 @@ def main():
         cubic_a=args.cubic_a,
     ).eval()
 
-    dummy = torch.randn(1, args.channels, args.in_h, args.in_w, dtype=torch.float32)
+    dummy = torch.randn(args.batch_size, args.channels, args.in_h, args.in_w, dtype=torch.float32)
     out_path = Path(args.onnx)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -220,6 +263,7 @@ def _run_export_subprocess(
     out_h: int,
     out_w: int,
     channels: int,
+    batch_size: int,
     topk: int,
     threshold: float,
     nms_radius: int,
@@ -248,6 +292,7 @@ def _run_export_subprocess(
                 "--out-h", str(int(out_h)),
                 "--out-w", str(int(out_w)),
                 "--channels", str(int(channels)),
+                "--batch-size", str(int(batch_size)),
                 "--topk", str(int(topk)),
                 "--threshold", str(float(threshold)),
                 "--nms-radius", str(int(nms_radius)),
@@ -272,6 +317,7 @@ def compile_manual_cubic_nms_topk_head(
     out_w: int,
     output_dir: str | Path,
     channels: int = 18,
+    batch_size: int = 1,
     topk: int = 20,
     threshold: float = 0.1,
     nms_radius: int = 6,
@@ -285,8 +331,8 @@ def compile_manual_cubic_nms_topk_head(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    mxr = mxr_path(output_dir, in_h, in_w, out_h, out_w, topk=topk, threshold=threshold, nms_radius=nms_radius, nms_impl=nms_impl, cubic_a=cubic_a)
-    onnx = onnx_path(output_dir, in_h, in_w, out_h, out_w, topk=topk, threshold=threshold, nms_radius=nms_radius, nms_impl=nms_impl, cubic_a=cubic_a)
+    mxr = mxr_path(output_dir, in_h, in_w, out_h, out_w, batch_size=batch_size, topk=topk, threshold=threshold, nms_radius=nms_radius, nms_impl=nms_impl, cubic_a=cubic_a)
+    onnx = onnx_path(output_dir, in_h, in_w, out_h, out_w, batch_size=batch_size, topk=topk, threshold=threshold, nms_radius=nms_radius, nms_impl=nms_impl, cubic_a=cubic_a)
 
     if mxr.exists() and not force:
         print(f"[manual-cubic-topk] exists, skipping: {mxr}")
@@ -295,7 +341,7 @@ def compile_manual_cubic_nms_topk_head(
     print(
         "[manual-cubic-topk] exporting ONNX: "
         f"{int(in_h)}x{int(in_w)} -> {int(out_h)}x{int(out_w)}, "
-        f"C={int(channels)}, K={int(topk)}, thr={float(threshold)}, "
+        f"B={int(batch_size)}, C={int(channels)}, K={int(topk)}, thr={float(threshold)}, "
         f"impl={nms_impl}, radius={int(nms_radius)}, cubic_a={float(cubic_a)}"
     )
     _run_export_subprocess(
@@ -305,6 +351,7 @@ def compile_manual_cubic_nms_topk_head(
         out_h=out_h,
         out_w=out_w,
         channels=channels,
+        batch_size=batch_size,
         topk=topk,
         threshold=threshold,
         nms_radius=nms_radius,
@@ -316,7 +363,8 @@ def compile_manual_cubic_nms_topk_head(
     print(f"[manual-cubic-topk] compiling MIGraphX GPU target: {onnx.name} -> {mxr.name}")
     import migraphx  # type: ignore
 
-    program = migraphx.parse_onnx(str(onnx))
+    _compile_onnx_to_mxr(onnx, mxr)
+    return mxr
     program.compile(migraphx.get_target("gpu"), exhaustive_tune=bool(exhaustive_tune))
     migraphx.save(program, str(mxr))
 
@@ -338,6 +386,7 @@ def compile_for_video(
     stride: int = 8,
     output_dir: str | Path = "models/manual_cubic_nms_topk_cache",
     channels: int = 18,
+    batch_size: int = 1,
     topk: int = 20,
     threshold: float = 0.1,
     nms_radius: int = 6,
@@ -373,6 +422,7 @@ def compile_for_video(
         out_w=out_w,
         output_dir=output_dir,
         channels=channels,
+        batch_size=batch_size,
         topk=topk,
         threshold=threshold,
         nms_radius=nms_radius,
@@ -396,6 +446,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--target-height", type=int, default=544)
     p.add_argument("--stride", type=int, default=8)
     p.add_argument("--channels", type=int, default=18)
+    p.add_argument("--batch-size", type=int, default=1)
     p.add_argument("--topk", type=int, default=20)
     p.add_argument("--threshold", type=float, default=0.1)
     p.add_argument("--nms-radius", type=int, default=6)
@@ -418,6 +469,7 @@ def main() -> None:
             stride=args.stride,
             output_dir=args.output_dir,
             channels=args.channels,
+            batch_size=args.batch_size,
             topk=args.topk,
             threshold=args.threshold,
             nms_radius=args.nms_radius,
@@ -437,6 +489,7 @@ def main() -> None:
             out_w=out_w,
             output_dir=args.output_dir,
             channels=args.channels,
+            batch_size=args.batch_size,
             topk=args.topk,
             threshold=args.threshold,
             nms_radius=args.nms_radius,

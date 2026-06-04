@@ -26,6 +26,45 @@ import subprocess
 from pathlib import Path
 from typing import Any, Callable
 
+def _compile_onnx_to_mxr(onnx_path, mxr_path): # type: ignore
+    """Compile ONNX -> MXR using Python MIGraphX API when available, otherwise migraphx-driver."""
+    from pathlib import Path
+    import subprocess
+    import shutil
+
+    onnx_path = Path(onnx_path)
+    mxr_path = Path(mxr_path)
+    mxr_path.parent.mkdir(parents=True, exist_ok=True)
+
+    import migraphx  # type: ignore
+
+    if hasattr(migraphx, "parse_onnx"):
+        program = migraphx.parse_onnx(str(onnx_path))
+        program.compile(migraphx.get_target("gpu"))
+        migraphx.save(program, str(mxr_path))
+        return
+
+    driver = shutil.which("migraphx-driver") or "/opt/rocm/bin/migraphx-driver"
+    if not Path(driver).exists() and shutil.which(driver) is None:
+        raise RuntimeError(
+            "migraphx.parse_onnx is unavailable and migraphx-driver was not found. "
+            "Check MIGraphX installation: python -c 'import migraphx; print(migraphx.__file__, dir(migraphx))'"
+        )
+
+    cmd = [
+        driver,
+        "compile",
+        str(onnx_path),
+        "--onnx",
+        "--gpu",
+        "--binary",
+        "-o",
+        str(mxr_path),
+    ]
+    print("[migraphx-fallback] " + " ".join(cmd), flush=True)
+    subprocess.check_call(cmd)
+
+
 
 def _safe_float_token(x: float) -> str:
     return str(float(x)).replace("-", "m").replace(".", "p")
