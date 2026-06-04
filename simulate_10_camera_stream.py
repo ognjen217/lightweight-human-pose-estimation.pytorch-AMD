@@ -146,7 +146,7 @@ class RocTxTracer:
         self._roctx = None
         if self.enabled:
             try:
-                import roctx
+                import roctx # pyright: ignore[reportMissingImports]
                 self._roctx = roctx
             except Exception:
                 self.enabled = False
