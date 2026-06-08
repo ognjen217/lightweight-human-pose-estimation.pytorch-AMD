@@ -43,6 +43,34 @@ from modules.postprocess_head_autocompile import (
 
 TimingDict = Dict[str, float]
 
+SUMMARY_NUMERIC_KEYS = [
+    "frames",
+    "preprocess_ms",
+    "inference_ms",
+    "decode_ms",
+    "hm_resize_ms",
+    "paf_resize_ms",
+    "mx_nms_ms",
+    "manual_cubic_topk_ms",
+    "fused_post_mx_ms",
+    "fused_pruned_mx_ms",
+    "extract_ms",
+    "extract_from_mask_ms",
+    "topk_adapter_ms",
+    "group_ms",
+    "mx_assembly_total_ms",
+    "pruned_cpu_tail_ms",
+    "post_avg_ms",
+    "post_p50_ms",
+    "post_p95_ms",
+    "post_fps",
+    "e2e_avg_ms",
+    "e2e_p95_ms",
+    "e2e_fps",
+    "e2e_speedup_vs_standard",
+    "e2e_delta_pct_vs_standard",
+]
+
 
 class Timer:
     def __enter__(self):
@@ -87,7 +115,7 @@ def percentile(values: Sequence[float], q: float) -> float:
     return float(np.percentile(np.asarray(values, dtype=np.float64), q)) if values else 0.0
 
 
-def safe_get(row: TimingDict, key: str) -> float:
+def safe_get(row: Dict[str, Any], key: str) -> float:
     try:
         return float(row.get(key, 0.0) or 0.0)
     except Exception:
@@ -97,6 +125,24 @@ def safe_get(row: TimingDict, key: str) -> float:
 def ensure_parent(path: str) -> None:
     if path:
         Path(path).parent.mkdir(parents=True, exist_ok=True)
+
+
+def normalize_summary_row(summary: Dict[str, Any]) -> Dict[str, Any]:
+    """Fill optional metrics that are absent in some execution paths.
+
+    Single-process summaries are produced by ``summarize_variant`` and contain
+    all report columns. Two-process summaries are returned by
+    ``run_two_process_postprocessing`` and may omit metrics that are not
+    meaningful for that path, such as mx_nms/manual/fused/pruned stage timings.
+    The validator should still be able to print and serialize those summaries.
+    """
+    for key in SUMMARY_NUMERIC_KEYS:
+        if key == "frames":
+            summary[key] = int(safe_get(summary, key))
+        else:
+            summary[key] = safe_get(summary, key)
+    summary.setdefault("variant", "unknown")
+    return summary
 
 
 def summarize_variant(name: str, rows: List[TimingDict], baseline_e2e_ms: Optional[float]) -> Dict[str, Any]:
@@ -114,7 +160,7 @@ def summarize_variant(name: str, rows: List[TimingDict], baseline_e2e_ms: Option
         speedup = 1.0
         delta_pct = 0.0
 
-    return {
+    return normalize_summary_row({
         "variant": name,
         "frames": len(rows),
         "preprocess_ms": mean(col("preprocess")),
@@ -141,7 +187,7 @@ def summarize_variant(name: str, rows: List[TimingDict], baseline_e2e_ms: Option
         "post_fps": 1000.0 / post_avg if post_avg > 0 else 0.0,
         "e2e_speedup_vs_standard": speedup,
         "e2e_delta_pct_vs_standard": delta_pct,
-    }
+    })
 
 
 def print_variant_descriptions(variants: Sequence[str]) -> None:
@@ -164,15 +210,16 @@ def print_table(summaries: List[Dict[str, Any]]) -> None:
     )
     print("-" * 220)
     for s in summaries:
+        s = normalize_summary_row(s)
         print(
-            f"{s['variant']:<40} {int(s['frames']):>6} "
-            f"{s['preprocess_ms']:>8.2f} {s['inference_ms']:>8.2f} {s['decode_ms']:>8.2f} "
-            f"{s['mx_nms_ms']:>8.2f} {s['manual_cubic_topk_ms']:>8.2f} "
-            f"{s['fused_post_mx_ms']:>8.2f} {s['fused_pruned_mx_ms']:>8.2f} "
-            f"{s['topk_adapter_ms']:>8.2f} {s['mx_assembly_total_ms']:>8.2f} {s['pruned_cpu_tail_ms']:>8.2f} "
-            f"{s['post_avg_ms']:>9.2f} {s['post_p95_ms']:>9.2f} "
-            f"{s['e2e_avg_ms']:>9.2f} {s['e2e_p95_ms']:>9.2f} "
-            f"{s['e2e_fps']:>8.2f} {s['e2e_speedup_vs_standard']:>9.2f} {s['e2e_delta_pct_vs_standard']:>9.2f}"
+            f"{str(s.get('variant', 'unknown')):<40} {int(s.get('frames', 0)):>6} "
+            f"{safe_get(s, 'preprocess_ms'):>8.2f} {safe_get(s, 'inference_ms'):>8.2f} {safe_get(s, 'decode_ms'):>8.2f} "
+            f"{safe_get(s, 'mx_nms_ms'):>8.2f} {safe_get(s, 'manual_cubic_topk_ms'):>8.2f} "
+            f"{safe_get(s, 'fused_post_mx_ms'):>8.2f} {safe_get(s, 'fused_pruned_mx_ms'):>8.2f} "
+            f"{safe_get(s, 'topk_adapter_ms'):>8.2f} {safe_get(s, 'mx_assembly_total_ms'):>8.2f} {safe_get(s, 'pruned_cpu_tail_ms'):>8.2f} "
+            f"{safe_get(s, 'post_avg_ms'):>9.2f} {safe_get(s, 'post_p95_ms'):>9.2f} "
+            f"{safe_get(s, 'e2e_avg_ms'):>9.2f} {safe_get(s, 'e2e_p95_ms'):>9.2f} "
+            f"{safe_get(s, 'e2e_fps'):>8.2f} {safe_get(s, 'e2e_speedup_vs_standard'):>9.2f} {safe_get(s, 'e2e_delta_pct_vs_standard'):>9.2f}"
         )
     print("=" * 220)
 
@@ -181,6 +228,7 @@ def write_csv(path: str, rows: List[Dict[str, Any]]) -> None:
     if not path or not rows:
         return
     ensure_parent(path)
+    rows = [normalize_summary_row(dict(row)) for row in rows]
     preferred_order = [
         "variant", "model", "frames", "preprocess_ms", "inference_ms", "decode_ms",
         "hm_resize_ms", "paf_resize_ms", "mx_nms_ms", "manual_cubic_topk_ms",
@@ -203,6 +251,7 @@ def write_json(path: str, rows: List[Dict[str, Any]]) -> None:
     if not path:
         return
     ensure_parent(path)
+    rows = [normalize_summary_row(dict(row)) for row in rows]
     with open(path, "w") as f:
         json.dump(rows, f, indent=2)
     print(f"JSON saved: {path}")
@@ -327,7 +376,9 @@ def _run_two_process_speed(args, variants: Sequence[str]) -> List[Dict[str, Any]
             nms_impl=args.nms_impl,
             collect_rows=False,
         )
-        summaries.append(result["summary"])
+        summary = dict(result["summary"])
+        summary.setdefault("variant", variant)
+        summaries.append(normalize_summary_row(summary))
     return summaries
 
 
@@ -396,6 +447,7 @@ def validate_speed(args) -> List[Dict[str, Any]]:
         print("--------------------")
         summaries.extend(_run_two_process_speed(args, two_process_variants))
 
+    summaries = [normalize_summary_row(s) for s in summaries]
     _recompute_speedups(summaries)
     print_table(summaries)
     write_csv(args.csv, summaries)
