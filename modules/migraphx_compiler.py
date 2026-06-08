@@ -1,5 +1,5 @@
 from __future__ import annotations
-clear
+
 #!/usr/bin/env python3
 """
 modules/migraphx_compiler.py
