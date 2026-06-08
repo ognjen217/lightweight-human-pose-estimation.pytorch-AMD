@@ -1,32 +1,13 @@
 #!/usr/bin/env python3
-"""
-speed_validation.py
+"""Unified video speed validation for MIGraphX + postprocessing variants.
 
-Unified video speed validation for the MIGraphX + post-processing pipeline.
-This replaces the overlapping video_val*.py and benchmark_postprocess_variants.py
-style scripts for single-process timing.
+The script keeps postprocessing implementations centralized in
+``modules.postprocessing``.  It adds validation-time conveniences for the newer
+MIGraphX postprocess heads:
 
-What it measures
-----------------
-For each measured video frame:
-  1. preprocess frame for MIGraphX
-  2. run MIGraphX inference once
-  3. run one or more post-processing variants on the same raw outputs
-  4. collect a consistent timing schema and print a summary table
-
-All post-processing implementations are imported from modules/postprocessing.py.
-No post-processing logic is implemented in this file.
-
-Example
--------
-python speed_validation.py \
-  --video cctv_1280x720_24fps_3.mp4 \
-  --model pose_model1_fp16_ref1.mxr \
-  --frames 100 \
-  --warmup 5 \
-  --variants standard optimized_batch_k20_fast gpu_nms_fullres_cpu_group \
-  --csv outputs/speed_summary.csv \
-  --json outputs/speed_summary.json
+* auto-compile missing manual/fused/fused-pruned heads for the video shape
+* accept the report alias ``merged_fused_pruned``
+* pass all fused/pruned tuning parameters through ``PostprocessConfig``
 """
 
 from __future__ import annotations
@@ -48,11 +29,16 @@ from modules.postprocessing import (
     DEFAULT_SPEED_VARIANTS,
     PostprocessConfig,
     available_modes,
-    normalize_mode,
     is_two_process_mode,
+    normalize_mode,
     postprocess_from_results,
     run_two_process_postprocessing,
     variant_table,
+)
+from modules.postprocess_head_autocompile import (
+    ensure_video_postprocess_heads,
+    normalize_validation_variant_name,
+    postprocess_extra_from_args,
 )
 
 TimingDict = Dict[str, float]
@@ -73,10 +59,8 @@ class MIGraphXVideoEngine:
         self.model_path = model_path
         self.w, self.h = target_dim
         self.stride = stride
-
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"Cannot find model: {model_path}")
-
         self.model = migraphx.load(model_path)
         self.expected_dtype = str(self.model.get_parameter_shapes()["input"].type())
 
@@ -85,7 +69,6 @@ class MIGraphXVideoEngine:
         img = (img.astype(np.float32) - 128.0) / 256.0
         img = img.transpose(2, 0, 1)[np.newaxis, ...]
         img = np.ascontiguousarray(img)
-
         if "half" in self.expected_dtype:
             return img.astype(np.float16)
         return img.astype(np.float32)
@@ -117,21 +100,13 @@ def ensure_parent(path: str) -> None:
 
 
 def summarize_variant(name: str, rows: List[TimingDict], baseline_e2e_ms: Optional[float]) -> Dict[str, Any]:
-    pre = [safe_get(r, "preprocess") for r in rows]
-    infer = [safe_get(r, "inference") for r in rows]
-    decode = [safe_get(r, "decode") for r in rows]
-    hm_resize = [safe_get(r, "resize_heatmaps") for r in rows]
-    paf_resize = [safe_get(r, "resize_pafs") for r in rows]
-    extract = [safe_get(r, "extract_keypoints") for r in rows]
-    mx_nms = [safe_get(r, "mx_nms") for r in rows]
-    mask_extract = [safe_get(r, "extract_from_mask") for r in rows]
-    group = [safe_get(r, "group_keypoints") for r in rows]
-    post = [safe_get(r, "total_postprocess") for r in rows]
-    e2e = [safe_get(r, "e2e") for r in rows]
+    def col(k: str):
+        return [safe_get(r, k) for r in rows]
 
+    post = col("total_postprocess")
+    e2e = col("e2e")
     post_avg = mean(post)
     e2e_avg = mean(e2e)
-
     if baseline_e2e_ms and baseline_e2e_ms > 0 and e2e_avg > 0:
         speedup = baseline_e2e_ms / e2e_avg
         delta_pct = ((e2e_avg - baseline_e2e_ms) / baseline_e2e_ms) * 100.0
@@ -142,15 +117,21 @@ def summarize_variant(name: str, rows: List[TimingDict], baseline_e2e_ms: Option
     return {
         "variant": name,
         "frames": len(rows),
-        "preprocess_ms": mean(pre),
-        "inference_ms": mean(infer),
-        "decode_ms": mean(decode),
-        "hm_resize_ms": mean(hm_resize),
-        "paf_resize_ms": mean(paf_resize),
-        "extract_ms": mean(extract),
-        "mx_nms_ms": mean(mx_nms),
-        "extract_from_mask_ms": mean(mask_extract),
-        "group_ms": mean(group),
+        "preprocess_ms": mean(col("preprocess")),
+        "inference_ms": mean(col("inference")),
+        "decode_ms": mean(col("decode")),
+        "hm_resize_ms": mean(col("resize_heatmaps")),
+        "paf_resize_ms": mean(col("resize_pafs")),
+        "mx_nms_ms": mean(col("mx_nms")),
+        "manual_cubic_topk_ms": mean(col("manual_cubic_topk")),
+        "fused_post_mx_ms": mean(col("fused_post_mx")),
+        "fused_pruned_mx_ms": mean(col("fused_pruned_mx")),
+        "extract_ms": mean(col("extract_keypoints")),
+        "extract_from_mask_ms": mean(col("extract_from_mask")),
+        "topk_adapter_ms": mean(col("topk_adapter")),
+        "group_ms": mean(col("group_keypoints")),
+        "mx_assembly_total_ms": mean(col("mx_assembly_total")),
+        "pruned_cpu_tail_ms": mean(col("pruned_cpu_tail")),
         "post_avg_ms": post_avg,
         "post_p50_ms": percentile(post, 50),
         "post_p95_ms": percentile(post, 95),
@@ -167,62 +148,50 @@ def print_variant_descriptions(variants: Sequence[str]) -> None:
     info_by_name = {row["variant"]: row for row in variant_table()}
     print("\nVariants:")
     for variant in variants:
-        canonical = normalize_mode(variant)
+        canonical = normalize_mode(normalize_validation_variant_name(variant))
         row = info_by_name[canonical]
-        print(f"  {canonical:<32} {row['description']}")
+        print(f"  {canonical:<40} {row['description']}")
 
 
 def print_table(summaries: List[Dict[str, Any]]) -> None:
-    print("\n" + "=" * 190)
+    print("\n" + "=" * 220)
     print("SPEED VALIDATION SUMMARY")
-    print("=" * 190)
+    print("=" * 220)
     print(
-        f"{'variant':<34} {'frames':>6} {'pre':>8} {'infer':>8} {'decode':>8} "
-        f"{'hm_res':>8} {'paf_res':>8} {'mx_nms':>8} {'extract':>9} {'mask_ext':>9} {'group':>9} "
-        f"{'post':>9} {'post_p95':>9} {'e2e':>9} {'e2e_p95':>9} "
-        f"{'FPS':>8} {'speedup':>9} {'Δe2e%':>9}"
+        f"{'variant':<40} {'frames':>6} {'pre':>8} {'infer':>8} {'decode':>8} "
+        f"{'mx_nms':>8} {'manual':>8} {'fused':>8} {'pruned':>8} {'adapt':>8} {'asm':>8} {'tail':>8} "
+        f"{'post':>9} {'post_p95':>9} {'e2e':>9} {'e2e_p95':>9} {'FPS':>8} {'speedup':>9} {'Δe2e%':>9}"
     )
-    print("-" * 190)
+    print("-" * 220)
     for s in summaries:
         print(
-            f"{s['variant']:<34} {int(s['frames']):>6} "
+            f"{s['variant']:<40} {int(s['frames']):>6} "
             f"{s['preprocess_ms']:>8.2f} {s['inference_ms']:>8.2f} {s['decode_ms']:>8.2f} "
-            f"{s['hm_resize_ms']:>8.2f} {s['paf_resize_ms']:>8.2f} "
-            f"{s.get('mx_nms_ms', 0.0):>8.2f} {s['extract_ms']:>9.2f} "
-            f"{s.get('extract_from_mask_ms', 0.0):>9.2f} {s['group_ms']:>9.2f} "
+            f"{s['mx_nms_ms']:>8.2f} {s['manual_cubic_topk_ms']:>8.2f} "
+            f"{s['fused_post_mx_ms']:>8.2f} {s['fused_pruned_mx_ms']:>8.2f} "
+            f"{s['topk_adapter_ms']:>8.2f} {s['mx_assembly_total_ms']:>8.2f} {s['pruned_cpu_tail_ms']:>8.2f} "
             f"{s['post_avg_ms']:>9.2f} {s['post_p95_ms']:>9.2f} "
             f"{s['e2e_avg_ms']:>9.2f} {s['e2e_p95_ms']:>9.2f} "
-            f"{s['e2e_fps']:>8.2f} {s['e2e_speedup_vs_standard']:>9.2f} "
-            f"{s['e2e_delta_pct_vs_standard']:>9.2f}"
+            f"{s['e2e_fps']:>8.2f} {s['e2e_speedup_vs_standard']:>9.2f} {s['e2e_delta_pct_vs_standard']:>9.2f}"
         )
-    print("=" * 190)
+    print("=" * 220)
 
 
 def write_csv(path: str, rows: List[Dict[str, Any]]) -> None:
     if not path or not rows:
         return
     ensure_parent(path)
-    # Rows can come from different execution paths (single-process and
-    # two-process).  Two-process summaries contain extra fields such as
-    # pipeline_wall_s / pipeline_fps, so the CSV header must be the union
-    # of all row keys, not only keys from the first row.
     preferred_order = [
-        "variant", "model", "model_path", "precision", "refinement_stages",
-        "frames", "images",
-        "preprocess_ms", "inference_ms", "decode_ms",
-        "hm_resize_ms", "paf_resize_ms", "mx_nms_ms", "extract_ms", "extract_from_mask_ms", "group_ms",
+        "variant", "model", "frames", "preprocess_ms", "inference_ms", "decode_ms",
+        "hm_resize_ms", "paf_resize_ms", "mx_nms_ms", "manual_cubic_topk_ms",
+        "fused_post_mx_ms", "fused_pruned_mx_ms", "extract_ms", "extract_from_mask_ms",
+        "topk_adapter_ms", "group_ms", "mx_assembly_total_ms", "pruned_cpu_tail_ms",
         "post_avg_ms", "post_p50_ms", "post_p95_ms", "post_fps",
-        "e2e_avg_ms", "e2e_p95_ms", "e2e_fps",
-        "e2e_speedup_vs_standard", "e2e_delta_pct_vs_standard",
-        "avg_power_w", "fps_per_watt", "energy_j_per_frame",
-        "pipeline_wall_s", "pipeline_fps",
+        "e2e_avg_ms", "e2e_p95_ms", "e2e_fps", "e2e_speedup_vs_standard", "e2e_delta_pct_vs_standard",
     ]
-    all_keys = set()
-    for row in rows:
-        all_keys.update(row.keys())
+    all_keys = set().union(*(row.keys() for row in rows))
     fieldnames = [k for k in preferred_order if k in all_keys]
     fieldnames.extend(sorted(k for k in all_keys if k not in fieldnames))
-
     with open(path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
@@ -239,53 +208,40 @@ def write_json(path: str, rows: List[Dict[str, Any]]) -> None:
     print(f"JSON saved: {path}")
 
 
-
 def _assert_single_process_variants_are_migraphx_safe(variants: Sequence[str]) -> None:
-    """Guard against accidentally mixing MIGraphX and Torch GPU in one process.
-
-    On the target ROCm setup, MIGraphX inference and PyTorch GPU postprocessing
-    must not be initialized in the same Python process. CPU-only postprocess
-    variants are safe because they do not touch torch.cuda. GPU-NMS/PAF variants
-    must be requested through their *_two_process aliases instead.
-    """
     unsafe = [v for v in variants if v.startswith("gpu_")]
     if unsafe:
-        mapping = {
-            "gpu_nms_fullres_cpu_group": "gpu_nms_fullres_two_process",
-            "gpu_nms_lowres_cpu_group": "gpu_nms_lowres_two_process",
-        }
-        suggestions = [mapping.get(v, f"{v} is single-process GPU and should be moved to a two-process mode") for v in unsafe]
         raise RuntimeError(
-            "Unsafe single-process GPU postprocess variant requested. "
-            "This setup must not initialize MIGraphX and PyTorch ROCm in the same process. "
-            f"Requested: {unsafe}. Use instead: {suggestions}."
+            "Unsafe single-process GPU postprocess variant requested. Use the corresponding *_two_process variant. "
+            f"Requested: {unsafe}."
         )
+
+
+def build_postprocess_config(args) -> PostprocessConfig:
+    return PostprocessConfig(
+        max_keypoints_per_type=args.max_keypoints,
+        threshold=args.threshold,
+        points_per_limb=args.points_per_limb,
+        nms_radius_fullres=args.nms_radius_fullres,
+        nms_radius_lowres=args.nms_radius_lowres,
+        min_paf_score=args.min_paf_score,
+        success_ratio_thr=args.success_ratio_thr,
+        torch_device=args.torch_device,
+        require_gpu=args.require_gpu,
+        migraphx_nms_mxr=args.migraphx_nms_mxr,
+        migraphx_nms_cache_dir=args.migraphx_nms_cache_dir,
+        migraphx_manual_cubic_topk_mxr=args.migraphx_manual_cubic_topk_mxr,
+        migraphx_manual_cubic_topk_cache_dir=args.migraphx_manual_cubic_topk_cache_dir,
+        extra=postprocess_extra_from_args(args),
+    )
 
 
 def _run_single_process_speed(args, variants: Sequence[str]) -> List[Dict[str, Any]]:
     if not variants:
         return []
-
     _assert_single_process_variants_are_migraphx_safe(variants)
-
-    config = PostprocessConfig(
-        max_keypoints_per_type=args.max_keypoints,
-        threshold=args.threshold,
-        nms_radius_fullres=args.nms_radius_fullres,
-        nms_radius_lowres=args.nms_radius_lowres,
-        torch_device=args.torch_device,
-        require_gpu=args.require_gpu,
-        migraphx_nms_mxr=args.migraphx_nms_mxr,
-        migraphx_nms_cache_dir=args.migraphx_nms_cache_dir,
-        extra={"gpu_compute_dtype": args.gpu_compute_dtype, "nms_impl": args.nms_impl},
-    )
-
-    engine = MIGraphXVideoEngine(
-        args.model,
-        target_dim=(args.target_width, args.target_height),
-        stride=args.stride,
-    )
-
+    config = build_postprocess_config(args)
+    engine = MIGraphXVideoEngine(args.model, target_dim=(args.target_width, args.target_height), stride=args.stride)
     cap = cv2.VideoCapture(args.video)
     if not cap.isOpened():
         raise RuntimeError(f"Could not open video: {args.video}")
@@ -293,23 +249,17 @@ def _run_single_process_speed(args, variants: Sequence[str]) -> List[Dict[str, A
     per_variant_rows: Dict[str, List[TimingDict]] = {name: [] for name in variants}
     frame_idx = 0
     measured = 0
-
     while True:
         ret, frame = cap.read()
         if not ret:
             break
-
         frame_idx += 1
-
         with Timer() as pre_t:
             input_tensor = engine.preprocess(frame)
-
         with Timer() as infer_t:
             raw_results = engine.infer(input_tensor)
-
         original_hw = frame.shape[:2]
         is_warmup = frame_idx <= args.warmup
-
         if not is_warmup and measured >= args.frames:
             break
 
@@ -326,7 +276,6 @@ def _run_single_process_speed(args, variants: Sequence[str]) -> List[Dict[str, A
             except Exception as exc:
                 cap.release()
                 raise RuntimeError(f"Variant '{variant}' failed on frame {frame_idx}: {exc}") from exc
-
             if not is_warmup:
                 row = dict(out.timings)
                 row["preprocess"] = pre_t.ms
@@ -338,15 +287,12 @@ def _run_single_process_speed(args, variants: Sequence[str]) -> List[Dict[str, A
             measured += 1
             if measured == 1 or (args.print_every > 0 and measured % args.print_every == 0):
                 print(f"Processed measured frames: {measured}/{args.frames}")
-
     cap.release()
-
     if measured == 0:
         raise RuntimeError("No measured frames. Check --video, --warmup, and --frames.")
 
     baseline_name = "standard" if "standard" in per_variant_rows else variants[0]
     baseline_e2e = mean([safe_get(r, "e2e") for r in per_variant_rows[baseline_name]])
-
     return [
         summarize_variant(
             name=variant,
@@ -401,8 +347,7 @@ def _recompute_speedups(summaries: List[Dict[str, Any]]) -> None:
 
 
 def validate_speed(args) -> List[Dict[str, Any]]:
-    variants = [normalize_mode(v) for v in args.variants]
-    # Keep user order but remove duplicates after alias normalization.
+    variants = [normalize_mode(normalize_validation_variant_name(v)) for v in args.variants]
     variants = list(dict.fromkeys(variants))
 
     if any(v in {"migraphx_nms", "migraphx_nms_k20"} for v in variants):
@@ -423,10 +368,9 @@ def validate_speed(args) -> List[Dict[str, Any]]:
             args.migraphx_nms_mxr = str(mxr_path)
             print(f"MIGraphX NMS head ready: {mxr_path}")
         elif not args.migraphx_nms_cache_dir and not args.migraphx_nms_mxr:
-            raise RuntimeError(
-                "migraphx_nms variants require --migraphx-nms-mxr or --migraphx-nms-cache-dir. "
-                "For video speed validation, you can pass --compile-migraphx-nms to build the one needed head from video resolution."
-            )
+            raise RuntimeError("migraphx_nms variants require --migraphx-nms-mxr, --migraphx-nms-cache-dir, or --compile-migraphx-nms.")
+
+    ensure_video_postprocess_heads(args, variants, args.video)
 
     single_process_variants = [v for v in variants if not is_two_process_mode(v)]
     two_process_variants = [v for v in variants if is_two_process_mode(v)]
@@ -439,16 +383,14 @@ def validate_speed(args) -> List[Dict[str, Any]]:
     print(f"Warmup frames:  {args.warmup}")
     print(f"Measured frames:{args.frames}")
     print(f"Torch device:   {args.torch_device}")
-    print(f"Draw/write:     disabled")
+    print(f"Auto compile:   {args.compile_missing_postprocess_heads}")
     print_variant_descriptions(variants)
 
     summaries: List[Dict[str, Any]] = []
-
     if single_process_variants:
         print("\nSingle-process variants")
         print("-----------------------")
         summaries.extend(_run_single_process_speed(args, single_process_variants))
-
     if two_process_variants:
         print("\nTwo-process variants")
         print("--------------------")
@@ -460,10 +402,9 @@ def validate_speed(args) -> List[Dict[str, Any]]:
     write_json(args.json, summaries)
     return summaries
 
+
 def parse_args():
-    parser = argparse.ArgumentParser(
-        description="Unified video speed validation using modules.postprocessing as the single source of truth."
-    )
+    parser = argparse.ArgumentParser(description="Unified video speed validation using modules.postprocessing as the single source of truth.")
     parser.add_argument("--video", default="cctv_1280x720_24fps_3.mp4")
     parser.add_argument("--model", default="pose_model1_fp16_ref1.mxr")
     parser.add_argument("--frames", type=int, default=100)
@@ -474,28 +415,46 @@ def parse_args():
     parser.add_argument("--print-every", type=int, default=10)
     parser.add_argument("--csv", default="outputs/speed_validation_summary.csv")
     parser.add_argument("--json", default="outputs/speed_validation_summary.json")
-    parser.add_argument(
-        "--variants",
-        nargs="+",
-        default=list(DEFAULT_SPEED_VARIANTS),
-        help=f"Postprocess variants or aliases. Canonical modes: {', '.join(available_modes())}",
-    )
+    parser.add_argument("--variants", nargs="+", default=list(DEFAULT_SPEED_VARIANTS), help=f"Postprocess variants or aliases. Canonical modes: {', '.join(available_modes())}")
     parser.add_argument("--torch-device", choices=["auto", "cuda", "cpu"], default="auto")
-    parser.add_argument("--require-gpu", action="store_true", help="Fail instead of falling back to CPU for GPU variants.")
+    parser.add_argument("--require-gpu", action="store_true")
     parser.add_argument("--max-keypoints", type=int, default=20)
     parser.add_argument("--threshold", type=float, default=0.1)
     parser.add_argument("--nms-radius-fullres", type=int, default=6)
     parser.add_argument("--nms-radius-lowres", type=int, default=1)
+    parser.add_argument("--points-per-limb", type=int, default=8)
+    parser.add_argument("--min-paf-score", type=float, default=0.05)
+    parser.add_argument("--success-ratio-thr", type=float, default=0.8)
     parser.add_argument("--two-process-slots", type=int, default=3)
     parser.add_argument("--shared-dtype", choices=["float32", "float16"], default="float32")
     parser.add_argument("--gpu-compute-dtype", choices=["float32", "float16"], default="float32")
-    parser.add_argument("--nms-impl", choices=["2d", "separable"], default="2d")
-    parser.add_argument("--migraphx-nms-mxr", default="", help="Static compiled MIGraphX NMS head .mxr for fixed-resolution video.")
-    parser.add_argument("--migraphx-nms-cache-dir", default="", help="Directory with heatmap_nms_head_<H>x<W>.mxr files.")
-    parser.add_argument("--compile-migraphx-nms", action="store_true", help="Compile the one video-resolution MIGraphX NMS head before running speed validation.")
-    parser.add_argument("--force-compile-migraphx-nms", action="store_true", help="Recompile MIGraphX NMS even if the MXR already exists.")
-    parser.add_argument("--keep-migraphx-nms-onnx", action="store_true", help="Keep temporary ONNX files generated for MIGraphX NMS compilation.")
-    parser.add_argument("--exhaustive-tune-migraphx-nms", action="store_true", help="Pass exhaustive_tune=True when compiling MIGraphX NMS.")
+    parser.add_argument("--nms-impl", choices=["2d", "separable"], default="separable")
+    parser.add_argument("--prealloc-resize-buffers", action="store_true")
+
+    parser.add_argument("--migraphx-nms-mxr", default="")
+    parser.add_argument("--migraphx-nms-cache-dir", default="")
+    parser.add_argument("--compile-migraphx-nms", action="store_true")
+    parser.add_argument("--force-compile-migraphx-nms", action="store_true")
+    parser.add_argument("--keep-migraphx-nms-onnx", action="store_true")
+    parser.add_argument("--exhaustive-tune-migraphx-nms", action="store_true")
+
+    parser.add_argument("--compile-missing-postprocess-heads", action="store_true", help="Compile missing manual/fused/fused-pruned postprocess heads for the requested shape.")
+    parser.add_argument("--force-compile-postprocess-heads", action="store_true")
+    parser.add_argument("--keep-postprocess-onnx", action="store_true")
+    parser.add_argument("--migraphx-manual-cubic-topk-mxr", default="")
+    parser.add_argument("--migraphx-manual-cubic-topk-cache-dir", default="models/manual_cubic_nms_topk_cache")
+    parser.add_argument("--manual-cubic-topk", type=int, default=20)
+    parser.add_argument("--manual-cubic-threshold", type=float, default=0.1)
+    parser.add_argument("--manual-cubic-nms-radius", type=int, default=6)
+    parser.add_argument("--manual-cubic-nms-impl", choices=["2d", "separable"], default="separable")
+    parser.add_argument("--manual-cubic-a", type=float, default=-0.75)
+    parser.add_argument("--fused-postprocess-mxr", default="")
+    parser.add_argument("--fused-postprocess-cache-dir", default="models/fused_postprocess_cache")
+    parser.add_argument("--fused-pruned-postprocess-mxr", default="")
+    parser.add_argument("--fused-pruned-postprocess-cache-dir", default="models/fused_postprocess_pruned_cache")
+    parser.add_argument("--limb-topm", type=int, default=20)
+    parser.add_argument("--min-pair-score", type=float, default=0.0)
+    parser.add_argument("--paf-cubic-a", type=float, default=-0.75)
     return parser.parse_args()
 
 
