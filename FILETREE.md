@@ -43,6 +43,9 @@ lightweight-human-pose-estimation.pytorch-AMD/
 │   ├── benchmark_torch.py
 │   ├── benchmark_torch_cpu.py
 │   └── postprocess_benchmark_summary.csv
+├── build/
+│   └── hip_kernels/
+│       └── libhip_bicubic_resize.so
 ├── coco/
 │   ├── annotations/
 │   │   ├── captions_train2017.json
@@ -5073,11 +5076,28 @@ lightweight-human-pose-estimation.pytorch-AMD/
 ├── hip_kernels/
 │   └── hip_bicubic_resize.cpp
 ├── models/
-│   ├── fused_postprocess_pruned_cache/
-│   │   └── _parts/
-│   │       └── _parts/
-│   │           ├── heatmap_manual_cubic_nms_topk_68x121_to_1080x1920_k20_thr0p1_r6_separable_am0p75.onnx
-│   │           └── heatmap_manual_cubic_nms_topk_68x121_to_1080x1920_k20_thr0p1_r6_separable_am0p75.onnx.data
+│   ├── fused_postprocess_pruned_batchaware/
+│   │   ├── fused_pruned_batchaware_b1_68x121_to_1080x1920_k20_m20_thr0p1_r6_separable.onnx
+│   │   ├── fused_pruned_batchaware_b1_68x121_to_1080x1920_k20_m20_thr0p1_r6_separable.onnx.data
+│   │   ├── fused_pruned_batchaware_b2_68x121_to_1080x1920_k20_m20_thr0p1_r6_separable.onnx
+│   │   ├── fused_pruned_batchaware_b2_68x121_to_1080x1920_k20_m20_thr0p1_r6_separable.onnx.data
+│   │   ├── fused_pruned_batchaware_b4_68x121_to_1080x1920_k20_m20_thr0p1_r6_separable.onnx
+│   │   ├── fused_pruned_batchaware_b4_68x121_to_1080x1920_k20_m20_thr0p1_r6_separable.onnx.data
+│   │   ├── fused_pruned_batchaware_b8_68x121_to_1080x1920_k20_m20_thr0p1_r6_separable.onnx
+│   │   └── fused_pruned_batchaware_b8_68x121_to_1080x1920_k20_m20_thr0p1_r6_separable.onnx.data
+│   ├── merged_pose_fused_pruned_batchaware/
+│   │   ├── pose_fused_pruned_batchaware_b1_1080x1920_k20_m20_thr0p1_r6_separable.debug.json
+│   │   ├── pose_fused_pruned_batchaware_b1_1080x1920_k20_m20_thr0p1_r6_separable.mxr
+│   │   ├── pose_fused_pruned_batchaware_b1_1080x1920_k20_m20_thr0p1_r6_separable.onnx
+│   │   ├── pose_fused_pruned_batchaware_b2_1080x1920_k20_m20_thr0p1_r6_separable.debug.json
+│   │   ├── pose_fused_pruned_batchaware_b2_1080x1920_k20_m20_thr0p1_r6_separable.mxr
+│   │   ├── pose_fused_pruned_batchaware_b2_1080x1920_k20_m20_thr0p1_r6_separable.onnx
+│   │   ├── pose_fused_pruned_batchaware_b4_1080x1920_k20_m20_thr0p1_r6_separable.debug.json
+│   │   ├── pose_fused_pruned_batchaware_b4_1080x1920_k20_m20_thr0p1_r6_separable.mxr
+│   │   ├── pose_fused_pruned_batchaware_b4_1080x1920_k20_m20_thr0p1_r6_separable.onnx
+│   │   ├── pose_fused_pruned_batchaware_b8_1080x1920_k20_m20_thr0p1_r6_separable.debug.json
+│   │   ├── pose_fused_pruned_batchaware_b8_1080x1920_k20_m20_thr0p1_r6_separable.mxr
+│   │   └── pose_fused_pruned_batchaware_b8_1080x1920_k20_m20_thr0p1_r6_separable.onnx
 │   ├── __init__.py
 │   ├── checkpoint_iter_370000.pth
 │   ├── fp16_refinment1.onnx
@@ -5137,404 +5157,153 @@ lightweight-human-pose-estimation.pytorch-AMD/
 │   ├── pose.py
 │   └── postprocessing.py
 ├── outputs/
-│   ├── accuracy_manual_cubic_mx_topk_500/
-│   │   ├── pose_model1_fp16_ref1/
-│   │   │   ├── detections_migraphx_manual_cubic_nms_topk_k20.json
-│   │   │   └── detections_optimized_batch_k20_fast.json
-│   │   ├── accuracy_manual_cubic_mx_topk_summary.csv
-│   │   └── accuracy_manual_cubic_mx_topk_summary.json
-│   ├── accuracy_manual_cubic_mx_topk_500_cached/
-│   │   ├── pose_model1_fp16_ref1/
-│   │   │   ├── detections_migraphx_manual_cubic_nms_topk_k20.json
-│   │   │   └── detections_optimized_batch_k20_fast.json
-│   │   ├── accuracy_manual_cubic_mx_topk_summary.csv
-│   │   └── accuracy_manual_cubic_mx_topk_summary.json
-│   ├── accuracy_mx_fused_postprocess_100/
-│   │   ├── pose_model1_fp16_ref1/
-│   │   │   ├── detections_mx_fused_cubic_topk_fullres_paf_k20.json
-│   │   │   └── detections_optimized_batch_k20_fast.json
-│   │   ├── accuracy_mx_fused_postprocess_summary.csv
-│   │   ├── accuracy_mx_fused_postprocess_summary.json
-│   │   ├── selected_images.csv
-│   │   ├── selected_images.json
-│   │   ├── selected_shapes.csv
-│   │   ├── selected_shapes.json
-│   │   ├── shape_counts.csv
-│   │   └── shape_counts.json
-│   ├── accuracy_mx_fused_postprocess_100_plan/
-│   │   ├── selected_images.csv
-│   │   ├── selected_images.json
-│   │   ├── selected_shapes.csv
-│   │   ├── selected_shapes.json
-│   │   ├── shape_counts.csv
-│   │   └── shape_counts.json
-│   ├── accuracy_mx_paf_fullres_pair_scorer_50/
-│   │   └── pose_model1_fp16_ref1/
-│   ├── accuracy_mx_paf_fullres_pair_scorer_500/
-│   │   └── pose_model1_fp16_ref1/
-│   ├── accuracy_mx_paf_pair_scorer_50/
-│   │   ├── pose_model1_fp16_ref1/
-│   │   │   ├── detections_mx_cubic_topk_paf_scorer_k20.json
-│   │   │   └── detections_optimized_batch_k20_fast.json
-│   │   ├── accuracy_mx_paf_pair_scorer_summary.csv
-│   │   └── accuracy_mx_paf_pair_scorer_summary.json
-│   ├── accuracy_mx_paf_pair_scorer_500/
-│   │   ├── pose_model1_fp16_ref1/
-│   │   │   ├── detections_mx_cubic_topk_paf_scorer_k20.json
-│   │   │   └── detections_optimized_batch_k20_fast.json
-│   │   ├── accuracy_mx_paf_pair_scorer_summary.csv
-│   │   └── accuracy_mx_paf_pair_scorer_summary.json
-│   ├── accuracy_resize_nms_topk_50/
-│   │   ├── pose_model1_fp16_ref1/
-│   │   │   ├── detections_migraphx_resize_nms_topk_k20.json
-│   │   │   └── detections_optimized_batch_k20_fast.json
-│   │   ├── accuracy_resize_nms_topk_summary.csv
-│   │   └── accuracy_resize_nms_topk_summary.json
-│   ├── accuracy_resize_nms_topk_500/
-│   │   ├── pose_model1_fp16_ref1/
-│   │   │   ├── detections_migraphx_resize_nms_topk_k20.json
-│   │   │   └── detections_optimized_batch_k20_fast.json
-│   │   ├── accuracy_resize_nms_topk_summary.csv
-│   │   └── accuracy_resize_nms_topk_summary.json
-│   ├── accuracy_resize_nms_topk_k20_thr008_500/
-│   ├── accuracy_resize_nms_topk_k30_500/
-│   │   ├── pose_model1_fp16_ref1/
-│   │   │   ├── detections_migraphx_resize_nms_topk_k20.json
-│   │   │   └── detections_optimized_batch_k20_fast.json
-│   │   ├── accuracy_resize_nms_topk_summary.csv
-│   │   └── accuracy_resize_nms_topk_summary.json
-│   ├── debug_onnx/
-│   │   ├── compile_resize_linear_migraphx_trace.txt
-│   │   ├── identity_test.mxr
-│   │   ├── identity_test.onnx
-│   │   ├── make_identity_test.py
-│   │   ├── make_resize_cubic_test.py
-│   │   ├── make_resize_linear_test.py
-│   │   ├── resize_cubic_68x121_to_1080x1920.onnx
-│   │   └── resize_linear_68x121_to_1080x1920.onnx
-│   ├── deep_profile/
-│   │   ├── cprofile/
-│   │   │   ├── camera_preprocess_latest_0_pid2814034.cumtime.txt
-│   │   │   ├── camera_preprocess_latest_0_pid2814034.prof
-│   │   │   ├── camera_preprocess_latest_0_pid2814034.tottime.txt
-│   │   │   ├── camera_preprocess_latest_0_pid2822939.cumtime.txt
-│   │   │   ├── camera_preprocess_latest_0_pid2822939.prof
-│   │   │   ├── camera_preprocess_latest_0_pid2822939.tottime.txt
-│   │   │   ├── camera_preprocess_latest_1_pid2814035.cumtime.txt
-│   │   │   ├── camera_preprocess_latest_1_pid2814035.prof
-│   │   │   ├── camera_preprocess_latest_1_pid2814035.tottime.txt
-│   │   │   ├── camera_preprocess_latest_1_pid2821437.prof
-│   │   │   ├── camera_preprocess_latest_1_pid2822940.cumtime.txt
-│   │   │   ├── camera_preprocess_latest_1_pid2822940.prof
-│   │   │   ├── camera_preprocess_latest_1_pid2822940.tottime.txt
-│   │   │   ├── camera_preprocess_latest_2_pid2814036.cumtime.txt
-│   │   │   ├── camera_preprocess_latest_2_pid2814036.prof
-│   │   │   ├── camera_preprocess_latest_2_pid2814036.tottime.txt
-│   │   │   ├── camera_preprocess_latest_2_pid2821438.prof
-│   │   │   ├── camera_preprocess_latest_2_pid2822941.cumtime.txt
-│   │   │   ├── camera_preprocess_latest_2_pid2822941.prof
-│   │   │   ├── camera_preprocess_latest_2_pid2822941.tottime.txt
-│   │   │   ├── camera_preprocess_latest_3_pid2814037.cumtime.txt
-│   │   │   ├── camera_preprocess_latest_3_pid2814037.prof
-│   │   │   ├── camera_preprocess_latest_3_pid2814037.tottime.txt
-│   │   │   ├── camera_preprocess_latest_3_pid2821439.prof
-│   │   │   ├── camera_preprocess_latest_3_pid2822942.cumtime.txt
-│   │   │   ├── camera_preprocess_latest_3_pid2822942.prof
-│   │   │   ├── camera_preprocess_latest_3_pid2822942.tottime.txt
-│   │   │   ├── camera_preprocess_latest_4_pid2814038.cumtime.txt
-│   │   │   ├── camera_preprocess_latest_4_pid2814038.prof
-│   │   │   ├── camera_preprocess_latest_4_pid2814038.tottime.txt
-│   │   │   ├── camera_preprocess_latest_4_pid2821440.prof
-│   │   │   ├── camera_preprocess_latest_4_pid2822943.cumtime.txt
-│   │   │   ├── camera_preprocess_latest_4_pid2822943.prof
-│   │   │   ├── camera_preprocess_latest_4_pid2822943.tottime.txt
-│   │   │   ├── camera_preprocess_latest_5_pid2814039.cumtime.txt
-│   │   │   ├── camera_preprocess_latest_5_pid2814039.prof
-│   │   │   ├── camera_preprocess_latest_5_pid2814039.tottime.txt
-│   │   │   ├── camera_preprocess_latest_5_pid2821441.prof
-│   │   │   ├── camera_preprocess_latest_5_pid2822944.cumtime.txt
-│   │   │   ├── camera_preprocess_latest_5_pid2822944.prof
-│   │   │   ├── camera_preprocess_latest_5_pid2822944.tottime.txt
-│   │   │   ├── camera_preprocess_latest_6_pid2814040.cumtime.txt
-│   │   │   ├── camera_preprocess_latest_6_pid2814040.prof
-│   │   │   ├── camera_preprocess_latest_6_pid2814040.tottime.txt
-│   │   │   ├── camera_preprocess_latest_6_pid2821442.prof
-│   │   │   ├── camera_preprocess_latest_6_pid2822945.cumtime.txt
-│   │   │   ├── camera_preprocess_latest_6_pid2822945.prof
-│   │   │   ├── camera_preprocess_latest_6_pid2822945.tottime.txt
-│   │   │   ├── camera_preprocess_latest_7_pid2814041.cumtime.txt
-│   │   │   ├── camera_preprocess_latest_7_pid2814041.prof
-│   │   │   ├── camera_preprocess_latest_7_pid2814041.tottime.txt
-│   │   │   ├── camera_preprocess_latest_7_pid2821443.prof
-│   │   │   ├── camera_preprocess_latest_7_pid2822946.cumtime.txt
-│   │   │   ├── camera_preprocess_latest_7_pid2822946.prof
-│   │   │   ├── camera_preprocess_latest_7_pid2822946.tottime.txt
-│   │   │   ├── camera_preprocess_latest_8_pid2814042.cumtime.txt
-│   │   │   ├── camera_preprocess_latest_8_pid2814042.prof
-│   │   │   ├── camera_preprocess_latest_8_pid2814042.tottime.txt
-│   │   │   ├── camera_preprocess_latest_8_pid2821444.prof
-│   │   │   ├── camera_preprocess_latest_8_pid2822947.cumtime.txt
-│   │   │   ├── camera_preprocess_latest_8_pid2822947.prof
-│   │   │   ├── camera_preprocess_latest_8_pid2822947.tottime.txt
-│   │   │   ├── camera_preprocess_latest_9_pid2814043.cumtime.txt
-│   │   │   ├── camera_preprocess_latest_9_pid2814043.prof
-│   │   │   ├── camera_preprocess_latest_9_pid2814043.tottime.txt
-│   │   │   ├── camera_preprocess_latest_9_pid2821445.prof
-│   │   │   ├── camera_preprocess_latest_9_pid2822948.cumtime.txt
-│   │   │   ├── camera_preprocess_latest_9_pid2822948.prof
-│   │   │   ├── camera_preprocess_latest_9_pid2822948.tottime.txt
-│   │   │   ├── inference_latest_0_pid2814044.cumtime.txt
-│   │   │   ├── inference_latest_0_pid2814044.prof
-│   │   │   ├── inference_latest_0_pid2814044.tottime.txt
-│   │   │   ├── inference_latest_0_pid2821446.prof
-│   │   │   ├── inference_latest_0_pid2822949.cumtime.txt
-│   │   │   ├── inference_latest_0_pid2822949.prof
-│   │   │   ├── inference_latest_0_pid2822949.tottime.txt
-│   │   │   ├── inference_latest_0_pid2826030.cumtime.txt
-│   │   │   ├── inference_latest_0_pid2826030.prof
-│   │   │   ├── inference_latest_0_pid2826030.tottime.txt
-│   │   │   ├── inference_latest_1_pid2821447.prof
-│   │   │   ├── inference_latest_1_pid2822950.cumtime.txt
-│   │   │   ├── inference_latest_1_pid2822950.prof
-│   │   │   ├── inference_latest_1_pid2822950.tottime.txt
-│   │   │   ├── postprocess_latest_0_pid2814045.cumtime.txt
-│   │   │   ├── postprocess_latest_0_pid2814045.prof
-│   │   │   ├── postprocess_latest_0_pid2814045.tottime.txt
-│   │   │   ├── postprocess_latest_0_pid2821448.cumtime.txt
-│   │   │   ├── postprocess_latest_0_pid2821448.prof
-│   │   │   ├── postprocess_latest_0_pid2821448.tottime.txt
-│   │   │   ├── postprocess_latest_0_pid2822951.cumtime.txt
-│   │   │   ├── postprocess_latest_0_pid2822951.prof
-│   │   │   ├── postprocess_latest_0_pid2822951.tottime.txt
-│   │   │   ├── postprocess_latest_0_pid2826032.cumtime.txt
-│   │   │   ├── postprocess_latest_0_pid2826032.prof
-│   │   │   ├── postprocess_latest_0_pid2826032.tottime.txt
-│   │   │   ├── postprocess_latest_1_pid2814046.cumtime.txt
-│   │   │   ├── postprocess_latest_1_pid2814046.prof
-│   │   │   ├── postprocess_latest_1_pid2814046.tottime.txt
-│   │   │   ├── postprocess_latest_1_pid2821449.prof
-│   │   │   ├── postprocess_latest_1_pid2822952.cumtime.txt
-│   │   │   ├── postprocess_latest_1_pid2822952.prof
-│   │   │   ├── postprocess_latest_1_pid2822952.tottime.txt
-│   │   │   ├── postprocess_latest_1_pid2826033.cumtime.txt
-│   │   │   ├── postprocess_latest_1_pid2826033.prof
-│   │   │   ├── postprocess_latest_1_pid2826033.tottime.txt
-│   │   │   ├── postprocess_latest_2_pid2814047.cumtime.txt
-│   │   │   ├── postprocess_latest_2_pid2814047.prof
-│   │   │   ├── postprocess_latest_2_pid2814047.tottime.txt
-│   │   │   ├── postprocess_latest_2_pid2821450.cumtime.txt
-│   │   │   ├── postprocess_latest_2_pid2821450.prof
-│   │   │   ├── postprocess_latest_2_pid2821450.tottime.txt
-│   │   │   ├── postprocess_latest_2_pid2822953.cumtime.txt
-│   │   │   ├── postprocess_latest_2_pid2822953.prof
-│   │   │   ├── postprocess_latest_2_pid2822953.tottime.txt
-│   │   │   ├── postprocess_latest_2_pid2826034.cumtime.txt
-│   │   │   ├── postprocess_latest_2_pid2826034.prof
-│   │   │   ├── postprocess_latest_2_pid2826034.tottime.txt
-│   │   │   ├── postprocess_latest_3_pid2814048.cumtime.txt
-│   │   │   ├── postprocess_latest_3_pid2814048.prof
-│   │   │   ├── postprocess_latest_3_pid2814048.tottime.txt
-│   │   │   ├── postprocess_latest_3_pid2821451.cumtime.txt
-│   │   │   ├── postprocess_latest_3_pid2821451.prof
-│   │   │   ├── postprocess_latest_3_pid2821451.tottime.txt
-│   │   │   ├── postprocess_latest_3_pid2822954.cumtime.txt
-│   │   │   ├── postprocess_latest_3_pid2822954.prof
-│   │   │   ├── postprocess_latest_3_pid2822954.tottime.txt
-│   │   │   ├── postprocess_latest_3_pid2826035.cumtime.txt
-│   │   │   ├── postprocess_latest_3_pid2826035.prof
-│   │   │   ├── postprocess_latest_3_pid2826035.tottime.txt
-│   │   │   ├── postprocess_latest_4_pid2814049.cumtime.txt
-│   │   │   ├── postprocess_latest_4_pid2814049.prof
-│   │   │   ├── postprocess_latest_4_pid2814049.tottime.txt
-│   │   │   ├── postprocess_latest_4_pid2821452.prof
-│   │   │   ├── postprocess_latest_4_pid2822955.cumtime.txt
-│   │   │   ├── postprocess_latest_4_pid2822955.prof
-│   │   │   ├── postprocess_latest_4_pid2822955.tottime.txt
-│   │   │   ├── postprocess_latest_4_pid2826036.cumtime.txt
-│   │   │   ├── postprocess_latest_4_pid2826036.prof
-│   │   │   ├── postprocess_latest_4_pid2826036.tottime.txt
-│   │   │   ├── postprocess_latest_5_pid2821453.prof
-│   │   │   ├── postprocess_latest_5_pid2822956.cumtime.txt
-│   │   │   ├── postprocess_latest_5_pid2822956.prof
-│   │   │   └── postprocess_latest_5_pid2822956.tottime.txt
-│   │   ├── reports/
+│   ├── profile_migraphx_nms_k20_20260608_104100/
+│   │   ├── amd_smi_monitor.csv
+│   │   ├── amd_smi_monitor.err
+│   │   ├── amd_smi_process.csv
+│   │   ├── amd_smi_process.err
+│   │   ├── app_stderr.log
+│   │   ├── app_stdout.log
+│   │   ├── monitor_pids.txt
+│   │   ├── pidstat_python.err
+│   │   ├── pidstat_python.txt
+│   │   ├── ps_threads_cores.err
+│   │   ├── ps_threads_cores.txt
+│   │   └── sudo_keepalive.pid
+│   ├── rocm721_fused_pruned/
+│   │   ├── compile_mxr_b1_20260604_094121.log
+│   │   ├── compile_mxr_b1_full_20260604_094121.log
+│   │   ├── compile_mxr_b2_20260604_121749.log
+│   │   ├── compile_mxr_b2_20260604_121829.log
+│   │   ├── compile_mxr_b2_20260604_121831.log
+│   │   ├── compile_mxr_b2_20260604_122044.log
+│   │   ├── compile_mxr_b2_full_20260604_121749.log
+│   │   ├── compile_mxr_b2_full_20260604_121829.log
+│   │   ├── compile_mxr_b2_full_20260604_121831.log
+│   │   ├── compile_mxr_b4_20260604_132609.log
+│   │   ├── compile_mxr_b4_20260604_144448.log
+│   │   ├── compile_mxr_b8_20260604_133923.log
+│   │   ├── compile_mxr_b8_20260604_144519.log
+│   │   ├── export_post_b1.log
+│   │   ├── export_post_b2_20260604_122044.log
+│   │   ├── export_post_b4_20260604_132609.log
+│   │   ├── export_post_b4_20260604_144448.log
+│   │   ├── export_post_b8_20260604_133923.log
+│   │   ├── export_post_b8_20260604_144519.log
+│   │   ├── full_export_merge_compile_b2_20260604_122044.log
+│   │   ├── full_export_merge_compile_b4_20260604_132609.log
+│   │   ├── full_export_merge_compile_b4_20260604_144448.log
+│   │   ├── full_export_merge_compile_b8_20260604_133923.log
+│   │   ├── full_export_merge_compile_b8_20260604_144519.log
+│   │   ├── inspect_b1.log
+│   │   ├── inspect_b1_20260604_094007.log
+│   │   ├── inspect_b1_20260604_121656.log
+│   │   ├── inspect_b2_20260604_121749.log
+│   │   ├── inspect_b2_20260604_121829.log
+│   │   ├── inspect_b2_20260604_122044.log
+│   │   ├── inspect_b4_20260604_132609.log
+│   │   ├── inspect_b4_20260604_144448.log
+│   │   ├── inspect_b8_20260604_133923.log
+│   │   ├── inspect_b8_20260604_144519.log
+│   │   ├── merge_and_inspect_b1_20260604_094007.log
+│   │   ├── merge_and_inspect_b1_20260604_121656.log
+│   │   ├── merge_and_inspect_b2_20260604_121749.log
+│   │   ├── merge_and_inspect_b2_20260604_121829.log
+│   │   ├── merge_pose_post_b1.log
+│   │   ├── merge_pose_post_b1_20260604_094007.log
+│   │   ├── merge_pose_post_b1_20260604_121656.log
+│   │   ├── merge_pose_post_b2_20260604_121749.log
+│   │   ├── merge_pose_post_b2_20260604_121829.log
+│   │   ├── merge_pose_post_b2_20260604_122044.log
+│   │   ├── merge_pose_post_b4_20260604_132609.log
+│   │   ├── merge_pose_post_b4_20260604_144448.log
+│   │   ├── merge_pose_post_b8_20260604_133923.log
+│   │   └── merge_pose_post_b8_20260604_144519.log
+│   ├── rocm721_stream_tests/
+│   │   ├── merged_b1_10cam_grid60/
+│   │   │   ├── detailed.csv
+│   │   │   ├── run.log
+│   │   │   ├── run.logclear
+│   │   │   └── summary.json
+│   │   ├── merged_b1_smoke/
+│   │   │   └── run.log
+│   │   ├── merged_b1_smoke_fix/
+│   │   │   ├── detailed.csv
+│   │   │   ├── run.log
+│   │   │   └── summary.json
+│   │   ├── merged_b2_10cam_rt250/
+│   │   │   └── run.log
+│   │   ├── merged_b2_2cam_rt250/
+│   │   │   ├── detailed.csv
+│   │   │   ├── run.log
+│   │   │   └── summary.json
+│   │   ├── merged_b4_10cam_rt250/
+│   │   │   ├── detailed.csv
+│   │   │   ├── run.log
+│   │   │   └── summary.json
+│   │   ├── merged_b4_10cam_shared_input_pinned_rt250/
 │   │   │   ├── detailed.csv
 │   │   │   └── summary.json
-│   │   ├── detailed.csv
-│   │   └── summary.json
-│   ├── deep_profile_shared/
-│   │   ├── cprofile/
-│   │   │   ├── inference_latest_0_pid2841621.cumtime.txt
-│   │   │   ├── inference_latest_0_pid2841621.prof
-│   │   │   ├── inference_latest_0_pid2842569.cumtime.txt
-│   │   │   ├── inference_latest_0_pid2842569.prof
-│   │   │   ├── inference_latest_0_pid2842569.tottime.txt
-│   │   │   ├── postprocess_latest_0_pid2841622.cumtime.txt
-│   │   │   ├── postprocess_latest_0_pid2841622.prof
-│   │   │   ├── postprocess_latest_0_pid2842570.cumtime.txt
-│   │   │   ├── postprocess_latest_0_pid2842570.prof
-│   │   │   ├── postprocess_latest_0_pid2842570.tottime.txt
-│   │   │   ├── postprocess_latest_1_pid2841623.cumtime.txt
-│   │   │   ├── postprocess_latest_1_pid2841623.prof
-│   │   │   ├── postprocess_latest_1_pid2842571.cumtime.txt
-│   │   │   ├── postprocess_latest_1_pid2842571.prof
-│   │   │   ├── postprocess_latest_1_pid2842571.tottime.txt
-│   │   │   ├── postprocess_latest_2_pid2841624.cumtime.txt
-│   │   │   ├── postprocess_latest_2_pid2841624.prof
-│   │   │   ├── postprocess_latest_2_pid2842572.cumtime.txt
-│   │   │   ├── postprocess_latest_2_pid2842572.prof
-│   │   │   └── postprocess_latest_2_pid2842572.tottime.txt
-│   │   ├── detailed.csv
-│   │   └── summary.json
-│   ├── deep_profile_shared_p3_pinned/
-│   │   ├── cprofile/
-│   │   │   ├── inference_latest_0_pid2856209.cumtime.txt
-│   │   │   ├── inference_latest_0_pid2856209.prof
-│   │   │   ├── inference_latest_0_pid2856209.tottime.txt
-│   │   │   ├── postprocess_latest_0_pid2856210.cumtime.txt
-│   │   │   ├── postprocess_latest_0_pid2856210.prof
-│   │   │   ├── postprocess_latest_0_pid2856210.tottime.txt
-│   │   │   ├── postprocess_latest_1_pid2856211.cumtime.txt
-│   │   │   ├── postprocess_latest_1_pid2856211.prof
-│   │   │   ├── postprocess_latest_1_pid2856211.tottime.txt
-│   │   │   ├── postprocess_latest_2_pid2856212.cumtime.txt
-│   │   │   ├── postprocess_latest_2_pid2856212.prof
-│   │   │   └── postprocess_latest_2_pid2856212.tottime.txt
-│   │   ├── detailed.csv
-│   │   └── summary.json
-│   ├── deep_profile_shared_p3_warm/
-│   │   ├── cprofile/
-│   │   │   ├── inference_latest_0_pid2847475.cumtime.txt
-│   │   │   ├── inference_latest_0_pid2847475.prof
-│   │   │   ├── inference_latest_0_pid2847475.tottime.txt
-│   │   │   ├── postprocess_latest_0_pid2847476.cumtime.txt
-│   │   │   ├── postprocess_latest_0_pid2847476.prof
-│   │   │   ├── postprocess_latest_0_pid2847476.tottime.txt
-│   │   │   ├── postprocess_latest_1_pid2847477.cumtime.txt
-│   │   │   ├── postprocess_latest_1_pid2847477.prof
-│   │   │   ├── postprocess_latest_1_pid2847477.tottime.txt
-│   │   │   ├── postprocess_latest_2_pid2847478.cumtime.txt
-│   │   │   ├── postprocess_latest_2_pid2847478.prof
-│   │   │   └── postprocess_latest_2_pid2847478.tottime.txt
-│   │   ├── detailed.csv
-│   │   └── summary.json
-│   ├── recompile_fused_pruned_b1/
-│   │   ├── candidate_scripts.txt
-│   │   ├── fused_pruned_refs.txt
-│   │   └── merge_export.log
+│   │   ├── merged_b4_10cam_shared_input_rt250/
+│   │   │   ├── detailed.csv
+│   │   │   └── summary.json
+│   │   ├── merged_b8_10cam_rt250/
+│   │   │   ├── detailed.csv
+│   │   │   ├── run.log
+│   │   │   └── summary.json
+│   │   ├── merged_b8_10cam_shared_input_pinned_rt250/
+│   │   │   ├── detailed.csv
+│   │   │   └── summary.json
+│   │   ├── merged_b8_10cam_shared_input_pinned_rt250_rerun/
+│   │   │   ├── detailed.csv
+│   │   │   ├── run.log
+│   │   │   └── summary.json
+│   │   ├── mx_merged_grid_focused_250s/
+│   │   │   ├── b2_shmin_pin_fps24_to4_post3_thr1/
+│   │   │   │   ├── command.json
+│   │   │   │   ├── detailed.csv
+│   │   │   │   ├── run.log
+│   │   │   │   └── summary.json
+│   │   │   ├── b4_queuein_nopin_fps24_to8_post3_thr1/
+│   │   │   │   ├── command.json
+│   │   │   │   ├── detailed.csv
+│   │   │   │   ├── run.log
+│   │   │   │   └── summary.json
+│   │   │   ├── b4_queuein_pin_fps24_to8_post3_thr1/
+│   │   │   │   ├── command.json
+│   │   │   │   ├── detailed.csv
+│   │   │   │   ├── run.log
+│   │   │   │   └── summary.json
+│   │   │   ├── b4_shmin_nopin_fps24_to8_post3_thr1/
+│   │   │   │   ├── command.json
+│   │   │   │   ├── detailed.csv
+│   │   │   │   ├── run.log
+│   │   │   │   └── summary.json
+│   │   │   ├── b4_shmin_pin_fps24_to8_post3_thr1/
+│   │   │   │   ├── command.json
+│   │   │   │   ├── detailed.csv
+│   │   │   │   ├── run.log
+│   │   │   │   └── summary.json
+│   │   │   ├── b8_shmin_pin_fps24_to12_post3_thr1/
+│   │   │   │   ├── command.json
+│   │   │   │   ├── detailed.csv
+│   │   │   │   ├── run.log
+│   │   │   │   └── summary.json
+│   │   │   ├── grid_plan.json
+│   │   │   ├── grid_summary.csv
+│   │   │   └── grid_summary.json
+│   │   └── shared_input_smoke_b1_1cam/
+│   │       ├── detailed.csv
+│   │       └── summary.json
 │   ├── stream_simulation/
-│   │   └── fused_pruned_b1/
-│   ├── all_onnx_files.txt
-│   ├── build_batchaware_merged_b2_onnx_retry.log
-│   ├── compile_batchaware_b2_mxr.log
-│   ├── compile_batchaware_b2_trace.txt
-│   ├── compile_batchaware_b2_trace_trimmer.log
-│   ├── compile_batchaware_postprocess_only_b2_trace.txt
-│   ├── compile_merged_pose_fused_pruned_b1.log
-│   ├── compile_merged_pose_fused_pruned_b16.log
-│   ├── compile_merged_pose_fused_pruned_b2.log
-│   ├── compile_merged_pose_fused_pruned_b4.log
-│   ├── compile_merged_pose_fused_pruned_b8.log
-│   ├── compile_only_merged_pose_fused_pruned_b16_mxr.log
-│   ├── compile_only_merged_pose_fused_pruned_b2_mxr.log
-│   ├── compile_only_merged_pose_fused_pruned_b2_mxr_rocm724.log
-│   ├── compile_only_merged_pose_fused_pruned_b2_mxr_rocm724_trace.log
-│   ├── compile_only_merged_pose_fused_pruned_b4_mxr.log
-│   ├── compile_only_merged_pose_fused_pruned_b8_mxr.log
-│   ├── debug_stream_pruned_infer_b1_summary.json
-│   ├── driver_apply_cse_postprocess_b2.txt
-│   ├── export_batchaware_fused_pruned_b2_onnx.log
-│   ├── merge_batchaware_pose_fused_pruned_b2_onnx.log
-│   ├── migraphx_driver_read_pose_model1_fp16_ref1.txt
-│   ├── onnx_to_mxr_b2_trace_debug.txt
-│   ├── read__opt_rocm-7.2.4_bin_migraphx-driver.log
-│   ├── speed_hip_cubic_mx_topk.csv
-│   ├── speed_hip_cubic_mx_topk.json
-│   ├── speed_manual_cubic_mx_topk.csv
-│   ├── speed_manual_cubic_mx_topk.json
-│   ├── speed_manual_cubic_mx_topk_smoke.csv
-│   ├── speed_manual_cubic_mx_topk_smoke.json
-│   ├── speed_mx_fused_postprocess_660.csv
-│   ├── speed_mx_fused_postprocess_660.json
-│   ├── speed_mx_fused_postprocess_smoke.csv
-│   ├── speed_mx_fused_postprocess_smoke.json
-│   ├── speed_mx_paf_fullres_pair_scorer.csv
-│   ├── speed_mx_paf_fullres_pair_scorer.json
-│   ├── speed_mx_paf_fullres_pair_scorer_trace_test.csv
-│   ├── speed_mx_paf_fullres_pair_scorer_trace_test.json
-│   ├── speed_mx_paf_pair_scorer.csv
-│   ├── speed_mx_paf_pair_scorer.json
-│   ├── speed_mx_paf_pair_scorer_smoke.csv
-│   ├── speed_mx_paf_pair_scorer_smoke.json
-│   ├── speed_phase1_migraphx_nms.csv
-│   ├── speed_phase1_migraphx_nms.json
-│   ├── speed_phase1_migraphx_nms_separable.csv
-│   ├── speed_phase1_migraphx_nms_separable.json
-│   ├── speed_pose_batch_b2.json
-│   ├── speed_pose_batch_b4.json
-│   ├── speed_pose_batch_b8.json
-│   ├── speed_resize_nms_topk_bilinear.csv
-│   ├── speed_resize_nms_topk_bilinear.json
-│   ├── strace_23233_10s.txt
-│   ├── strace_23365_10s.txt
-│   ├── strace_23496_10s.txt
-│   ├── strace_23640_10s.txt
-│   ├── strace_b2_20s.txt
+│   │   └── merged_pose_fused_pruned_b4/
+│   │       ├── detailed_b4_20260605_084725.csv
+│   │       ├── run_b4_20260605_084725.log
+│   │       ├── run_b4_20260605_085651.log
+│   │       └── summary_b4_20260605_084725.json
+│   ├── .last_profile_run
 │   ├── stream_10cam_detailed.csv
-│   ├── stream_fused_infer_10cam_p1_detailed.csv
-│   ├── stream_fused_infer_10cam_p1_summary.json
-│   ├── stream_fused_infer_10cam_pinned.log
-│   ├── stream_fused_infer_10cam_pinned_detailed.csv
-│   ├── stream_fused_infer_10cam_pinned_summary.json
-│   ├── stream_fused_infer_10cam_system_profile.csv
-│   ├── stream_fused_infer_10cam_system_profile.json
-│   ├── stream_fused_infer_1cam_detailed.csv
-│   ├── stream_fused_infer_1cam_summary.json
-│   ├── stream_fused_postprocess_10cam_p1_detailed.csv
-│   ├── stream_fused_postprocess_10cam_p1_summary.json
-│   ├── stream_fused_postprocess_10cam_p3_detailed.csv
-│   ├── stream_fused_postprocess_10cam_p3_summary.json
-│   ├── stream_fused_postprocess_1cam_summary.json
-│   ├── stream_manual_cubic_topk_1cam_detailed.csv
-│   ├── stream_manual_cubic_topk_1cam_summary.json
-│   ├── stream_manual_cubic_topk_detailed.csv
-│   ├── stream_manual_cubic_topk_fused_10cam_p3_detailed.csv
-│   ├── stream_manual_cubic_topk_fused_10cam_p3_summary.json
-│   ├── stream_manual_cubic_topk_fused_1cam_detailed.csv
-│   ├── stream_manual_cubic_topk_fused_1cam_summary.json
-│   ├── stream_manual_cubic_topk_p1_detailed.csv
-│   ├── stream_manual_cubic_topk_p1_summary.json+
-│   ├── stream_manual_cubic_topk_summary.json
-│   ├── stream_merged_b1_10cam_p2_detailed.csv
-│   ├── stream_merged_b1_10cam_p2_summary.json
-│   ├── stream_merged_b1_10cam_p4_detailed.csv
-│   ├── stream_merged_b1_10cam_p4_summary.json
-│   ├── stream_merged_b1_1cam_detailed.csv
-│   ├── stream_merged_b1_1cam_summary.json
-│   ├── stream_pruned_infer_b1_1cam_detailed.csv
-│   ├── stream_pruned_infer_b1_1cam_summary.json
-│   ├── stream_pruned_infer_batch2_10cam_p8_detailed.csv
-│   ├── stream_pruned_infer_batch2_10cam_p8_summary.json
-│   ├── stream_pruned_infer_batch2_t10_10cam_p4_60s_detailed.csv
-│   ├── stream_pruned_infer_batch2_t10_10cam_p4_60s_summary.json
-│   ├── stream_pruned_infer_batch2_t10_10cam_p4_detailed.csv
-│   ├── stream_pruned_infer_batch2_t10_10cam_p4_summary.json
-│   ├── stream_pruned_infer_batch2_t3_10cam_p8_detailed.csv
-│   ├── stream_pruned_infer_batch2_t3_10cam_p8_summary.json
-│   ├── stream_pruned_infer_batch4_10cam_p8_detailed.csv
-│   ├── stream_pruned_infer_batch4_10cam_p8_summary.json
-│   ├── stream_pruned_infer_batch4_t3_10cam_p8_detailed.csv
-│   ├── stream_pruned_infer_batch4_t3_10cam_p8_summary.json
-│   ├── stream_pruned_v2_10cam_batch4_p1_detailed.csv
-│   ├── stream_pruned_v2_10cam_batch4_p1_summary.json
-│   ├── stream_pruned_v2_10cam_p4_detailed.csv
-│   ├── stream_pruned_v2_10cam_p4_summary.json
-│   ├── stream_pruned_v2_1cam_p1_detailed.csv
-│   ├── stream_pruned_v2_1cam_p1_summary.json
-│   ├── trace_compile_merged_b2.log
-│   ├── trace_log_trimmer.log
-│   ├── trace_mx_paf_fullres_pair_scorer.csv
-│   └── trace_mx_paf_fullres_pair_scorer.jsonl
+│   └── stream_10cam_summary.json
 ├── requirements/
 │   └── requirements.txt
 ├── scripts/
@@ -5544,6 +5313,7 @@ lightweight-human-pose-estimation.pytorch-AMD/
 │   ├── make_val_subset.py
 │   └── prepare_train_labels.py
 ├── tools/
+│   ├── apply_stream_shared_input_optimization.py
 │   ├── compile_merged_pose_batchaware_fused_pruned.py
 │   ├── compile_merged_pose_batchaware_fused_pruned.py.bak_toposort_adapter
 │   ├── compile_merged_pose_batchaware_fused_pruned.py.bak_toposort_adapter_flexible
@@ -5578,12 +5348,14 @@ lightweight-human-pose-estimation.pytorch-AMD/
 ├── compile_migraphx_dynamic.py
 ├── compile_migraphx_static_batches.py
 ├── compile_pruned_from_existing_onnx.py
+├── deep-research-report.md
 ├── demo.py
 ├── detections.json
 ├── diagnose_cached_postprocess.py
 ├── export_dynamic_onnx.py
 ├── fix_paf_fullres_batch_after_patch.py
 ├── fix_paf_fullres_batch_surgical.py
+├── helper_context.md
 ├── hotfix_migraphx_parse_onnx_fallback.py
 ├── integrate_fused_postprocessing.py
 ├── LICENSE
@@ -5606,8 +5378,12 @@ lightweight-human-pose-estimation.pytorch-AMD/
 ├── README.md
 ├── README_expanded.md
 ├── README_fused_pruned_v2.md
+├── run_mx_merged_stream_grid.py
 ├── simulate_10_camera_stream.py
+├── simulate_10_camera_stream.py.bak_before_final_mx_merged_fix
 ├── simulate_10_camera_stream.py.bak_before_merged_b1
+├── simulate_10_camera_stream.py.bak_before_mx_merged_postfix
+├── simulate_10_camera_stream.py.bak_shared_input
 ├── simulate_10_camera_stream_batched.py
 ├── simulate_10_camera_stream_merged_b1.py
 ├── speed_validation.py
@@ -5660,6 +5436,7 @@ Ovo je lista relativnih putanja koje možeš da koristiš u promptu:
 - `benchmark/benchmark_torch.py`
 - `benchmark/benchmark_torch_cpu.py`
 - `benchmark/postprocess_benchmark_summary.csv`
+- `build/hip_kernels/libhip_bicubic_resize.so`
 - `coco/annotations/captions_train2017.json`
 - `coco/annotations/captions_val2017.json`
 - `coco/annotations/instances_train2017.json`
@@ -10682,8 +10459,26 @@ Ovo je lista relativnih putanja koje možeš da koristiš u promptu:
 - `datasets/coco.py`
 - `datasets/transformations.py`
 - `hip_kernels/hip_bicubic_resize.cpp`
-- `models/fused_postprocess_pruned_cache/_parts/_parts/heatmap_manual_cubic_nms_topk_68x121_to_1080x1920_k20_thr0p1_r6_separable_am0p75.onnx`
-- `models/fused_postprocess_pruned_cache/_parts/_parts/heatmap_manual_cubic_nms_topk_68x121_to_1080x1920_k20_thr0p1_r6_separable_am0p75.onnx.data`
+- `models/fused_postprocess_pruned_batchaware/fused_pruned_batchaware_b1_68x121_to_1080x1920_k20_m20_thr0p1_r6_separable.onnx`
+- `models/fused_postprocess_pruned_batchaware/fused_pruned_batchaware_b1_68x121_to_1080x1920_k20_m20_thr0p1_r6_separable.onnx.data`
+- `models/fused_postprocess_pruned_batchaware/fused_pruned_batchaware_b2_68x121_to_1080x1920_k20_m20_thr0p1_r6_separable.onnx`
+- `models/fused_postprocess_pruned_batchaware/fused_pruned_batchaware_b2_68x121_to_1080x1920_k20_m20_thr0p1_r6_separable.onnx.data`
+- `models/fused_postprocess_pruned_batchaware/fused_pruned_batchaware_b4_68x121_to_1080x1920_k20_m20_thr0p1_r6_separable.onnx`
+- `models/fused_postprocess_pruned_batchaware/fused_pruned_batchaware_b4_68x121_to_1080x1920_k20_m20_thr0p1_r6_separable.onnx.data`
+- `models/fused_postprocess_pruned_batchaware/fused_pruned_batchaware_b8_68x121_to_1080x1920_k20_m20_thr0p1_r6_separable.onnx`
+- `models/fused_postprocess_pruned_batchaware/fused_pruned_batchaware_b8_68x121_to_1080x1920_k20_m20_thr0p1_r6_separable.onnx.data`
+- `models/merged_pose_fused_pruned_batchaware/pose_fused_pruned_batchaware_b1_1080x1920_k20_m20_thr0p1_r6_separable.debug.json`
+- `models/merged_pose_fused_pruned_batchaware/pose_fused_pruned_batchaware_b1_1080x1920_k20_m20_thr0p1_r6_separable.mxr`
+- `models/merged_pose_fused_pruned_batchaware/pose_fused_pruned_batchaware_b1_1080x1920_k20_m20_thr0p1_r6_separable.onnx`
+- `models/merged_pose_fused_pruned_batchaware/pose_fused_pruned_batchaware_b2_1080x1920_k20_m20_thr0p1_r6_separable.debug.json`
+- `models/merged_pose_fused_pruned_batchaware/pose_fused_pruned_batchaware_b2_1080x1920_k20_m20_thr0p1_r6_separable.mxr`
+- `models/merged_pose_fused_pruned_batchaware/pose_fused_pruned_batchaware_b2_1080x1920_k20_m20_thr0p1_r6_separable.onnx`
+- `models/merged_pose_fused_pruned_batchaware/pose_fused_pruned_batchaware_b4_1080x1920_k20_m20_thr0p1_r6_separable.debug.json`
+- `models/merged_pose_fused_pruned_batchaware/pose_fused_pruned_batchaware_b4_1080x1920_k20_m20_thr0p1_r6_separable.mxr`
+- `models/merged_pose_fused_pruned_batchaware/pose_fused_pruned_batchaware_b4_1080x1920_k20_m20_thr0p1_r6_separable.onnx`
+- `models/merged_pose_fused_pruned_batchaware/pose_fused_pruned_batchaware_b8_1080x1920_k20_m20_thr0p1_r6_separable.debug.json`
+- `models/merged_pose_fused_pruned_batchaware/pose_fused_pruned_batchaware_b8_1080x1920_k20_m20_thr0p1_r6_separable.mxr`
+- `models/merged_pose_fused_pruned_batchaware/pose_fused_pruned_batchaware_b8_1080x1920_k20_m20_thr0p1_r6_separable.onnx`
 - `models/__init__.py`
 - `models/checkpoint_iter_370000.pth`
 - `models/fp16_refinment1.onnx`
@@ -10741,375 +10536,136 @@ Ovo je lista relativnih putanja koje možeš da koristiš u promptu:
 - `modules/one_euro_filter.py`
 - `modules/pose.py`
 - `modules/postprocessing.py`
-- `outputs/accuracy_manual_cubic_mx_topk_500/pose_model1_fp16_ref1/detections_migraphx_manual_cubic_nms_topk_k20.json`
-- `outputs/accuracy_manual_cubic_mx_topk_500/pose_model1_fp16_ref1/detections_optimized_batch_k20_fast.json`
-- `outputs/accuracy_manual_cubic_mx_topk_500/accuracy_manual_cubic_mx_topk_summary.csv`
-- `outputs/accuracy_manual_cubic_mx_topk_500/accuracy_manual_cubic_mx_topk_summary.json`
-- `outputs/accuracy_manual_cubic_mx_topk_500_cached/pose_model1_fp16_ref1/detections_migraphx_manual_cubic_nms_topk_k20.json`
-- `outputs/accuracy_manual_cubic_mx_topk_500_cached/pose_model1_fp16_ref1/detections_optimized_batch_k20_fast.json`
-- `outputs/accuracy_manual_cubic_mx_topk_500_cached/accuracy_manual_cubic_mx_topk_summary.csv`
-- `outputs/accuracy_manual_cubic_mx_topk_500_cached/accuracy_manual_cubic_mx_topk_summary.json`
-- `outputs/accuracy_mx_fused_postprocess_100/pose_model1_fp16_ref1/detections_mx_fused_cubic_topk_fullres_paf_k20.json`
-- `outputs/accuracy_mx_fused_postprocess_100/pose_model1_fp16_ref1/detections_optimized_batch_k20_fast.json`
-- `outputs/accuracy_mx_fused_postprocess_100/accuracy_mx_fused_postprocess_summary.csv`
-- `outputs/accuracy_mx_fused_postprocess_100/accuracy_mx_fused_postprocess_summary.json`
-- `outputs/accuracy_mx_fused_postprocess_100/selected_images.csv`
-- `outputs/accuracy_mx_fused_postprocess_100/selected_images.json`
-- `outputs/accuracy_mx_fused_postprocess_100/selected_shapes.csv`
-- `outputs/accuracy_mx_fused_postprocess_100/selected_shapes.json`
-- `outputs/accuracy_mx_fused_postprocess_100/shape_counts.csv`
-- `outputs/accuracy_mx_fused_postprocess_100/shape_counts.json`
-- `outputs/accuracy_mx_fused_postprocess_100_plan/selected_images.csv`
-- `outputs/accuracy_mx_fused_postprocess_100_plan/selected_images.json`
-- `outputs/accuracy_mx_fused_postprocess_100_plan/selected_shapes.csv`
-- `outputs/accuracy_mx_fused_postprocess_100_plan/selected_shapes.json`
-- `outputs/accuracy_mx_fused_postprocess_100_plan/shape_counts.csv`
-- `outputs/accuracy_mx_fused_postprocess_100_plan/shape_counts.json`
-- `outputs/accuracy_mx_paf_pair_scorer_50/pose_model1_fp16_ref1/detections_mx_cubic_topk_paf_scorer_k20.json`
-- `outputs/accuracy_mx_paf_pair_scorer_50/pose_model1_fp16_ref1/detections_optimized_batch_k20_fast.json`
-- `outputs/accuracy_mx_paf_pair_scorer_50/accuracy_mx_paf_pair_scorer_summary.csv`
-- `outputs/accuracy_mx_paf_pair_scorer_50/accuracy_mx_paf_pair_scorer_summary.json`
-- `outputs/accuracy_mx_paf_pair_scorer_500/pose_model1_fp16_ref1/detections_mx_cubic_topk_paf_scorer_k20.json`
-- `outputs/accuracy_mx_paf_pair_scorer_500/pose_model1_fp16_ref1/detections_optimized_batch_k20_fast.json`
-- `outputs/accuracy_mx_paf_pair_scorer_500/accuracy_mx_paf_pair_scorer_summary.csv`
-- `outputs/accuracy_mx_paf_pair_scorer_500/accuracy_mx_paf_pair_scorer_summary.json`
-- `outputs/accuracy_resize_nms_topk_50/pose_model1_fp16_ref1/detections_migraphx_resize_nms_topk_k20.json`
-- `outputs/accuracy_resize_nms_topk_50/pose_model1_fp16_ref1/detections_optimized_batch_k20_fast.json`
-- `outputs/accuracy_resize_nms_topk_50/accuracy_resize_nms_topk_summary.csv`
-- `outputs/accuracy_resize_nms_topk_50/accuracy_resize_nms_topk_summary.json`
-- `outputs/accuracy_resize_nms_topk_500/pose_model1_fp16_ref1/detections_migraphx_resize_nms_topk_k20.json`
-- `outputs/accuracy_resize_nms_topk_500/pose_model1_fp16_ref1/detections_optimized_batch_k20_fast.json`
-- `outputs/accuracy_resize_nms_topk_500/accuracy_resize_nms_topk_summary.csv`
-- `outputs/accuracy_resize_nms_topk_500/accuracy_resize_nms_topk_summary.json`
-- `outputs/accuracy_resize_nms_topk_k30_500/pose_model1_fp16_ref1/detections_migraphx_resize_nms_topk_k20.json`
-- `outputs/accuracy_resize_nms_topk_k30_500/pose_model1_fp16_ref1/detections_optimized_batch_k20_fast.json`
-- `outputs/accuracy_resize_nms_topk_k30_500/accuracy_resize_nms_topk_summary.csv`
-- `outputs/accuracy_resize_nms_topk_k30_500/accuracy_resize_nms_topk_summary.json`
-- `outputs/debug_onnx/compile_resize_linear_migraphx_trace.txt`
-- `outputs/debug_onnx/identity_test.mxr`
-- `outputs/debug_onnx/identity_test.onnx`
-- `outputs/debug_onnx/make_identity_test.py`
-- `outputs/debug_onnx/make_resize_cubic_test.py`
-- `outputs/debug_onnx/make_resize_linear_test.py`
-- `outputs/debug_onnx/resize_cubic_68x121_to_1080x1920.onnx`
-- `outputs/debug_onnx/resize_linear_68x121_to_1080x1920.onnx`
-- `outputs/deep_profile/cprofile/camera_preprocess_latest_0_pid2814034.cumtime.txt`
-- `outputs/deep_profile/cprofile/camera_preprocess_latest_0_pid2814034.prof`
-- `outputs/deep_profile/cprofile/camera_preprocess_latest_0_pid2814034.tottime.txt`
-- `outputs/deep_profile/cprofile/camera_preprocess_latest_0_pid2822939.cumtime.txt`
-- `outputs/deep_profile/cprofile/camera_preprocess_latest_0_pid2822939.prof`
-- `outputs/deep_profile/cprofile/camera_preprocess_latest_0_pid2822939.tottime.txt`
-- `outputs/deep_profile/cprofile/camera_preprocess_latest_1_pid2814035.cumtime.txt`
-- `outputs/deep_profile/cprofile/camera_preprocess_latest_1_pid2814035.prof`
-- `outputs/deep_profile/cprofile/camera_preprocess_latest_1_pid2814035.tottime.txt`
-- `outputs/deep_profile/cprofile/camera_preprocess_latest_1_pid2821437.prof`
-- `outputs/deep_profile/cprofile/camera_preprocess_latest_1_pid2822940.cumtime.txt`
-- `outputs/deep_profile/cprofile/camera_preprocess_latest_1_pid2822940.prof`
-- `outputs/deep_profile/cprofile/camera_preprocess_latest_1_pid2822940.tottime.txt`
-- `outputs/deep_profile/cprofile/camera_preprocess_latest_2_pid2814036.cumtime.txt`
-- `outputs/deep_profile/cprofile/camera_preprocess_latest_2_pid2814036.prof`
-- `outputs/deep_profile/cprofile/camera_preprocess_latest_2_pid2814036.tottime.txt`
-- `outputs/deep_profile/cprofile/camera_preprocess_latest_2_pid2821438.prof`
-- `outputs/deep_profile/cprofile/camera_preprocess_latest_2_pid2822941.cumtime.txt`
-- `outputs/deep_profile/cprofile/camera_preprocess_latest_2_pid2822941.prof`
-- `outputs/deep_profile/cprofile/camera_preprocess_latest_2_pid2822941.tottime.txt`
-- `outputs/deep_profile/cprofile/camera_preprocess_latest_3_pid2814037.cumtime.txt`
-- `outputs/deep_profile/cprofile/camera_preprocess_latest_3_pid2814037.prof`
-- `outputs/deep_profile/cprofile/camera_preprocess_latest_3_pid2814037.tottime.txt`
-- `outputs/deep_profile/cprofile/camera_preprocess_latest_3_pid2821439.prof`
-- `outputs/deep_profile/cprofile/camera_preprocess_latest_3_pid2822942.cumtime.txt`
-- `outputs/deep_profile/cprofile/camera_preprocess_latest_3_pid2822942.prof`
-- `outputs/deep_profile/cprofile/camera_preprocess_latest_3_pid2822942.tottime.txt`
-- `outputs/deep_profile/cprofile/camera_preprocess_latest_4_pid2814038.cumtime.txt`
-- `outputs/deep_profile/cprofile/camera_preprocess_latest_4_pid2814038.prof`
-- `outputs/deep_profile/cprofile/camera_preprocess_latest_4_pid2814038.tottime.txt`
-- `outputs/deep_profile/cprofile/camera_preprocess_latest_4_pid2821440.prof`
-- `outputs/deep_profile/cprofile/camera_preprocess_latest_4_pid2822943.cumtime.txt`
-- `outputs/deep_profile/cprofile/camera_preprocess_latest_4_pid2822943.prof`
-- `outputs/deep_profile/cprofile/camera_preprocess_latest_4_pid2822943.tottime.txt`
-- `outputs/deep_profile/cprofile/camera_preprocess_latest_5_pid2814039.cumtime.txt`
-- `outputs/deep_profile/cprofile/camera_preprocess_latest_5_pid2814039.prof`
-- `outputs/deep_profile/cprofile/camera_preprocess_latest_5_pid2814039.tottime.txt`
-- `outputs/deep_profile/cprofile/camera_preprocess_latest_5_pid2821441.prof`
-- `outputs/deep_profile/cprofile/camera_preprocess_latest_5_pid2822944.cumtime.txt`
-- `outputs/deep_profile/cprofile/camera_preprocess_latest_5_pid2822944.prof`
-- `outputs/deep_profile/cprofile/camera_preprocess_latest_5_pid2822944.tottime.txt`
-- `outputs/deep_profile/cprofile/camera_preprocess_latest_6_pid2814040.cumtime.txt`
-- `outputs/deep_profile/cprofile/camera_preprocess_latest_6_pid2814040.prof`
-- `outputs/deep_profile/cprofile/camera_preprocess_latest_6_pid2814040.tottime.txt`
-- `outputs/deep_profile/cprofile/camera_preprocess_latest_6_pid2821442.prof`
-- `outputs/deep_profile/cprofile/camera_preprocess_latest_6_pid2822945.cumtime.txt`
-- `outputs/deep_profile/cprofile/camera_preprocess_latest_6_pid2822945.prof`
-- `outputs/deep_profile/cprofile/camera_preprocess_latest_6_pid2822945.tottime.txt`
-- `outputs/deep_profile/cprofile/camera_preprocess_latest_7_pid2814041.cumtime.txt`
-- `outputs/deep_profile/cprofile/camera_preprocess_latest_7_pid2814041.prof`
-- `outputs/deep_profile/cprofile/camera_preprocess_latest_7_pid2814041.tottime.txt`
-- `outputs/deep_profile/cprofile/camera_preprocess_latest_7_pid2821443.prof`
-- `outputs/deep_profile/cprofile/camera_preprocess_latest_7_pid2822946.cumtime.txt`
-- `outputs/deep_profile/cprofile/camera_preprocess_latest_7_pid2822946.prof`
-- `outputs/deep_profile/cprofile/camera_preprocess_latest_7_pid2822946.tottime.txt`
-- `outputs/deep_profile/cprofile/camera_preprocess_latest_8_pid2814042.cumtime.txt`
-- `outputs/deep_profile/cprofile/camera_preprocess_latest_8_pid2814042.prof`
-- `outputs/deep_profile/cprofile/camera_preprocess_latest_8_pid2814042.tottime.txt`
-- `outputs/deep_profile/cprofile/camera_preprocess_latest_8_pid2821444.prof`
-- `outputs/deep_profile/cprofile/camera_preprocess_latest_8_pid2822947.cumtime.txt`
-- `outputs/deep_profile/cprofile/camera_preprocess_latest_8_pid2822947.prof`
-- `outputs/deep_profile/cprofile/camera_preprocess_latest_8_pid2822947.tottime.txt`
-- `outputs/deep_profile/cprofile/camera_preprocess_latest_9_pid2814043.cumtime.txt`
-- `outputs/deep_profile/cprofile/camera_preprocess_latest_9_pid2814043.prof`
-- `outputs/deep_profile/cprofile/camera_preprocess_latest_9_pid2814043.tottime.txt`
-- `outputs/deep_profile/cprofile/camera_preprocess_latest_9_pid2821445.prof`
-- `outputs/deep_profile/cprofile/camera_preprocess_latest_9_pid2822948.cumtime.txt`
-- `outputs/deep_profile/cprofile/camera_preprocess_latest_9_pid2822948.prof`
-- `outputs/deep_profile/cprofile/camera_preprocess_latest_9_pid2822948.tottime.txt`
-- `outputs/deep_profile/cprofile/inference_latest_0_pid2814044.cumtime.txt`
-- `outputs/deep_profile/cprofile/inference_latest_0_pid2814044.prof`
-- `outputs/deep_profile/cprofile/inference_latest_0_pid2814044.tottime.txt`
-- `outputs/deep_profile/cprofile/inference_latest_0_pid2821446.prof`
-- `outputs/deep_profile/cprofile/inference_latest_0_pid2822949.cumtime.txt`
-- `outputs/deep_profile/cprofile/inference_latest_0_pid2822949.prof`
-- `outputs/deep_profile/cprofile/inference_latest_0_pid2822949.tottime.txt`
-- `outputs/deep_profile/cprofile/inference_latest_0_pid2826030.cumtime.txt`
-- `outputs/deep_profile/cprofile/inference_latest_0_pid2826030.prof`
-- `outputs/deep_profile/cprofile/inference_latest_0_pid2826030.tottime.txt`
-- `outputs/deep_profile/cprofile/inference_latest_1_pid2821447.prof`
-- `outputs/deep_profile/cprofile/inference_latest_1_pid2822950.cumtime.txt`
-- `outputs/deep_profile/cprofile/inference_latest_1_pid2822950.prof`
-- `outputs/deep_profile/cprofile/inference_latest_1_pid2822950.tottime.txt`
-- `outputs/deep_profile/cprofile/postprocess_latest_0_pid2814045.cumtime.txt`
-- `outputs/deep_profile/cprofile/postprocess_latest_0_pid2814045.prof`
-- `outputs/deep_profile/cprofile/postprocess_latest_0_pid2814045.tottime.txt`
-- `outputs/deep_profile/cprofile/postprocess_latest_0_pid2821448.cumtime.txt`
-- `outputs/deep_profile/cprofile/postprocess_latest_0_pid2821448.prof`
-- `outputs/deep_profile/cprofile/postprocess_latest_0_pid2821448.tottime.txt`
-- `outputs/deep_profile/cprofile/postprocess_latest_0_pid2822951.cumtime.txt`
-- `outputs/deep_profile/cprofile/postprocess_latest_0_pid2822951.prof`
-- `outputs/deep_profile/cprofile/postprocess_latest_0_pid2822951.tottime.txt`
-- `outputs/deep_profile/cprofile/postprocess_latest_0_pid2826032.cumtime.txt`
-- `outputs/deep_profile/cprofile/postprocess_latest_0_pid2826032.prof`
-- `outputs/deep_profile/cprofile/postprocess_latest_0_pid2826032.tottime.txt`
-- `outputs/deep_profile/cprofile/postprocess_latest_1_pid2814046.cumtime.txt`
-- `outputs/deep_profile/cprofile/postprocess_latest_1_pid2814046.prof`
-- `outputs/deep_profile/cprofile/postprocess_latest_1_pid2814046.tottime.txt`
-- `outputs/deep_profile/cprofile/postprocess_latest_1_pid2821449.prof`
-- `outputs/deep_profile/cprofile/postprocess_latest_1_pid2822952.cumtime.txt`
-- `outputs/deep_profile/cprofile/postprocess_latest_1_pid2822952.prof`
-- `outputs/deep_profile/cprofile/postprocess_latest_1_pid2822952.tottime.txt`
-- `outputs/deep_profile/cprofile/postprocess_latest_1_pid2826033.cumtime.txt`
-- `outputs/deep_profile/cprofile/postprocess_latest_1_pid2826033.prof`
-- `outputs/deep_profile/cprofile/postprocess_latest_1_pid2826033.tottime.txt`
-- `outputs/deep_profile/cprofile/postprocess_latest_2_pid2814047.cumtime.txt`
-- `outputs/deep_profile/cprofile/postprocess_latest_2_pid2814047.prof`
-- `outputs/deep_profile/cprofile/postprocess_latest_2_pid2814047.tottime.txt`
-- `outputs/deep_profile/cprofile/postprocess_latest_2_pid2821450.cumtime.txt`
-- `outputs/deep_profile/cprofile/postprocess_latest_2_pid2821450.prof`
-- `outputs/deep_profile/cprofile/postprocess_latest_2_pid2821450.tottime.txt`
-- `outputs/deep_profile/cprofile/postprocess_latest_2_pid2822953.cumtime.txt`
-- `outputs/deep_profile/cprofile/postprocess_latest_2_pid2822953.prof`
-- `outputs/deep_profile/cprofile/postprocess_latest_2_pid2822953.tottime.txt`
-- `outputs/deep_profile/cprofile/postprocess_latest_2_pid2826034.cumtime.txt`
-- `outputs/deep_profile/cprofile/postprocess_latest_2_pid2826034.prof`
-- `outputs/deep_profile/cprofile/postprocess_latest_2_pid2826034.tottime.txt`
-- `outputs/deep_profile/cprofile/postprocess_latest_3_pid2814048.cumtime.txt`
-- `outputs/deep_profile/cprofile/postprocess_latest_3_pid2814048.prof`
-- `outputs/deep_profile/cprofile/postprocess_latest_3_pid2814048.tottime.txt`
-- `outputs/deep_profile/cprofile/postprocess_latest_3_pid2821451.cumtime.txt`
-- `outputs/deep_profile/cprofile/postprocess_latest_3_pid2821451.prof`
-- `outputs/deep_profile/cprofile/postprocess_latest_3_pid2821451.tottime.txt`
-- `outputs/deep_profile/cprofile/postprocess_latest_3_pid2822954.cumtime.txt`
-- `outputs/deep_profile/cprofile/postprocess_latest_3_pid2822954.prof`
-- `outputs/deep_profile/cprofile/postprocess_latest_3_pid2822954.tottime.txt`
-- `outputs/deep_profile/cprofile/postprocess_latest_3_pid2826035.cumtime.txt`
-- `outputs/deep_profile/cprofile/postprocess_latest_3_pid2826035.prof`
-- `outputs/deep_profile/cprofile/postprocess_latest_3_pid2826035.tottime.txt`
-- `outputs/deep_profile/cprofile/postprocess_latest_4_pid2814049.cumtime.txt`
-- `outputs/deep_profile/cprofile/postprocess_latest_4_pid2814049.prof`
-- `outputs/deep_profile/cprofile/postprocess_latest_4_pid2814049.tottime.txt`
-- `outputs/deep_profile/cprofile/postprocess_latest_4_pid2821452.prof`
-- `outputs/deep_profile/cprofile/postprocess_latest_4_pid2822955.cumtime.txt`
-- `outputs/deep_profile/cprofile/postprocess_latest_4_pid2822955.prof`
-- `outputs/deep_profile/cprofile/postprocess_latest_4_pid2822955.tottime.txt`
-- `outputs/deep_profile/cprofile/postprocess_latest_4_pid2826036.cumtime.txt`
-- `outputs/deep_profile/cprofile/postprocess_latest_4_pid2826036.prof`
-- `outputs/deep_profile/cprofile/postprocess_latest_4_pid2826036.tottime.txt`
-- `outputs/deep_profile/cprofile/postprocess_latest_5_pid2821453.prof`
-- `outputs/deep_profile/cprofile/postprocess_latest_5_pid2822956.cumtime.txt`
-- `outputs/deep_profile/cprofile/postprocess_latest_5_pid2822956.prof`
-- `outputs/deep_profile/cprofile/postprocess_latest_5_pid2822956.tottime.txt`
-- `outputs/deep_profile/reports/detailed.csv`
-- `outputs/deep_profile/reports/summary.json`
-- `outputs/deep_profile/detailed.csv`
-- `outputs/deep_profile/summary.json`
-- `outputs/deep_profile_shared/cprofile/inference_latest_0_pid2841621.cumtime.txt`
-- `outputs/deep_profile_shared/cprofile/inference_latest_0_pid2841621.prof`
-- `outputs/deep_profile_shared/cprofile/inference_latest_0_pid2842569.cumtime.txt`
-- `outputs/deep_profile_shared/cprofile/inference_latest_0_pid2842569.prof`
-- `outputs/deep_profile_shared/cprofile/inference_latest_0_pid2842569.tottime.txt`
-- `outputs/deep_profile_shared/cprofile/postprocess_latest_0_pid2841622.cumtime.txt`
-- `outputs/deep_profile_shared/cprofile/postprocess_latest_0_pid2841622.prof`
-- `outputs/deep_profile_shared/cprofile/postprocess_latest_0_pid2842570.cumtime.txt`
-- `outputs/deep_profile_shared/cprofile/postprocess_latest_0_pid2842570.prof`
-- `outputs/deep_profile_shared/cprofile/postprocess_latest_0_pid2842570.tottime.txt`
-- `outputs/deep_profile_shared/cprofile/postprocess_latest_1_pid2841623.cumtime.txt`
-- `outputs/deep_profile_shared/cprofile/postprocess_latest_1_pid2841623.prof`
-- `outputs/deep_profile_shared/cprofile/postprocess_latest_1_pid2842571.cumtime.txt`
-- `outputs/deep_profile_shared/cprofile/postprocess_latest_1_pid2842571.prof`
-- `outputs/deep_profile_shared/cprofile/postprocess_latest_1_pid2842571.tottime.txt`
-- `outputs/deep_profile_shared/cprofile/postprocess_latest_2_pid2841624.cumtime.txt`
-- `outputs/deep_profile_shared/cprofile/postprocess_latest_2_pid2841624.prof`
-- `outputs/deep_profile_shared/cprofile/postprocess_latest_2_pid2842572.cumtime.txt`
-- `outputs/deep_profile_shared/cprofile/postprocess_latest_2_pid2842572.prof`
-- `outputs/deep_profile_shared/cprofile/postprocess_latest_2_pid2842572.tottime.txt`
-- `outputs/deep_profile_shared/detailed.csv`
-- `outputs/deep_profile_shared/summary.json`
-- `outputs/deep_profile_shared_p3_pinned/cprofile/inference_latest_0_pid2856209.cumtime.txt`
-- `outputs/deep_profile_shared_p3_pinned/cprofile/inference_latest_0_pid2856209.prof`
-- `outputs/deep_profile_shared_p3_pinned/cprofile/inference_latest_0_pid2856209.tottime.txt`
-- `outputs/deep_profile_shared_p3_pinned/cprofile/postprocess_latest_0_pid2856210.cumtime.txt`
-- `outputs/deep_profile_shared_p3_pinned/cprofile/postprocess_latest_0_pid2856210.prof`
-- `outputs/deep_profile_shared_p3_pinned/cprofile/postprocess_latest_0_pid2856210.tottime.txt`
-- `outputs/deep_profile_shared_p3_pinned/cprofile/postprocess_latest_1_pid2856211.cumtime.txt`
-- `outputs/deep_profile_shared_p3_pinned/cprofile/postprocess_latest_1_pid2856211.prof`
-- `outputs/deep_profile_shared_p3_pinned/cprofile/postprocess_latest_1_pid2856211.tottime.txt`
-- `outputs/deep_profile_shared_p3_pinned/cprofile/postprocess_latest_2_pid2856212.cumtime.txt`
-- `outputs/deep_profile_shared_p3_pinned/cprofile/postprocess_latest_2_pid2856212.prof`
-- `outputs/deep_profile_shared_p3_pinned/cprofile/postprocess_latest_2_pid2856212.tottime.txt`
-- `outputs/deep_profile_shared_p3_pinned/detailed.csv`
-- `outputs/deep_profile_shared_p3_pinned/summary.json`
-- `outputs/deep_profile_shared_p3_warm/cprofile/inference_latest_0_pid2847475.cumtime.txt`
-- `outputs/deep_profile_shared_p3_warm/cprofile/inference_latest_0_pid2847475.prof`
-- `outputs/deep_profile_shared_p3_warm/cprofile/inference_latest_0_pid2847475.tottime.txt`
-- `outputs/deep_profile_shared_p3_warm/cprofile/postprocess_latest_0_pid2847476.cumtime.txt`
-- `outputs/deep_profile_shared_p3_warm/cprofile/postprocess_latest_0_pid2847476.prof`
-- `outputs/deep_profile_shared_p3_warm/cprofile/postprocess_latest_0_pid2847476.tottime.txt`
-- `outputs/deep_profile_shared_p3_warm/cprofile/postprocess_latest_1_pid2847477.cumtime.txt`
-- `outputs/deep_profile_shared_p3_warm/cprofile/postprocess_latest_1_pid2847477.prof`
-- `outputs/deep_profile_shared_p3_warm/cprofile/postprocess_latest_1_pid2847477.tottime.txt`
-- `outputs/deep_profile_shared_p3_warm/cprofile/postprocess_latest_2_pid2847478.cumtime.txt`
-- `outputs/deep_profile_shared_p3_warm/cprofile/postprocess_latest_2_pid2847478.prof`
-- `outputs/deep_profile_shared_p3_warm/cprofile/postprocess_latest_2_pid2847478.tottime.txt`
-- `outputs/deep_profile_shared_p3_warm/detailed.csv`
-- `outputs/deep_profile_shared_p3_warm/summary.json`
-- `outputs/recompile_fused_pruned_b1/candidate_scripts.txt`
-- `outputs/recompile_fused_pruned_b1/fused_pruned_refs.txt`
-- `outputs/recompile_fused_pruned_b1/merge_export.log`
-- `outputs/all_onnx_files.txt`
-- `outputs/build_batchaware_merged_b2_onnx_retry.log`
-- `outputs/compile_batchaware_b2_mxr.log`
-- `outputs/compile_batchaware_b2_trace.txt`
-- `outputs/compile_batchaware_b2_trace_trimmer.log`
-- `outputs/compile_batchaware_postprocess_only_b2_trace.txt`
-- `outputs/compile_merged_pose_fused_pruned_b1.log`
-- `outputs/compile_merged_pose_fused_pruned_b16.log`
-- `outputs/compile_merged_pose_fused_pruned_b2.log`
-- `outputs/compile_merged_pose_fused_pruned_b4.log`
-- `outputs/compile_merged_pose_fused_pruned_b8.log`
-- `outputs/compile_only_merged_pose_fused_pruned_b16_mxr.log`
-- `outputs/compile_only_merged_pose_fused_pruned_b2_mxr.log`
-- `outputs/compile_only_merged_pose_fused_pruned_b2_mxr_rocm724.log`
-- `outputs/compile_only_merged_pose_fused_pruned_b2_mxr_rocm724_trace.log`
-- `outputs/compile_only_merged_pose_fused_pruned_b4_mxr.log`
-- `outputs/compile_only_merged_pose_fused_pruned_b8_mxr.log`
-- `outputs/debug_stream_pruned_infer_b1_summary.json`
-- `outputs/driver_apply_cse_postprocess_b2.txt`
-- `outputs/export_batchaware_fused_pruned_b2_onnx.log`
-- `outputs/merge_batchaware_pose_fused_pruned_b2_onnx.log`
-- `outputs/migraphx_driver_read_pose_model1_fp16_ref1.txt`
-- `outputs/onnx_to_mxr_b2_trace_debug.txt`
-- `outputs/read__opt_rocm-7.2.4_bin_migraphx-driver.log`
-- `outputs/speed_hip_cubic_mx_topk.csv`
-- `outputs/speed_hip_cubic_mx_topk.json`
-- `outputs/speed_manual_cubic_mx_topk.csv`
-- `outputs/speed_manual_cubic_mx_topk.json`
-- `outputs/speed_manual_cubic_mx_topk_smoke.csv`
-- `outputs/speed_manual_cubic_mx_topk_smoke.json`
-- `outputs/speed_mx_fused_postprocess_660.csv`
-- `outputs/speed_mx_fused_postprocess_660.json`
-- `outputs/speed_mx_fused_postprocess_smoke.csv`
-- `outputs/speed_mx_fused_postprocess_smoke.json`
-- `outputs/speed_mx_paf_fullres_pair_scorer.csv`
-- `outputs/speed_mx_paf_fullres_pair_scorer.json`
-- `outputs/speed_mx_paf_fullres_pair_scorer_trace_test.csv`
-- `outputs/speed_mx_paf_fullres_pair_scorer_trace_test.json`
-- `outputs/speed_mx_paf_pair_scorer.csv`
-- `outputs/speed_mx_paf_pair_scorer.json`
-- `outputs/speed_mx_paf_pair_scorer_smoke.csv`
-- `outputs/speed_mx_paf_pair_scorer_smoke.json`
-- `outputs/speed_phase1_migraphx_nms.csv`
-- `outputs/speed_phase1_migraphx_nms.json`
-- `outputs/speed_phase1_migraphx_nms_separable.csv`
-- `outputs/speed_phase1_migraphx_nms_separable.json`
-- `outputs/speed_pose_batch_b2.json`
-- `outputs/speed_pose_batch_b4.json`
-- `outputs/speed_pose_batch_b8.json`
-- `outputs/speed_resize_nms_topk_bilinear.csv`
-- `outputs/speed_resize_nms_topk_bilinear.json`
-- `outputs/strace_23233_10s.txt`
-- `outputs/strace_23365_10s.txt`
-- `outputs/strace_23496_10s.txt`
-- `outputs/strace_23640_10s.txt`
-- `outputs/strace_b2_20s.txt`
+- `outputs/profile_migraphx_nms_k20_20260608_104100/amd_smi_monitor.csv`
+- `outputs/profile_migraphx_nms_k20_20260608_104100/amd_smi_monitor.err`
+- `outputs/profile_migraphx_nms_k20_20260608_104100/amd_smi_process.csv`
+- `outputs/profile_migraphx_nms_k20_20260608_104100/amd_smi_process.err`
+- `outputs/profile_migraphx_nms_k20_20260608_104100/app_stderr.log`
+- `outputs/profile_migraphx_nms_k20_20260608_104100/app_stdout.log`
+- `outputs/profile_migraphx_nms_k20_20260608_104100/monitor_pids.txt`
+- `outputs/profile_migraphx_nms_k20_20260608_104100/pidstat_python.err`
+- `outputs/profile_migraphx_nms_k20_20260608_104100/pidstat_python.txt`
+- `outputs/profile_migraphx_nms_k20_20260608_104100/ps_threads_cores.err`
+- `outputs/profile_migraphx_nms_k20_20260608_104100/ps_threads_cores.txt`
+- `outputs/profile_migraphx_nms_k20_20260608_104100/sudo_keepalive.pid`
+- `outputs/rocm721_fused_pruned/compile_mxr_b1_20260604_094121.log`
+- `outputs/rocm721_fused_pruned/compile_mxr_b1_full_20260604_094121.log`
+- `outputs/rocm721_fused_pruned/compile_mxr_b2_20260604_121749.log`
+- `outputs/rocm721_fused_pruned/compile_mxr_b2_20260604_121829.log`
+- `outputs/rocm721_fused_pruned/compile_mxr_b2_20260604_121831.log`
+- `outputs/rocm721_fused_pruned/compile_mxr_b2_20260604_122044.log`
+- `outputs/rocm721_fused_pruned/compile_mxr_b2_full_20260604_121749.log`
+- `outputs/rocm721_fused_pruned/compile_mxr_b2_full_20260604_121829.log`
+- `outputs/rocm721_fused_pruned/compile_mxr_b2_full_20260604_121831.log`
+- `outputs/rocm721_fused_pruned/compile_mxr_b4_20260604_132609.log`
+- `outputs/rocm721_fused_pruned/compile_mxr_b4_20260604_144448.log`
+- `outputs/rocm721_fused_pruned/compile_mxr_b8_20260604_133923.log`
+- `outputs/rocm721_fused_pruned/compile_mxr_b8_20260604_144519.log`
+- `outputs/rocm721_fused_pruned/export_post_b1.log`
+- `outputs/rocm721_fused_pruned/export_post_b2_20260604_122044.log`
+- `outputs/rocm721_fused_pruned/export_post_b4_20260604_132609.log`
+- `outputs/rocm721_fused_pruned/export_post_b4_20260604_144448.log`
+- `outputs/rocm721_fused_pruned/export_post_b8_20260604_133923.log`
+- `outputs/rocm721_fused_pruned/export_post_b8_20260604_144519.log`
+- `outputs/rocm721_fused_pruned/full_export_merge_compile_b2_20260604_122044.log`
+- `outputs/rocm721_fused_pruned/full_export_merge_compile_b4_20260604_132609.log`
+- `outputs/rocm721_fused_pruned/full_export_merge_compile_b4_20260604_144448.log`
+- `outputs/rocm721_fused_pruned/full_export_merge_compile_b8_20260604_133923.log`
+- `outputs/rocm721_fused_pruned/full_export_merge_compile_b8_20260604_144519.log`
+- `outputs/rocm721_fused_pruned/inspect_b1.log`
+- `outputs/rocm721_fused_pruned/inspect_b1_20260604_094007.log`
+- `outputs/rocm721_fused_pruned/inspect_b1_20260604_121656.log`
+- `outputs/rocm721_fused_pruned/inspect_b2_20260604_121749.log`
+- `outputs/rocm721_fused_pruned/inspect_b2_20260604_121829.log`
+- `outputs/rocm721_fused_pruned/inspect_b2_20260604_122044.log`
+- `outputs/rocm721_fused_pruned/inspect_b4_20260604_132609.log`
+- `outputs/rocm721_fused_pruned/inspect_b4_20260604_144448.log`
+- `outputs/rocm721_fused_pruned/inspect_b8_20260604_133923.log`
+- `outputs/rocm721_fused_pruned/inspect_b8_20260604_144519.log`
+- `outputs/rocm721_fused_pruned/merge_and_inspect_b1_20260604_094007.log`
+- `outputs/rocm721_fused_pruned/merge_and_inspect_b1_20260604_121656.log`
+- `outputs/rocm721_fused_pruned/merge_and_inspect_b2_20260604_121749.log`
+- `outputs/rocm721_fused_pruned/merge_and_inspect_b2_20260604_121829.log`
+- `outputs/rocm721_fused_pruned/merge_pose_post_b1.log`
+- `outputs/rocm721_fused_pruned/merge_pose_post_b1_20260604_094007.log`
+- `outputs/rocm721_fused_pruned/merge_pose_post_b1_20260604_121656.log`
+- `outputs/rocm721_fused_pruned/merge_pose_post_b2_20260604_121749.log`
+- `outputs/rocm721_fused_pruned/merge_pose_post_b2_20260604_121829.log`
+- `outputs/rocm721_fused_pruned/merge_pose_post_b2_20260604_122044.log`
+- `outputs/rocm721_fused_pruned/merge_pose_post_b4_20260604_132609.log`
+- `outputs/rocm721_fused_pruned/merge_pose_post_b4_20260604_144448.log`
+- `outputs/rocm721_fused_pruned/merge_pose_post_b8_20260604_133923.log`
+- `outputs/rocm721_fused_pruned/merge_pose_post_b8_20260604_144519.log`
+- `outputs/rocm721_stream_tests/merged_b1_10cam_grid60/detailed.csv`
+- `outputs/rocm721_stream_tests/merged_b1_10cam_grid60/run.log`
+- `outputs/rocm721_stream_tests/merged_b1_10cam_grid60/run.logclear`
+- `outputs/rocm721_stream_tests/merged_b1_10cam_grid60/summary.json`
+- `outputs/rocm721_stream_tests/merged_b1_smoke/run.log`
+- `outputs/rocm721_stream_tests/merged_b1_smoke_fix/detailed.csv`
+- `outputs/rocm721_stream_tests/merged_b1_smoke_fix/run.log`
+- `outputs/rocm721_stream_tests/merged_b1_smoke_fix/summary.json`
+- `outputs/rocm721_stream_tests/merged_b2_10cam_rt250/run.log`
+- `outputs/rocm721_stream_tests/merged_b2_2cam_rt250/detailed.csv`
+- `outputs/rocm721_stream_tests/merged_b2_2cam_rt250/run.log`
+- `outputs/rocm721_stream_tests/merged_b2_2cam_rt250/summary.json`
+- `outputs/rocm721_stream_tests/merged_b4_10cam_rt250/detailed.csv`
+- `outputs/rocm721_stream_tests/merged_b4_10cam_rt250/run.log`
+- `outputs/rocm721_stream_tests/merged_b4_10cam_rt250/summary.json`
+- `outputs/rocm721_stream_tests/merged_b4_10cam_shared_input_pinned_rt250/detailed.csv`
+- `outputs/rocm721_stream_tests/merged_b4_10cam_shared_input_pinned_rt250/summary.json`
+- `outputs/rocm721_stream_tests/merged_b4_10cam_shared_input_rt250/detailed.csv`
+- `outputs/rocm721_stream_tests/merged_b4_10cam_shared_input_rt250/summary.json`
+- `outputs/rocm721_stream_tests/merged_b8_10cam_rt250/detailed.csv`
+- `outputs/rocm721_stream_tests/merged_b8_10cam_rt250/run.log`
+- `outputs/rocm721_stream_tests/merged_b8_10cam_rt250/summary.json`
+- `outputs/rocm721_stream_tests/merged_b8_10cam_shared_input_pinned_rt250/detailed.csv`
+- `outputs/rocm721_stream_tests/merged_b8_10cam_shared_input_pinned_rt250/summary.json`
+- `outputs/rocm721_stream_tests/merged_b8_10cam_shared_input_pinned_rt250_rerun/detailed.csv`
+- `outputs/rocm721_stream_tests/merged_b8_10cam_shared_input_pinned_rt250_rerun/run.log`
+- `outputs/rocm721_stream_tests/merged_b8_10cam_shared_input_pinned_rt250_rerun/summary.json`
+- `outputs/rocm721_stream_tests/mx_merged_grid_focused_250s/b2_shmin_pin_fps24_to4_post3_thr1/command.json`
+- `outputs/rocm721_stream_tests/mx_merged_grid_focused_250s/b2_shmin_pin_fps24_to4_post3_thr1/detailed.csv`
+- `outputs/rocm721_stream_tests/mx_merged_grid_focused_250s/b2_shmin_pin_fps24_to4_post3_thr1/run.log`
+- `outputs/rocm721_stream_tests/mx_merged_grid_focused_250s/b2_shmin_pin_fps24_to4_post3_thr1/summary.json`
+- `outputs/rocm721_stream_tests/mx_merged_grid_focused_250s/b4_queuein_nopin_fps24_to8_post3_thr1/command.json`
+- `outputs/rocm721_stream_tests/mx_merged_grid_focused_250s/b4_queuein_nopin_fps24_to8_post3_thr1/detailed.csv`
+- `outputs/rocm721_stream_tests/mx_merged_grid_focused_250s/b4_queuein_nopin_fps24_to8_post3_thr1/run.log`
+- `outputs/rocm721_stream_tests/mx_merged_grid_focused_250s/b4_queuein_nopin_fps24_to8_post3_thr1/summary.json`
+- `outputs/rocm721_stream_tests/mx_merged_grid_focused_250s/b4_queuein_pin_fps24_to8_post3_thr1/command.json`
+- `outputs/rocm721_stream_tests/mx_merged_grid_focused_250s/b4_queuein_pin_fps24_to8_post3_thr1/detailed.csv`
+- `outputs/rocm721_stream_tests/mx_merged_grid_focused_250s/b4_queuein_pin_fps24_to8_post3_thr1/run.log`
+- `outputs/rocm721_stream_tests/mx_merged_grid_focused_250s/b4_queuein_pin_fps24_to8_post3_thr1/summary.json`
+- `outputs/rocm721_stream_tests/mx_merged_grid_focused_250s/b4_shmin_nopin_fps24_to8_post3_thr1/command.json`
+- `outputs/rocm721_stream_tests/mx_merged_grid_focused_250s/b4_shmin_nopin_fps24_to8_post3_thr1/detailed.csv`
+- `outputs/rocm721_stream_tests/mx_merged_grid_focused_250s/b4_shmin_nopin_fps24_to8_post3_thr1/run.log`
+- `outputs/rocm721_stream_tests/mx_merged_grid_focused_250s/b4_shmin_nopin_fps24_to8_post3_thr1/summary.json`
+- `outputs/rocm721_stream_tests/mx_merged_grid_focused_250s/b4_shmin_pin_fps24_to8_post3_thr1/command.json`
+- `outputs/rocm721_stream_tests/mx_merged_grid_focused_250s/b4_shmin_pin_fps24_to8_post3_thr1/detailed.csv`
+- `outputs/rocm721_stream_tests/mx_merged_grid_focused_250s/b4_shmin_pin_fps24_to8_post3_thr1/run.log`
+- `outputs/rocm721_stream_tests/mx_merged_grid_focused_250s/b4_shmin_pin_fps24_to8_post3_thr1/summary.json`
+- `outputs/rocm721_stream_tests/mx_merged_grid_focused_250s/b8_shmin_pin_fps24_to12_post3_thr1/command.json`
+- `outputs/rocm721_stream_tests/mx_merged_grid_focused_250s/b8_shmin_pin_fps24_to12_post3_thr1/detailed.csv`
+- `outputs/rocm721_stream_tests/mx_merged_grid_focused_250s/b8_shmin_pin_fps24_to12_post3_thr1/run.log`
+- `outputs/rocm721_stream_tests/mx_merged_grid_focused_250s/b8_shmin_pin_fps24_to12_post3_thr1/summary.json`
+- `outputs/rocm721_stream_tests/mx_merged_grid_focused_250s/grid_plan.json`
+- `outputs/rocm721_stream_tests/mx_merged_grid_focused_250s/grid_summary.csv`
+- `outputs/rocm721_stream_tests/mx_merged_grid_focused_250s/grid_summary.json`
+- `outputs/rocm721_stream_tests/shared_input_smoke_b1_1cam/detailed.csv`
+- `outputs/rocm721_stream_tests/shared_input_smoke_b1_1cam/summary.json`
+- `outputs/stream_simulation/merged_pose_fused_pruned_b4/detailed_b4_20260605_084725.csv`
+- `outputs/stream_simulation/merged_pose_fused_pruned_b4/run_b4_20260605_084725.log`
+- `outputs/stream_simulation/merged_pose_fused_pruned_b4/run_b4_20260605_085651.log`
+- `outputs/stream_simulation/merged_pose_fused_pruned_b4/summary_b4_20260605_084725.json`
+- `outputs/.last_profile_run`
 - `outputs/stream_10cam_detailed.csv`
-- `outputs/stream_fused_infer_10cam_p1_detailed.csv`
-- `outputs/stream_fused_infer_10cam_p1_summary.json`
-- `outputs/stream_fused_infer_10cam_pinned.log`
-- `outputs/stream_fused_infer_10cam_pinned_detailed.csv`
-- `outputs/stream_fused_infer_10cam_pinned_summary.json`
-- `outputs/stream_fused_infer_10cam_system_profile.csv`
-- `outputs/stream_fused_infer_10cam_system_profile.json`
-- `outputs/stream_fused_infer_1cam_detailed.csv`
-- `outputs/stream_fused_infer_1cam_summary.json`
-- `outputs/stream_fused_postprocess_10cam_p1_detailed.csv`
-- `outputs/stream_fused_postprocess_10cam_p1_summary.json`
-- `outputs/stream_fused_postprocess_10cam_p3_detailed.csv`
-- `outputs/stream_fused_postprocess_10cam_p3_summary.json`
-- `outputs/stream_fused_postprocess_1cam_summary.json`
-- `outputs/stream_manual_cubic_topk_1cam_detailed.csv`
-- `outputs/stream_manual_cubic_topk_1cam_summary.json`
-- `outputs/stream_manual_cubic_topk_detailed.csv`
-- `outputs/stream_manual_cubic_topk_fused_10cam_p3_detailed.csv`
-- `outputs/stream_manual_cubic_topk_fused_10cam_p3_summary.json`
-- `outputs/stream_manual_cubic_topk_fused_1cam_detailed.csv`
-- `outputs/stream_manual_cubic_topk_fused_1cam_summary.json`
-- `outputs/stream_manual_cubic_topk_p1_detailed.csv`
-- `outputs/stream_manual_cubic_topk_p1_summary.json+`
-- `outputs/stream_manual_cubic_topk_summary.json`
-- `outputs/stream_merged_b1_10cam_p2_detailed.csv`
-- `outputs/stream_merged_b1_10cam_p2_summary.json`
-- `outputs/stream_merged_b1_10cam_p4_detailed.csv`
-- `outputs/stream_merged_b1_10cam_p4_summary.json`
-- `outputs/stream_merged_b1_1cam_detailed.csv`
-- `outputs/stream_merged_b1_1cam_summary.json`
-- `outputs/stream_pruned_infer_b1_1cam_detailed.csv`
-- `outputs/stream_pruned_infer_b1_1cam_summary.json`
-- `outputs/stream_pruned_infer_batch2_10cam_p8_detailed.csv`
-- `outputs/stream_pruned_infer_batch2_10cam_p8_summary.json`
-- `outputs/stream_pruned_infer_batch2_t10_10cam_p4_60s_detailed.csv`
-- `outputs/stream_pruned_infer_batch2_t10_10cam_p4_60s_summary.json`
-- `outputs/stream_pruned_infer_batch2_t10_10cam_p4_detailed.csv`
-- `outputs/stream_pruned_infer_batch2_t10_10cam_p4_summary.json`
-- `outputs/stream_pruned_infer_batch2_t3_10cam_p8_detailed.csv`
-- `outputs/stream_pruned_infer_batch2_t3_10cam_p8_summary.json`
-- `outputs/stream_pruned_infer_batch4_10cam_p8_detailed.csv`
-- `outputs/stream_pruned_infer_batch4_10cam_p8_summary.json`
-- `outputs/stream_pruned_infer_batch4_t3_10cam_p8_detailed.csv`
-- `outputs/stream_pruned_infer_batch4_t3_10cam_p8_summary.json`
-- `outputs/stream_pruned_v2_10cam_batch4_p1_detailed.csv`
-- `outputs/stream_pruned_v2_10cam_batch4_p1_summary.json`
-- `outputs/stream_pruned_v2_10cam_p4_detailed.csv`
-- `outputs/stream_pruned_v2_10cam_p4_summary.json`
-- `outputs/stream_pruned_v2_1cam_p1_detailed.csv`
-- `outputs/stream_pruned_v2_1cam_p1_summary.json`
-- `outputs/trace_compile_merged_b2.log`
-- `outputs/trace_log_trimmer.log`
-- `outputs/trace_mx_paf_fullres_pair_scorer.csv`
-- `outputs/trace_mx_paf_fullres_pair_scorer.jsonl`
+- `outputs/stream_10cam_summary.json`
 - `requirements/requirements.txt`
 - `scripts/build_batchaware_b2_onnx.sh`
 - `scripts/compile_merged_pose_fused_pruned_b1_b2_parallel.sh`
 - `scripts/convert_to_onnx.py`
 - `scripts/make_val_subset.py`
 - `scripts/prepare_train_labels.py`
+- `tools/apply_stream_shared_input_optimization.py`
 - `tools/compile_merged_pose_batchaware_fused_pruned.py`
 - `tools/compile_merged_pose_batchaware_fused_pruned.py.bak_toposort_adapter`
 - `tools/compile_merged_pose_batchaware_fused_pruned.py.bak_toposort_adapter_flexible`
@@ -11144,12 +10700,14 @@ Ovo je lista relativnih putanja koje možeš da koristiš u promptu:
 - `compile_migraphx_dynamic.py`
 - `compile_migraphx_static_batches.py`
 - `compile_pruned_from_existing_onnx.py`
+- `deep-research-report.md`
 - `demo.py`
 - `detections.json`
 - `diagnose_cached_postprocess.py`
 - `export_dynamic_onnx.py`
 - `fix_paf_fullres_batch_after_patch.py`
 - `fix_paf_fullres_batch_surgical.py`
+- `helper_context.md`
 - `hotfix_migraphx_parse_onnx_fallback.py`
 - `integrate_fused_postprocessing.py`
 - `LICENSE`
@@ -11172,8 +10730,12 @@ Ovo je lista relativnih putanja koje možeš da koristiš u promptu:
 - `README.md`
 - `README_expanded.md`
 - `README_fused_pruned_v2.md`
+- `run_mx_merged_stream_grid.py`
 - `simulate_10_camera_stream.py`
+- `simulate_10_camera_stream.py.bak_before_final_mx_merged_fix`
 - `simulate_10_camera_stream.py.bak_before_merged_b1`
+- `simulate_10_camera_stream.py.bak_before_mx_merged_postfix`
+- `simulate_10_camera_stream.py.bak_shared_input`
 - `simulate_10_camera_stream_batched.py`
 - `simulate_10_camera_stream_merged_b1.py`
 - `speed_validation.py`
