@@ -197,7 +197,7 @@ models/migraphx_graph_clean/pose_model_clean_no_dequant_b8_fp16.mxr
 
 ### Accuracy smoke test
 
-Compare the old and new MXR models on a small subset first:
+`accuracy_validation.py` accepts `--models`, so old and new MXR files can be compared in one run:
 
 ```bash
 python3 accuracy_validation.py \
@@ -221,13 +221,38 @@ python3 accuracy_validation.py \
 
 ### Speed validation
 
+`speed_validation.py` accepts a single `--model` argument, so run baseline and graph-clean models separately.
+
+Baseline:
+
 ```bash
 python3 speed_validation.py \
-  --models pose_model_b1_fp16.mxr models/migraphx_graph_clean/pose_model_clean_no_dequant_b1_fp16.mxr \
+  --model pose_model_b1_fp16.mxr \
   --video cctv_1280x720_24fps_3.mp4 \
   --variants optimized_batch_k20_fast gpu_nms_fullres_two_process \
   --frames 100 \
-  --warmup 5
+  --warmup 5 \
+  --csv outputs/graph_clean_speed_baseline.csv \
+  --json outputs/graph_clean_speed_baseline.json
+```
+
+Graph-clean model:
+
+```bash
+python3 speed_validation.py \
+  --model models/migraphx_graph_clean/pose_model_clean_no_dequant_b1_fp16.mxr \
+  --video cctv_1280x720_24fps_3.mp4 \
+  --variants optimized_batch_k20_fast gpu_nms_fullres_two_process \
+  --frames 100 \
+  --warmup 5 \
+  --csv outputs/graph_clean_speed_no_dequant.csv \
+  --json outputs/graph_clean_speed_no_dequant.json
+```
+
+For the legacy-export model generated during the dynamic-axis fix, use this path instead:
+
+```text
+models/migraphx_graph_clean/pose_model_clean_no_dequant_legacy_b1_fp16.mxr
 ```
 
 ## rocprof comparison
@@ -238,7 +263,7 @@ Baseline:
 rocprofv3 --kernel-trace --runtime-trace \
   --output-dir outputs/rocprof_graph_clean/baseline \
   python3 speed_validation.py \
-    --models pose_model_b1_fp16.mxr \
+    --model pose_model_b1_fp16.mxr \
     --video cctv_1280x720_24fps_3.mp4 \
     --variants optimized_batch_k20_fast \
     --frames 100 \
@@ -251,7 +276,7 @@ Graph-clean model:
 rocprofv3 --kernel-trace --runtime-trace \
   --output-dir outputs/rocprof_graph_clean/clean_no_dequant \
   python3 speed_validation.py \
-    --models models/migraphx_graph_clean/pose_model_clean_no_dequant_b1_fp16.mxr \
+    --model models/migraphx_graph_clean/pose_model_clean_no_dequant_b1_fp16.mxr \
     --video cctv_1280x720_24fps_3.mp4 \
     --variants optimized_batch_k20_fast \
     --frames 100 \
