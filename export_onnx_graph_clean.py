@@ -43,6 +43,14 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--dynamo",
+        action="store_true",
+        help=(
+            "Use the new torch.onnx dynamo exporter. The default is the legacy "
+            "exporter because dynamic_axes is more predictable for this experiment."
+        ),
+    )
+    parser.add_argument(
         "--simplify",
         action="store_true",
         help="Run onnxsim after export when the package is installed.",
@@ -107,17 +115,37 @@ def export_model(args: argparse.Namespace) -> Path:
             "pafs": {0: "batch_size"},
         }
 
-    torch.onnx.export(
-        wrapped,
-        dummy_input,
-        str(output_path),
-        export_params=True,
-        opset_version=args.opset,
-        do_constant_folding=True,
-        input_names=["input"],
-        output_names=output_names,
-        dynamic_axes=dynamic_axes,
-    )
+    export_kwargs = {
+        "export_params": True,
+        "opset_version": args.opset,
+        "do_constant_folding": True,
+        "input_names": ["input"],
+        "output_names": output_names,
+        "dynamic_axes": dynamic_axes,
+    }
+
+    # PyTorch's new dynamo exporter may warn that dynamic_axes is not the
+    # recommended API and can materialize fixed output batch shapes in the
+    # exported value_info. For this branch, predictable dynamic batch metadata is
+    # more important than using the newest exporter, so legacy export is default.
+    try:
+        torch.onnx.export(
+            wrapped,
+            dummy_input,
+            str(output_path),
+            dynamo=args.dynamo,
+            **export_kwargs,
+        )
+    except TypeError:
+        if args.dynamo:
+            raise
+        print("torch.onnx.export does not accept dynamo=...; retrying without it")
+        torch.onnx.export(
+            wrapped,
+            dummy_input,
+            str(output_path),
+            **export_kwargs,
+        )
 
     model = onnx.load(str(output_path))
     onnx.checker.check_model(model)
@@ -170,6 +198,7 @@ def write_report(args: argparse.Namespace, exported: Path, simplified: Path | No
         "num_refinement_stages": args.num_refinement_stages,
         "without_dequant": args.without_dequant,
         "concat_outputs": args.concat_outputs,
+        "dynamo": args.dynamo,
         "opset": args.opset,
     }
 
