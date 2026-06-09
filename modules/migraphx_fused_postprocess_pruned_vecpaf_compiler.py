@@ -16,8 +16,13 @@ import argparse
 import inspect
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any, Callable
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 
 def _safe_float_token(x: float) -> str:
@@ -249,7 +254,6 @@ def compile_pruned_fused_postprocess_vecpaf_head(
         paf_cubic_a=paf_cubic_a,
         batch_size=batch_size,
     )
-    # Keep base fused ONNX separate from regular fused cache by adding vecpaf suffix.
     fused_onnx = parts_dir / f"{fused_base_name}_vecpaf.onnx"
 
     print("[fused-pruned-vecpaf] merging manual TopK + vectorized PAF scorer ONNX graphs")
