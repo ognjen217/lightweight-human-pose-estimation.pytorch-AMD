@@ -43,6 +43,25 @@ from modules.postprocess_head_autocompile import (
 
 TimingDict = Dict[str, float]
 
+POSE_POSTPROCESS_MERGED_VARIANT = "pose_postprocessing_merged"
+POSE_POSTPROCESS_MERGED_ALIASES = {
+    "pose_postprocessing_merged",
+    "pose-postprocessing-merged",
+    "merged_pose_fused_pruned",
+    "merged-pose-fused-pruned",
+    "pose_fused_pruned",
+    "pose-fused-pruned",
+}
+
+
+def normalize_speed_variant_name(name: str) -> str:
+    key = str(name).strip().lower().replace(" ", "-").replace("_", "-")
+    aliases = {x.replace("_", "-") for x in POSE_POSTPROCESS_MERGED_ALIASES}
+    if key in aliases:
+        return POSE_POSTPROCESS_MERGED_VARIANT
+    return normalize_mode(normalize_validation_variant_name(name))
+
+
 SUMMARY_NUMERIC_KEYS = [
     "frames",
     "preprocess_ms",

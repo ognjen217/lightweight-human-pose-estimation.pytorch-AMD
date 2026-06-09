@@ -4010,8 +4010,6 @@ def parse_args():
         action="store_true",
         help="Print worker CPU affinity after all child processes are started.",
     )
-
-
     parser.add_argument(
         "--roctx",
         action="store_true",
