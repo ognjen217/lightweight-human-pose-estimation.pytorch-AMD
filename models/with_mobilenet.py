@@ -92,6 +92,10 @@ class PoseEstimationWithMobileNet(nn.Module):
     def __init__(self, num_refinement_stages=1, num_channels=128, num_heatmaps=19, num_pafs=38):
         super().__init__()
         self.is_mixed = False
+        # Export-only switch used by ONNX graph-cleanup experiments.
+        # The default path is unchanged: regular inference still returns
+        # dequantized final tensors exactly as before.
+        self.export_without_dequant = False
         self.quant = QuantStub()
         self.dequant = DeQuantStub()
         self.model = nn.Sequential(
@@ -136,6 +140,9 @@ class PoseEstimationWithMobileNet(nn.Module):
                 refinement_stage(self.cat_op.cat([backbone_features, stages_output[-2], stages_output[-1]], dim=1)))
 
         final_results = [stages_output[-2], stages_output[-1]]
+
+        if self.export_without_dequant:
+            return final_results
 
         return [self.dequant(out) for out in final_results]
 

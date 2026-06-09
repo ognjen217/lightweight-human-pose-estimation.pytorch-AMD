@@ -43,6 +43,34 @@ from modules.postprocess_head_autocompile import (
 
 TimingDict = Dict[str, float]
 
+SUMMARY_NUMERIC_KEYS = [
+    "frames",
+    "preprocess_ms",
+    "inference_ms",
+    "decode_ms",
+    "hm_resize_ms",
+    "paf_resize_ms",
+    "mx_nms_ms",
+    "manual_cubic_topk_ms",
+    "fused_post_mx_ms",
+    "fused_pruned_mx_ms",
+    "extract_ms",
+    "extract_from_mask_ms",
+    "topk_adapter_ms",
+    "group_ms",
+    "mx_assembly_total_ms",
+    "pruned_cpu_tail_ms",
+    "post_avg_ms",
+    "post_p50_ms",
+    "post_p95_ms",
+    "post_fps",
+    "e2e_avg_ms",
+    "e2e_p95_ms",
+    "e2e_fps",
+    "e2e_speedup_vs_standard",
+    "e2e_delta_pct_vs_standard",
+]
+
 
 class Timer:
     def __enter__(self):
@@ -87,7 +115,7 @@ def percentile(values: Sequence[float], q: float) -> float:
     return float(np.percentile(np.asarray(values, dtype=np.float64), q)) if values else 0.0
 
 
-def safe_get(row: TimingDict, key: str) -> float:
+def safe_get(row: Dict[str, Any], key: str) -> float:
     try:
         return float(row.get(key, 0.0) or 0.0)
     except Exception:
@@ -97,6 +125,24 @@ def safe_get(row: TimingDict, key: str) -> float:
 def ensure_parent(path: str) -> None:
     if path:
         Path(path).parent.mkdir(parents=True, exist_ok=True)
+
+
+def normalize_summary_row(summary: Dict[str, Any]) -> Dict[str, Any]:
+    """Fill optional metrics that are absent in some execution paths.
+
+    Single-process summaries are produced by ``summarize_variant`` and contain
+    all report columns. Two-process summaries are returned by
+    ``run_two_process_postprocessing`` and may omit metrics that are not
+    meaningful for that path, such as mx_nms/manual/fused/pruned stage timings.
+    The validator should still be able to print and serialize those summaries.
+    """
+    for key in SUMMARY_NUMERIC_KEYS:
+        if key == "frames":
+            summary[key] = int(safe_get(summary, key))
+        else:
+            summary[key] = safe_get(summary, key)
+    summary.setdefault("variant", "unknown")
+    return summary
 
 
 def summarize_variant(name: str, rows: List[TimingDict], baseline_e2e_ms: Optional[float]) -> Dict[str, Any]:
@@ -114,7 +160,7 @@ def summarize_variant(name: str, rows: List[TimingDict], baseline_e2e_ms: Option
         speedup = 1.0
         delta_pct = 0.0
 
-    return {
+    return normalize_summary_row({
         "variant": name,
         "frames": len(rows),
         "preprocess_ms": mean(col("preprocess")),
@@ -126,6 +172,7 @@ def summarize_variant(name: str, rows: List[TimingDict], baseline_e2e_ms: Option
         "manual_cubic_topk_ms": mean(col("manual_cubic_topk")),
         "fused_post_mx_ms": mean(col("fused_post_mx")),
         "fused_pruned_mx_ms": mean(col("fused_pruned_mx")),
+        "pose_postprocess_merged_mx_ms": mean(col("pose_postprocess_merged_mx")),
         "extract_ms": mean(col("extract_keypoints")),
         "extract_from_mask_ms": mean(col("extract_from_mask")),
         "topk_adapter_ms": mean(col("topk_adapter")),
@@ -141,14 +188,20 @@ def summarize_variant(name: str, rows: List[TimingDict], baseline_e2e_ms: Option
         "post_fps": 1000.0 / post_avg if post_avg > 0 else 0.0,
         "e2e_speedup_vs_standard": speedup,
         "e2e_delta_pct_vs_standard": delta_pct,
-    }
+    })
 
 
 def print_variant_descriptions(variants: Sequence[str]) -> None:
     info_by_name = {row["variant"]: row for row in variant_table()}
     print("\nVariants:")
     for variant in variants:
-        canonical = normalize_mode(normalize_validation_variant_name(variant))
+        canonical = normalize_speed_variant_name(variant)
+        if canonical == POSE_POSTPROCESS_MERGED_VARIANT:
+            print(
+                f"  {canonical:<40} "
+                "Single MXR graph containing pose model + fused-pruned postprocess; CPU final pose assembly tail."
+            )
+            continue
         row = info_by_name[canonical]
         print(f"  {canonical:<40} {row['description']}")
 
@@ -164,15 +217,16 @@ def print_table(summaries: List[Dict[str, Any]]) -> None:
     )
     print("-" * 220)
     for s in summaries:
+        s = normalize_summary_row(s)
         print(
-            f"{s['variant']:<40} {int(s['frames']):>6} "
-            f"{s['preprocess_ms']:>8.2f} {s['inference_ms']:>8.2f} {s['decode_ms']:>8.2f} "
-            f"{s['mx_nms_ms']:>8.2f} {s['manual_cubic_topk_ms']:>8.2f} "
-            f"{s['fused_post_mx_ms']:>8.2f} {s['fused_pruned_mx_ms']:>8.2f} "
-            f"{s['topk_adapter_ms']:>8.2f} {s['mx_assembly_total_ms']:>8.2f} {s['pruned_cpu_tail_ms']:>8.2f} "
-            f"{s['post_avg_ms']:>9.2f} {s['post_p95_ms']:>9.2f} "
-            f"{s['e2e_avg_ms']:>9.2f} {s['e2e_p95_ms']:>9.2f} "
-            f"{s['e2e_fps']:>8.2f} {s['e2e_speedup_vs_standard']:>9.2f} {s['e2e_delta_pct_vs_standard']:>9.2f}"
+            f"{str(s.get('variant', 'unknown')):<40} {int(s.get('frames', 0)):>6} "
+            f"{safe_get(s, 'preprocess_ms'):>8.2f} {safe_get(s, 'inference_ms'):>8.2f} {safe_get(s, 'decode_ms'):>8.2f} "
+            f"{safe_get(s, 'mx_nms_ms'):>8.2f} {safe_get(s, 'manual_cubic_topk_ms'):>8.2f} "
+            f"{safe_get(s, 'fused_post_mx_ms'):>8.2f} {safe_get(s, 'fused_pruned_mx_ms'):>8.2f} "
+            f"{safe_get(s, 'topk_adapter_ms'):>8.2f} {safe_get(s, 'mx_assembly_total_ms'):>8.2f} {safe_get(s, 'pruned_cpu_tail_ms'):>8.2f} "
+            f"{safe_get(s, 'post_avg_ms'):>9.2f} {safe_get(s, 'post_p95_ms'):>9.2f} "
+            f"{safe_get(s, 'e2e_avg_ms'):>9.2f} {safe_get(s, 'e2e_p95_ms'):>9.2f} "
+            f"{safe_get(s, 'e2e_fps'):>8.2f} {safe_get(s, 'e2e_speedup_vs_standard'):>9.2f} {safe_get(s, 'e2e_delta_pct_vs_standard'):>9.2f}"
         )
     print("=" * 220)
 
@@ -181,10 +235,11 @@ def write_csv(path: str, rows: List[Dict[str, Any]]) -> None:
     if not path or not rows:
         return
     ensure_parent(path)
+    rows = [normalize_summary_row(dict(row)) for row in rows]
     preferred_order = [
         "variant", "model", "frames", "preprocess_ms", "inference_ms", "decode_ms",
         "hm_resize_ms", "paf_resize_ms", "mx_nms_ms", "manual_cubic_topk_ms",
-        "fused_post_mx_ms", "fused_pruned_mx_ms", "extract_ms", "extract_from_mask_ms",
+        "fused_post_mx_ms", "fused_pruned_mx_ms", "pose_postprocess_merged_mx_ms", "extract_ms", "extract_from_mask_ms",
         "topk_adapter_ms", "group_ms", "mx_assembly_total_ms", "pruned_cpu_tail_ms",
         "post_avg_ms", "post_p50_ms", "post_p95_ms", "post_fps",
         "e2e_avg_ms", "e2e_p95_ms", "e2e_fps", "e2e_speedup_vs_standard", "e2e_delta_pct_vs_standard",
@@ -203,6 +258,7 @@ def write_json(path: str, rows: List[Dict[str, Any]]) -> None:
     if not path:
         return
     ensure_parent(path)
+    rows = [normalize_summary_row(dict(row)) for row in rows]
     with open(path, "w") as f:
         json.dump(rows, f, indent=2)
     print(f"JSON saved: {path}")
@@ -303,6 +359,115 @@ def _run_single_process_speed(args, variants: Sequence[str]) -> List[Dict[str, A
     ]
 
 
+def _run_pose_postprocessing_merged_speed(args, variants: Sequence[str]) -> List[Dict[str, Any]]:
+    """Run a single merged MXR graph: pose model + fused-pruned postprocess.
+
+    Expected graph outputs must match modules.migraphx_fused_postprocess_pruned:
+      top_scores, top_indices, a_idx, b_idx, pair_score, pair_valid
+
+    Final dynamic pose assembly is still done on CPU.
+    """
+    if not variants:
+        return []
+
+    merged_model = args.pose_postprocessing_merged_model or args.model
+    engine = MIGraphXVideoEngine(
+        merged_model,
+        target_dim=(args.target_width, args.target_height),
+        stride=args.stride,
+    )
+
+    from modules.mx_pair_assembly_pruned import assemble_poses_from_pruned_pairs
+
+    cap = cv2.VideoCapture(args.video)
+    if not cap.isOpened():
+        raise RuntimeError(f"Could not open video: {args.video}")
+
+    rows: List[TimingDict] = []
+    frame_idx = 0
+    measured = 0
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        frame_idx += 1
+        original_h, original_w = frame.shape[:2]
+
+        with Timer() as pre_t:
+            input_tensor = engine.preprocess(frame)
+
+        with Timer() as graph_t:
+            raw_results = engine.infer(input_tensor)
+
+        if not isinstance(raw_results, (list, tuple)):
+            raw_results = list(raw_results)
+
+        if len(raw_results) < 6:
+            cap.release()
+            raise RuntimeError(
+                "pose_postprocessing_merged expects a merged MXR with at least 6 outputs: "
+                "top_scores, top_indices, a_idx, b_idx, pair_score, pair_valid. "
+                f"Got {len(raw_results)} outputs."
+            )
+
+        with Timer() as tail_t:
+            poses, kpts, asm_times = assemble_poses_from_pruned_pairs(
+                np.asarray(raw_results[0], dtype=np.float32),
+                np.asarray(raw_results[1], dtype=np.int64),
+                np.asarray(raw_results[2], dtype=np.int64),
+                np.asarray(raw_results[3], dtype=np.int64),
+                np.asarray(raw_results[4], dtype=np.float32),
+                np.asarray(raw_results[5], dtype=np.float32),
+                full_width=int(original_w),
+                threshold=args.threshold,
+                min_pair_score=args.min_pair_score,
+                return_timing=True,
+            )
+
+        is_warmup = frame_idx <= args.warmup
+        if not is_warmup and measured >= args.frames:
+            break
+
+        if not is_warmup:
+            row: TimingDict = {
+                "decode": 0.0,
+                "pose_postprocess_merged_mx": graph_t.ms,
+                # Reuse existing summary columns; for this special mode this is the whole merged graph time.
+                "fused_pruned_mx": graph_t.ms,
+                "fused_post_mx": graph_t.ms,
+                "mx_nms": graph_t.ms,
+                "topk_adapter": float(asm_times.get("topk_adapter", 0.0)),
+                "mx_assembly_total": float(asm_times.get("mx_assembly_total", tail_t.ms)),
+                "pruned_cpu_tail": tail_t.ms,
+                "group_keypoints": tail_t.ms,
+                "group_total": tail_t.ms,
+                "total_postprocess": tail_t.ms,
+                "preprocess": pre_t.ms,
+                "inference": graph_t.ms,
+                "e2e": pre_t.ms + graph_t.ms + tail_t.ms,
+            }
+            rows.append(row)
+            measured += 1
+
+            if measured == 1 or (args.print_every > 0 and measured % args.print_every == 0):
+                print(f"Processed measured frames: {measured}/{args.frames}")
+
+    cap.release()
+
+    if measured == 0:
+        raise RuntimeError("No measured frames. Check --video, --warmup, and --frames.")
+
+    return [
+        summarize_variant(
+            name=POSE_POSTPROCESS_MERGED_VARIANT,
+            rows=rows,
+            baseline_e2e_ms=None,
+        )
+    ]
+
+
 def _run_two_process_speed(args, variants: Sequence[str]) -> List[Dict[str, Any]]:
     summaries: List[Dict[str, Any]] = []
     for variant in variants:
@@ -327,7 +492,9 @@ def _run_two_process_speed(args, variants: Sequence[str]) -> List[Dict[str, Any]
             nms_impl=args.nms_impl,
             collect_rows=False,
         )
-        summaries.append(result["summary"])
+        summary = dict(result["summary"])
+        summary.setdefault("variant", variant)
+        summaries.append(normalize_summary_row(summary))
     return summaries
 
 
@@ -347,7 +514,7 @@ def _recompute_speedups(summaries: List[Dict[str, Any]]) -> None:
 
 
 def validate_speed(args) -> List[Dict[str, Any]]:
-    variants = [normalize_mode(normalize_validation_variant_name(v)) for v in args.variants]
+    variants = [normalize_speed_variant_name(v) for v in args.variants]
     variants = list(dict.fromkeys(variants))
 
     if any(v in {"migraphx_nms", "migraphx_nms_k20"} for v in variants):
@@ -372,8 +539,10 @@ def validate_speed(args) -> List[Dict[str, Any]]:
 
     ensure_video_postprocess_heads(args, variants, args.video)
 
-    single_process_variants = [v for v in variants if not is_two_process_mode(v)]
-    two_process_variants = [v for v in variants if is_two_process_mode(v)]
+    merged_pose_variants = [v for v in variants if v == POSE_POSTPROCESS_MERGED_VARIANT]
+    regular_variants = [v for v in variants if v != POSE_POSTPROCESS_MERGED_VARIANT]
+    single_process_variants = [v for v in regular_variants if not is_two_process_mode(v)]
+    two_process_variants = [v for v in regular_variants if is_two_process_mode(v)]
 
     print("\nRunning speed validation")
     print(f"Video:          {args.video}")
@@ -387,6 +556,10 @@ def validate_speed(args) -> List[Dict[str, Any]]:
     print_variant_descriptions(variants)
 
     summaries: List[Dict[str, Any]] = []
+    if merged_pose_variants:
+        print("\nMerged pose+postprocess variants")
+        print("--------------------------------")
+        summaries.extend(_run_pose_postprocessing_merged_speed(args, merged_pose_variants))
     if single_process_variants:
         print("\nSingle-process variants")
         print("-----------------------")
@@ -396,6 +569,7 @@ def validate_speed(args) -> List[Dict[str, Any]]:
         print("--------------------")
         summaries.extend(_run_two_process_speed(args, two_process_variants))
 
+    summaries = [normalize_summary_row(s) for s in summaries]
     _recompute_speedups(summaries)
     print_table(summaries)
     write_csv(args.csv, summaries)
@@ -407,6 +581,11 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Unified video speed validation using modules.postprocessing as the single source of truth.")
     parser.add_argument("--video", default="cctv_1280x720_24fps_3.mp4")
     parser.add_argument("--model", default="pose_model1_fp16_ref1.mxr")
+    parser.add_argument(
+        "--pose-postprocessing-merged-model",
+        default="",
+        help="MXR containing pose model + fused-pruned postprocess. Defaults to --model when pose_postprocessing_merged is used.",
+    )
     parser.add_argument("--frames", type=int, default=100)
     parser.add_argument("--warmup", type=int, default=5)
     parser.add_argument("--target-width", type=int, default=968)

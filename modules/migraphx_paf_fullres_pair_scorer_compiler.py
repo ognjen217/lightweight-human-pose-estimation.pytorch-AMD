@@ -33,6 +33,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+
 def _compile_onnx_to_mxr(onnx_path, mxr_path):
     """Compile ONNX -> MXR using Python MIGraphX API when available, otherwise migraphx-driver."""
     from pathlib import Path
@@ -89,24 +90,26 @@ def head_name(
     min_paf_score: float,
     success_ratio_thr: float,
     cubic_a: float,
+    vectorized_sampling: bool = False,
 ) -> str:
     batch_token = "" if int(batch_size) == 1 else f"_b{int(batch_size)}"
+    vec_token = "_vecpaf" if bool(vectorized_sampling) else ""
     return (
         "paf_fullres_cubic_pair_scorer_"
         f"paf{int(paf_h)}x{int(paf_w)}_full{int(full_h)}x{int(full_w)}"
-        f"{batch_token}_"
+        f"{batch_token}{vec_token}_"
         f"k{int(topk)}_p{int(points_per_limb)}_"
         f"min{_safe_float_token(min_paf_score)}_sr{_safe_float_token(success_ratio_thr)}_"
         f"a{_safe_float_token(cubic_a)}"
     )
 
 
-def mxr_path(output_dir: str | Path, paf_h: int, paf_w: int, full_h: int, full_w: int, *, batch_size: int = 1, topk: int, points_per_limb: int, min_paf_score: float, success_ratio_thr: float, cubic_a: float) -> Path:
-    return Path(output_dir) / f"{head_name(paf_h, paf_w, full_h, full_w, batch_size=batch_size, topk=topk, points_per_limb=points_per_limb, min_paf_score=min_paf_score, success_ratio_thr=success_ratio_thr, cubic_a=cubic_a)}.mxr"
+def mxr_path(output_dir: str | Path, paf_h: int, paf_w: int, full_h: int, full_w: int, *, batch_size: int = 1, topk: int, points_per_limb: int, min_paf_score: float, success_ratio_thr: float, cubic_a: float, vectorized_sampling: bool = False) -> Path:
+    return Path(output_dir) / f"{head_name(paf_h, paf_w, full_h, full_w, batch_size=batch_size, topk=topk, points_per_limb=points_per_limb, min_paf_score=min_paf_score, success_ratio_thr=success_ratio_thr, cubic_a=cubic_a, vectorized_sampling=vectorized_sampling)}.mxr"
 
 
-def onnx_path(output_dir: str | Path, paf_h: int, paf_w: int, full_h: int, full_w: int, *, batch_size: int = 1, topk: int, points_per_limb: int, min_paf_score: float, success_ratio_thr: float, cubic_a: float) -> Path:
-    return Path(output_dir) / f"{head_name(paf_h, paf_w, full_h, full_w, batch_size=batch_size, topk=topk, points_per_limb=points_per_limb, min_paf_score=min_paf_score, success_ratio_thr=success_ratio_thr, cubic_a=cubic_a)}.onnx"
+def onnx_path(output_dir: str | Path, paf_h: int, paf_w: int, full_h: int, full_w: int, *, batch_size: int = 1, topk: int, points_per_limb: int, min_paf_score: float, success_ratio_thr: float, cubic_a: float, vectorized_sampling: bool = False) -> Path:
+    return Path(output_dir) / f"{head_name(paf_h, paf_w, full_h, full_w, batch_size=batch_size, topk=topk, points_per_limb=points_per_limb, min_paf_score=min_paf_score, success_ratio_thr=success_ratio_thr, cubic_a=cubic_a, vectorized_sampling=vectorized_sampling)}.onnx"
 
 
 WORKER_CODE = r"""
@@ -142,6 +145,7 @@ class PAFFullResCubicPairScorerHead(nn.Module):
         success_ratio_thr: float = 0.8,
         cubic_a: float = -0.75,
         score_threshold: float = -1.0e8,
+        vectorized_sampling: bool = False,
     ):
         super().__init__()
         self.paf_h = int(paf_h)
@@ -154,6 +158,7 @@ class PAFFullResCubicPairScorerHead(nn.Module):
         self.success_ratio_thr = float(success_ratio_thr)
         self.cubic_a = float(cubic_a)
         self.score_threshold = float(score_threshold)
+        self.vectorized_sampling = bool(vectorized_sampling)
 
         alpha = torch.arange(self.points_per_limb, dtype=torch.float32) / float(max(1, self.points_per_limb - 1))
         self.register_buffer("alpha", alpha.view(1, 1, self.points_per_limb), persistent=True)
@@ -205,6 +210,39 @@ class PAFFullResCubicPairScorerHead(nn.Module):
 
         return out
 
+    def _sample_two_channels_cubic(self, channels_flat, x_full, y_full):
+        # channels_flat: [B,2,paf_h*paf_w]. This is mathematically equivalent to
+        # calling _sample_channel_cubic twice, but it computes cubic coordinates,
+        # int indices, and gather indices once and samples both PAF channels in a
+        # single batched gather. It is intended as an accuracy-safe graph cleanup.
+        src_x = (x_full + 0.5) * (float(self.paf_w) / float(self.full_w)) - 0.5
+        src_y = (y_full + 0.5) * (float(self.paf_h) / float(self.full_h)) - 0.5
+
+        base_x = torch.floor(src_x)
+        base_y = torch.floor(src_y)
+
+        bsz = channels_flat.shape[0]
+        out = channels_flat.new_zeros((bsz, 2, self.topk, self.topk, self.points_per_limb))
+
+        for oy in (-1, 0, 1, 2):
+            iy_f = base_y + float(oy)
+            wy = self._cubic_kernel(torch.abs(src_y - iy_f))
+            iy = torch.clamp(iy_f.to(torch.int64), 0, self.paf_h - 1)
+
+            for ox in (-1, 0, 1, 2):
+                ix_f = base_x + float(ox)
+                wx = self._cubic_kernel(torch.abs(src_x - ix_f))
+                ix = torch.clamp(ix_f.to(torch.int64), 0, self.paf_w - 1)
+
+                flat_idx = iy * int(self.paf_w) + ix
+                gather_idx = flat_idx.reshape(bsz, 1, -1).expand(bsz, 2, -1)
+                values = torch.gather(channels_flat, 2, gather_idx).reshape(
+                    bsz, 2, self.topk, self.topk, self.points_per_limb
+                )
+                out = out + values * (wx * wy).unsqueeze(1)
+
+        return out[:, 0, :, :, :], out[:, 1, :, :, :]
+
     def forward(self, top_scores, top_indices, pafs):
         # top_scores/top_indices: [B,18,K]
         # pafs: [B,38,paf_h,paf_w]
@@ -240,11 +278,17 @@ class PAFFullResCubicPairScorerHead(nn.Module):
             px = ax.reshape(bsz, self.topk, 1, 1) + dx.reshape(bsz, self.topk, self.topk, 1) * self.alpha
             py = ay.reshape(bsz, self.topk, 1, 1) + dy.reshape(bsz, self.topk, self.topk, 1) * self.alpha
 
-            paf_x_flat = pafs[:, paf_x_id, :, :].reshape(bsz, -1)
-            paf_y_flat = pafs[:, paf_y_id, :, :].reshape(bsz, -1)
-
-            field_x = self._sample_channel_cubic(paf_x_flat, px, py)
-            field_y = self._sample_channel_cubic(paf_y_flat, px, py)
+            if self.vectorized_sampling:
+                paf_pair_flat = torch.stack(
+                    [pafs[:, paf_x_id, :, :], pafs[:, paf_y_id, :, :]],
+                    dim=1,
+                ).reshape(bsz, 2, -1)
+                field_x, field_y = self._sample_two_channels_cubic(paf_pair_flat, px, py)
+            else:
+                paf_x_flat = pafs[:, paf_x_id, :, :].reshape(bsz, -1)
+                paf_y_flat = pafs[:, paf_y_id, :, :].reshape(bsz, -1)
+                field_x = self._sample_channel_cubic(paf_x_flat, px, py)
+                field_y = self._sample_channel_cubic(paf_y_flat, px, py)
 
             dot = field_x * vx.reshape(bsz, self.topk, self.topk, 1) + field_y * vy.reshape(bsz, self.topk, self.topk, 1)
             valid_points = dot > self.min_paf_score
@@ -278,6 +322,7 @@ def main():
     p.add_argument("--min-paf-score", type=float, default=0.05)
     p.add_argument("--success-ratio-thr", type=float, default=0.8)
     p.add_argument("--cubic-a", type=float, default=-0.75)
+    p.add_argument("--vectorized-sampling", action="store_true")
     p.add_argument("--opset", type=int, default=18)
     args = p.parse_args()
 
@@ -291,6 +336,7 @@ def main():
         min_paf_score=args.min_paf_score,
         success_ratio_thr=args.success_ratio_thr,
         cubic_a=args.cubic_a,
+        vectorized_sampling=args.vectorized_sampling,
     ).eval()
 
     top_scores = torch.randn(args.batch_size, 18, args.topk, dtype=torch.float32)
@@ -335,6 +381,7 @@ def _run_export_subprocess(
     min_paf_score: float,
     success_ratio_thr: float,
     cubic_a: float,
+    vectorized_sampling: bool,
     opset: int,
 ) -> None:
     output_onnx = Path(output_onnx)
@@ -344,25 +391,27 @@ def _run_export_subprocess(
         worker_path = Path(f.name)
         f.write(WORKER_CODE)
 
+    cmd = [
+        sys.executable,
+        str(worker_path),
+        "--onnx", str(output_onnx),
+        "--paf-h", str(int(paf_h)),
+        "--paf-w", str(int(paf_w)),
+        "--full-h", str(int(full_h)),
+        "--full-w", str(int(full_w)),
+        "--topk", str(int(topk)),
+        "--batch-size", str(int(batch_size)),
+        "--points-per-limb", str(int(points_per_limb)),
+        "--min-paf-score", str(float(min_paf_score)),
+        "--success-ratio-thr", str(float(success_ratio_thr)),
+        "--cubic-a", str(float(cubic_a)),
+        "--opset", str(int(opset)),
+    ]
+    if vectorized_sampling:
+        cmd.append("--vectorized-sampling")
+
     try:
-        subprocess.check_call(
-            [
-                sys.executable,
-                str(worker_path),
-                "--onnx", str(output_onnx),
-                "--paf-h", str(int(paf_h)),
-                "--paf-w", str(int(paf_w)),
-                "--full-h", str(int(full_h)),
-                "--full-w", str(int(full_w)),
-                "--topk", str(int(topk)),
-                "--batch-size", str(int(batch_size)),
-                "--points-per-limb", str(int(points_per_limb)),
-                "--min-paf-score", str(float(min_paf_score)),
-                "--success-ratio-thr", str(float(success_ratio_thr)),
-                "--cubic-a", str(float(cubic_a)),
-                "--opset", str(int(opset)),
-            ]
-        )
+        subprocess.check_call(cmd)
     finally:
         try:
             worker_path.unlink()
@@ -383,6 +432,7 @@ def compile_paf_fullres_pair_scorer_head(
     min_paf_score: float = 0.05,
     success_ratio_thr: float = 0.8,
     cubic_a: float = -0.75,
+    vectorized_sampling: bool = False,
     opset: int = 18,
     exhaustive_tune: bool = False,
     force: bool = False,
@@ -403,6 +453,7 @@ def compile_paf_fullres_pair_scorer_head(
         min_paf_score=min_paf_score,
         success_ratio_thr=success_ratio_thr,
         cubic_a=cubic_a,
+        vectorized_sampling=vectorized_sampling,
     )
     onnx = onnx_path(
         output_dir,
@@ -416,6 +467,7 @@ def compile_paf_fullres_pair_scorer_head(
         min_paf_score=min_paf_score,
         success_ratio_thr=success_ratio_thr,
         cubic_a=cubic_a,
+        vectorized_sampling=vectorized_sampling,
     )
 
     if mxr.exists() and not force:
@@ -426,7 +478,8 @@ def compile_paf_fullres_pair_scorer_head(
         "[paf-fullres-scorer] exporting ONNX: "
         f"paf={int(paf_h)}x{int(paf_w)}, full={int(full_h)}x{int(full_w)}, "
         f"B={int(batch_size)}, K={int(topk)}, P={int(points_per_limb)}, min_paf={float(min_paf_score)}, "
-        f"success_thr={float(success_ratio_thr)}, cubic_a={float(cubic_a)}"
+        f"success_thr={float(success_ratio_thr)}, cubic_a={float(cubic_a)}, "
+        f"vectorized_sampling={bool(vectorized_sampling)}"
     )
     _run_export_subprocess(
         output_onnx=onnx,
@@ -440,6 +493,7 @@ def compile_paf_fullres_pair_scorer_head(
         min_paf_score=min_paf_score,
         success_ratio_thr=success_ratio_thr,
         cubic_a=cubic_a,
+        vectorized_sampling=vectorized_sampling,
         opset=opset,
     )
 
@@ -469,6 +523,7 @@ def compile_for_video(
     min_paf_score: float = 0.05,
     success_ratio_thr: float = 0.8,
     cubic_a: float = -0.75,
+    vectorized_sampling: bool = False,
     opset: int = 18,
     exhaustive_tune: bool = False,
     force: bool = False,
@@ -504,6 +559,7 @@ def compile_for_video(
         min_paf_score=min_paf_score,
         success_ratio_thr=success_ratio_thr,
         cubic_a=cubic_a,
+        vectorized_sampling=vectorized_sampling,
         opset=opset,
         exhaustive_tune=exhaustive_tune,
         force=force,
@@ -527,6 +583,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--min-paf-score", type=float, default=0.05)
     p.add_argument("--success-ratio-thr", type=float, default=0.8)
     p.add_argument("--cubic-a", type=float, default=-0.75)
+    p.add_argument("--vectorized-sampling", action="store_true")
     p.add_argument("--opset", type=int, default=18)
     p.add_argument("--exhaustive-tune", action="store_true")
     p.add_argument("--force", action="store_true")
@@ -549,6 +606,7 @@ def main() -> None:
             min_paf_score=args.min_paf_score,
             success_ratio_thr=args.success_ratio_thr,
             cubic_a=args.cubic_a,
+            vectorized_sampling=args.vectorized_sampling,
             opset=args.opset,
             exhaustive_tune=args.exhaustive_tune,
             force=args.force,
@@ -563,10 +621,12 @@ def main() -> None:
             full_w=full_w,
             output_dir=args.output_dir,
             topk=args.topk,
+            batch_size=args.batch_size,
             points_per_limb=args.points_per_limb,
             min_paf_score=args.min_paf_score,
             success_ratio_thr=args.success_ratio_thr,
             cubic_a=args.cubic_a,
+            vectorized_sampling=args.vectorized_sampling,
             opset=args.opset,
             exhaustive_tune=args.exhaustive_tune,
             force=args.force,
