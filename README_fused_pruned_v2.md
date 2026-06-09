@@ -1,41 +1,24 @@
 # Fused postprocess v2: GPU TopM pair pruning + parallel CPU assembly
 
-## Added files
+## Runtime files
 
 ```text
 modules/migraphx_fused_postprocess_pruned_compiler.py
 modules/migraphx_fused_postprocess_pruned.py
 modules/mx_pair_assembly_pruned.py
-patch_postprocessing_pruned_v2.py
-patch_stream_pruned_v2.py
+modules/postprocessing.py
+simulate_10_camera_stream.py
 ```
 
-## Install
+## Sanity check
 
 ```bash
-cd ~/lightweight-human-pose-estimation.pytorch-AMD
-unzip -o fused_pruned_v2_bundle.zip
-
 python -m py_compile \
   modules/migraphx_fused_postprocess_pruned_compiler.py \
   modules/migraphx_fused_postprocess_pruned.py \
   modules/mx_pair_assembly_pruned.py \
-  patch_postprocessing_pruned_v2.py \
-  patch_stream_pruned_v2.py
-```
-
-Patch postprocessing:
-
-```bash
-python patch_postprocessing_pruned_v2.py
-python -m py_compile modules/postprocessing.py
-```
-
-Patch stream precompile/flags:
-
-```bash
-python patch_stream_pruned_v2.py
-python -m py_compile simulate_10_camera_stream.py
+  modules/postprocessing.py \
+  simulate_10_camera_stream.py
 ```
 
 ## Compile v2 MXR

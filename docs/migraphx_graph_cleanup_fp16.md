@@ -50,7 +50,7 @@ It reports:
 New script:
 
 ```bash
-export_onnx_graph_clean.py
+tools/export_onnx_graph_clean.py
 ```
 
 It can export:
@@ -70,7 +70,7 @@ so existing postprocessing can still be used.
 
 ### 4. Parameterized static MIGraphX compiler
 
-`compile_migraphx_static_batches.py` now accepts CLI flags instead of requiring manual edits.
+`tools/compile_migraphx_static_batches.py` now accepts CLI flags instead of requiring manual edits.
 
 It still defaults to:
 
@@ -95,7 +95,7 @@ git pull
 ### 1. Export baseline ONNX
 
 ```bash
-python3 export_dynamic_onnx.py
+python3 tools/export_dynamic_onnx.py
 ```
 
 ### 2. Inspect baseline ONNX
@@ -110,7 +110,7 @@ python3 tools/inspect_onnx_graph.py \
 ### 3. Export dequant-free graph-clean ONNX
 
 ```bash
-python3 export_onnx_graph_clean.py \
+python3 tools/export_onnx_graph_clean.py \
   --checkpoint models/checkpoint_iter_370000.pth \
   --output models/onnx/pose_model_clean_bdyn_no_dequant.onnx \
   --without-dequant \
@@ -140,7 +140,7 @@ pip install onnxsim
 Then export and simplify:
 
 ```bash
-python3 export_onnx_graph_clean.py \
+python3 tools/export_onnx_graph_clean.py \
   --checkpoint models/checkpoint_iter_370000.pth \
   --output models/onnx/pose_model_clean_bdyn_no_dequant.onnx \
   --without-dequant \
@@ -163,7 +163,7 @@ python3 tools/inspect_onnx_graph.py \
 For the non-simplified graph:
 
 ```bash
-python3 compile_migraphx_static_batches.py \
+python3 tools/compile_migraphx_static_batches.py \
   --onnx models/onnx/pose_model_clean_bdyn_no_dequant.onnx \
   --height 544 \
   --width 968 \
@@ -175,7 +175,7 @@ python3 compile_migraphx_static_batches.py \
 For the simplified graph:
 
 ```bash
-python3 compile_migraphx_static_batches.py \
+python3 tools/compile_migraphx_static_batches.py \
   --onnx models/onnx/pose_model_clean_bdyn_no_dequant_sim.onnx \
   --height 544 \
   --width 968 \

@@ -1318,7 +1318,7 @@ def _resolve_fused_pruned_postprocess_path(
             f"  low-res:  {in_h}x{in_w}\n"
             f"  full-res: {full_h}x{full_w}\n"
             f"  expected: {path}\n"
-            "Generate it with compile_pruned_from_existing_onnx.py or "
+            "Generate it with tools/compile_pruned_from_existing_onnx.py or "
             "modules/migraphx_fused_postprocess_pruned_compiler.py."
         )
     return str(path)

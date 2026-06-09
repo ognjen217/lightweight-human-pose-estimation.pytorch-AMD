@@ -1,0 +1,1525 @@
+================================================================================
+SYSTEM
+================================================================================
+Wed Jun  3 09:04:04 AM CEST 2026
+Linux L-EVOx225530569 6.17.0-35-generic #35~24.04.1-Ubuntu SMP PREEMPT_DYNAMIC Tue May 26 19:30:42 UTC 2 x86_64 x86_64 x86_64 GNU/Linux
+PRETTY_NAME="Ubuntu 24.04.4 LTS"
+NAME="Ubuntu"
+VERSION_ID="24.04"
+VERSION="24.04.4 LTS (Noble Numbat)"
+VERSION_CODENAME=noble
+ID=ubuntu
+ID_LIKE=debian
+HOME_URL="https://www.ubuntu.com/"
+SUPPORT_URL="https://help.ubuntu.com/"
+BUG_REPORT_URL="https://bugs.launchpad.net/ubuntu/"
+PRIVACY_POLICY_URL="https://www.ubuntu.com/legal/terms-and-policies/privacy-policy"
+UBUNTU_CODENAME=noble
+LOGO=ubuntu-logo
+
+BOOT_IMAGE=/vmlinuz-6.17.0-35-generic root=/dev/mapper/ubuntu--vg-ubuntu--lv ro quiet splash vt.handoff=7
+
+================================================================================
+CPU
+================================================================================
+Architecture:                            x86_64
+CPU op-mode(s):                          32-bit, 64-bit
+Address sizes:                           48 bits physical, 48 bits virtual
+Byte Order:                              Little Endian
+CPU(s):                                  32
+On-line CPU(s) list:                     0-31
+Vendor ID:                               AuthenticAMD
+Model name:                              AMD RYZEN AI MAX+ 395 w/ Radeon 8060S
+CPU family:                              26
+Model:                                   112
+Thread(s) per core:                      2
+Core(s) per socket:                      16
+Socket(s):                               1
+Stepping:                                0
+Frequency boost:                         enabled
+CPU(s) scaling MHz:                      76%
+CPU max MHz:                             5187.5000
+CPU min MHz:                             625.0000
+BogoMIPS:                                5999.84
+Flags:                                   fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ht syscall nx mmxext fxsr_opt pdpe1gb rdtscp lm constant_tsc rep_good amd_lbr_v2 nopl xtopology nonstop_tsc cpuid extd_apicid aperfmperf rapl pni pclmulqdq monitor ssse3 fma cx16 sse4_1 sse4_2 movbe popcnt aes xsave avx f16c rdrand lahf_lm cmp_legacy svm extapic cr8_legacy abm sse4a misalignsse 3dnowprefetch osvw ibs skinit wdt tce topoext perfctr_core perfctr_nb bpext perfctr_llc mwaitx cpuid_fault cpb cat_l3 cdp_l3 hw_pstate ssbd mba perfmon_v2 ibrs ibpb stibp ibrs_enhanced vmmcall fsgsbase tsc_adjust bmi1 avx2 smep bmi2 erms invpcid cqm rdt_a avx512f avx512dq adx smap avx512ifma clflushopt clwb avx512cd sha_ni avx512bw avx512vl xsaveopt xsavec xgetbv1 xsaves cqm_llc cqm_occup_llc cqm_mbm_total cqm_mbm_local user_shstk avx_vnni avx512_bf16 clzero irperf xsaveerptr rdpru wbnoinvd cppc arat npt lbrv svm_lock nrip_save tsc_scale vmcb_clean flushbyasid decodeassists pausefilter pfthreshold avic v_vmsave_vmload vgif x2avic v_spec_ctrl vnmi avx512vbmi umip pku ospke avx512_vbmi2 gfni vaes vpclmulqdq avx512_vnni avx512_bitalg avx512_vpopcntdq rdpid bus_lock_detect movdiri movdir64b overflow_recov succor smca fsrm avx512_vp2intersect flush_l1d amd_lbr_pmc_freeze
+Virtualization:                          AMD-V
+L1d cache:                               768 KiB (16 instances)
+L1i cache:                               512 KiB (16 instances)
+L2 cache:                                16 MiB (16 instances)
+L3 cache:                                64 MiB (2 instances)
+NUMA node(s):                            1
+NUMA node0 CPU(s):                       0-31
+Vulnerability Gather data sampling:      Not affected
+Vulnerability Ghostwrite:                Not affected
+Vulnerability Indirect target selection: Not affected
+Vulnerability Itlb multihit:             Not affected
+Vulnerability L1tf:                      Not affected
+Vulnerability Mds:                       Not affected
+Vulnerability Meltdown:                  Not affected
+Vulnerability Mmio stale data:           Not affected
+Vulnerability Old microcode:             Not affected
+Vulnerability Reg file data sampling:    Not affected
+Vulnerability Retbleed:                  Not affected
+Vulnerability Spec rstack overflow:      Mitigation; IBPB on VMEXIT only
+Vulnerability Spec store bypass:         Mitigation; Speculative Store Bypass disabled via prctl
+Vulnerability Spectre v1:                Mitigation; usercopy/swapgs barriers and __user pointer sanitization
+Vulnerability Spectre v2:                Mitigation; Enhanced / Automatic IBRS; IBPB conditional; STIBP always-on; PBRSB-eIBRS Not affected; BHI Not affected
+Vulnerability Srbds:                     Not affected
+Vulnerability Tsa:                       Not affected
+Vulnerability Tsx async abort:           Not affected
+Vulnerability Vmscape:                   Mitigation; IBPB on VMEXIT
+
+================================================================================
+PCI GPU / DISPLAY DEVICES
+================================================================================
+00:00.0 Host bridge [0600]: Advanced Micro Devices, Inc. [AMD] Device [1022:1507] (rev 02)
+	Subsystem: Advanced Micro Devices, Inc. [AMD] Device [1022:1507]
+00:00.2 IOMMU [0806]: Advanced Micro Devices, Inc. [AMD] Device [1022:1508] (rev 02)
+	Subsystem: Advanced Micro Devices, Inc. [AMD] Device [1022:1508]
+00:01.0 Host bridge [0600]: Advanced Micro Devices, Inc. [AMD] Device [1022:1509]
+00:01.1 PCI bridge [0604]: Advanced Micro Devices, Inc. [AMD] Device [1022:150a] (rev 02)
+	Subsystem: Advanced Micro Devices, Inc. [AMD] Device [1022:150a]
+	Kernel driver in use: pcieport
+00:01.2 PCI bridge [0604]: Advanced Micro Devices, Inc. [AMD] Device [1022:150a] (rev 02)
+	Subsystem: Advanced Micro Devices, Inc. [AMD] Device [1022:150a]
+	Kernel driver in use: pcieport
+00:02.0 Host bridge [0600]: Advanced Micro Devices, Inc. [AMD] Device [1022:1509]
+00:02.1 PCI bridge [0604]: Advanced Micro Devices, Inc. [AMD] Device [1022:150b] (rev 02)
+	Subsystem: Advanced Micro Devices, Inc. [AMD] Device [1022:1453]
+	Kernel driver in use: pcieport
+00:02.2 PCI bridge [0604]: Advanced Micro Devices, Inc. [AMD] Device [1022:150b] (rev 02)
+	Subsystem: Advanced Micro Devices, Inc. [AMD] Device [1022:1453]
+	Kernel driver in use: pcieport
+00:02.3 PCI bridge [0604]: Advanced Micro Devices, Inc. [AMD] Device [1022:150b] (rev 02)
+	Subsystem: Advanced Micro Devices, Inc. [AMD] Device [1022:1453]
+	Kernel driver in use: pcieport
+00:02.5 PCI bridge [0604]: Advanced Micro Devices, Inc. [AMD] Device [1022:150b] (rev 02)
+	Subsystem: Advanced Micro Devices, Inc. [AMD] Device [1022:1453]
+	Kernel driver in use: pcieport
+00:03.0 Host bridge [0600]: Advanced Micro Devices, Inc. [AMD] Device [1022:1509]
+00:08.0 Host bridge [0600]: Advanced Micro Devices, Inc. [AMD] Device [1022:1509]
+00:08.1 PCI bridge [0604]: Advanced Micro Devices, Inc. [AMD] Device [1022:150c]
+	Subsystem: Advanced Micro Devices, Inc. [AMD] Device [1022:150c]
+	Kernel driver in use: pcieport
+00:08.2 PCI bridge [0604]: Advanced Micro Devices, Inc. [AMD] Device [1022:150c]
+	Subsystem: Advanced Micro Devices, Inc. [AMD] Device [1022:150c]
+	Kernel driver in use: pcieport
+00:08.3 PCI bridge [0604]: Advanced Micro Devices, Inc. [AMD] Device [1022:150c]
+	Subsystem: Advanced Micro Devices, Inc. [AMD] Device [1022:150c]
+	Kernel driver in use: pcieport
+00:14.0 SMBus [0c05]: Advanced Micro Devices, Inc. [AMD] FCH SMBus Controller [1022:790b] (rev 71)
+	Subsystem: Advanced Micro Devices, Inc. [AMD] FCH SMBus Controller [1022:790b]
+	Kernel driver in use: piix4_smbus
+	Kernel modules: i2c_piix4, sp5100_tco
+00:14.3 ISA bridge [0601]: Advanced Micro Devices, Inc. [AMD] FCH LPC Bridge [1022:790e] (rev 51)
+	Subsystem: Advanced Micro Devices, Inc. [AMD] FCH LPC Bridge [1022:790e]
+00:18.0 Host bridge [0600]: Advanced Micro Devices, Inc. [AMD] Device [1022:12b8]
+00:18.1 Host bridge [0600]: Advanced Micro Devices, Inc. [AMD] Device [1022:12b9]
+00:18.2 Host bridge [0600]: Advanced Micro Devices, Inc. [AMD] Device [1022:12ba]
+00:18.3 Host bridge [0600]: Advanced Micro Devices, Inc. [AMD] Device [1022:12bb]
+	Kernel driver in use: k10temp
+	Kernel modules: k10temp
+00:18.4 Host bridge [0600]: Advanced Micro Devices, Inc. [AMD] Device [1022:12bc]
+00:18.5 Host bridge [0600]: Advanced Micro Devices, Inc. [AMD] Device [1022:12bd]
+00:18.6 Host bridge [0600]: Advanced Micro Devices, Inc. [AMD] Device [1022:12be]
+00:18.7 Host bridge [0600]: Advanced Micro Devices, Inc. [AMD] Device [1022:12bf]
+c1:00.0 Ethernet controller [0200]: Realtek Semiconductor Co., Ltd. RTL8125 2.5GbE Controller [10ec:8125] (rev 05)
+	DeviceName: OnBoard LAN
+	Subsystem: Realtek Semiconductor Co., Ltd. RTL8125 2.5GbE Controller [10ec:8125]
+	Kernel driver in use: r8169
+	Kernel modules: r8169
+--
+c5:00.0 Display controller [0380]: Advanced Micro Devices, Inc. [AMD/ATI] Device [1002:1586] (rev c1)
+	Subsystem: Device [2014:801d]
+	Kernel driver in use: amdgpu
+	Kernel modules: amdgpu
+c5:00.1 Audio device [0403]: Advanced Micro Devices, Inc. [AMD/ATI] Rembrandt Radeon High Definition Audio Controller [1002:1640]
+	Subsystem: Device [2014:801d]
+	Kernel driver in use: snd_hda_intel
+	Kernel modules: snd_hda_intel
+c5:00.2 Encryption controller [1080]: Advanced Micro Devices, Inc. [AMD] Device [1022:17e0]
+	Subsystem: Advanced Micro Devices, Inc. [AMD] Device [1022:17e0]
+	Kernel driver in use: ccp
+	Kernel modules: ccp
+c5:00.4 USB controller [0c03]: Advanced Micro Devices, Inc. [AMD] Device [1022:1587]
+	Subsystem: Advanced Micro Devices, Inc. [AMD] Device [1022:15b9]
+	Kernel driver in use: xhci_hcd
+c5:00.6 Audio device [0403]: Advanced Micro Devices, Inc. [AMD] Family 17h/19h HD Audio Controller [1022:15e3]
+	DeviceName: OnBoard Audio
+	Subsystem: Device [2014:801d]
+	Kernel driver in use: snd_hda_intel
+	Kernel modules: snd_hda_intel
+c6:00.0 Non-Essential Instrumentation [1300]: Advanced Micro Devices, Inc. [AMD] Device [1022:150d]
+	Subsystem: Advanced Micro Devices, Inc. [AMD] Device [1022:150d]
+c6:00.1 Signal processing controller [1180]: Advanced Micro Devices, Inc. [AMD] Device [1022:17f0] (rev 11)
+	Subsystem: Advanced Micro Devices, Inc. [AMD] Device [1022:17f0]
+	Kernel driver in use: amdxdna
+	Kernel modules: amdxdna
+c7:00.0 USB controller [0c03]: Advanced Micro Devices, Inc. [AMD] Device [1022:1588]
+	Subsystem: Advanced Micro Devices, Inc. [AMD] Device [1022:15b9]
+	Kernel driver in use: xhci_hcd
+c7:00.3 USB controller [0c03]: Advanced Micro Devices, Inc. [AMD] Device [1022:1589]
+	Subsystem: Advanced Micro Devices, Inc. [AMD] Device [1022:1589]
+	Kernel driver in use: xhci_hcd
+c7:00.4 USB controller [0c03]: Advanced Micro Devices, Inc. [AMD] Device [1022:158b]
+	Subsystem: Advanced Micro Devices, Inc. [AMD] Device [1022:158b]
+	Kernel driver in use: xhci_hcd
+c7:00.5 USB controller [0c03]: Advanced Micro Devices, Inc. [AMD] Device [1022:158d]
+	Subsystem: Advanced Micro Devices, Inc. [AMD] Device [1022:158d]
+	Kernel driver in use: thunderbolt
+	Kernel modules: thunderbolt
+c7:00.6 USB controller [0c03]: Advanced Micro Devices, Inc. [AMD] Device [1022:158e]
+	Subsystem: Advanced Micro Devices, Inc. [AMD] Device [1022:158e]
+	Kernel driver in use: thunderbolt
+	Kernel modules: thunderbolt
+
+================================================================================
+FULL AMD PCI VERBOSE
+================================================================================
+---- 0000:c5:00.0 ----
+c5:00.0 Display controller: Advanced Micro Devices, Inc. [AMD/ATI] Device 1586 (rev c1)
+	Subsystem: Device 2014:801d
+	Control: I/O+ Mem+ BusMaster+ SpecCycle- MemWINV- VGASnoop- ParErr- Stepping- SERR- FastB2B- DisINTx+
+	Status: Cap+ 66MHz- UDF- FastB2B- ParErr- DEVSEL=fast >TAbort- <TAbort- <MAbort- >SERR- <PERR- INTx-
+	Latency: 0, Cache Line Size: 64 bytes
+	Interrupt: pin A routed to IRQ 102
+	IOMMU group: 20
+	Region 0: Memory at 4000000000 (64-bit, prefetchable) [size=64G]
+	Region 2: Memory at 90000000 (64-bit, prefetchable) [size=256M]
+	Region 4: I/O ports at e000 [size=256]
+	Region 5: Memory at a0200000 (32-bit, non-prefetchable) [size=1M]
+	Capabilities: [48] Vendor Specific Information: Len=08 <?>
+	Capabilities: [50] Power Management version 3
+		Flags: PMEClk- DSI- D1- D2- AuxCurrent=0mA PME(D0-,D1+,D2+,D3hot+,D3cold+)
+		Status: D0 NoSoftRst- PME-Enable- DSel=0 DScale=0 PME-
+	Capabilities: [64] Express (v2) Legacy Endpoint, MSI 00
+		DevCap:	MaxPayload 256 bytes, PhantFunc 0, Latency L0s <4us, L1 unlimited
+			ExtTag+ AttnBtn- AttnInd- PwrInd- RBE+ FLReset-
+		DevCtl:	CorrErr- NonFatalErr- FatalErr- UnsupReq-
+			RlxdOrd+ ExtTag+ PhantFunc- AuxPwr- NoSnoop+
+			MaxPayload 256 bytes, MaxReadReq 512 bytes
+		DevSta:	CorrErr- NonFatalErr+ FatalErr- UnsupReq+ AuxPwr- TransPend-
+		LnkCap:	Port #0, Speed 16GT/s, Width x16, ASPM L0s L1, Exit Latency L0s <64ns, L1 <1us
+			ClockPM- Surprise- LLActRep- BwNot- ASPMOptComp+
+		LnkCtl:	ASPM Disabled; RCB 64 bytes, Disabled- CommClk+
+			ExtSynch- ClockPM- AutWidDis- BWInt- AutBWInt-
+		LnkSta:	Speed 16GT/s, Width x16
+			TrErr- Train- SlotClk+ DLActive- BWMgmt- ABWMgmt-
+		DevCap2: Completion Timeout: Range ABCD, TimeoutDis+ NROPrPrP- LTR-
+			 10BitTagComp+ 10BitTagReq- OBFF Not Supported, ExtFmt+ EETLPPrefix+, MaxEETLPPrefixes 1
+			 EmergencyPowerReduction Not Supported, EmergencyPowerReductionInit-
+			 FRS-
+			 AtomicOpsCap: 32bit+ 64bit+ 128bitCAS-
+		DevCtl2: Completion Timeout: 50us to 50ms, TimeoutDis- LTR- 10BitTagReq- OBFF Disabled,
+			 AtomicOpsCtl: ReqEn+
+		LnkCap2: Supported Link Speeds: 2.5-16GT/s, Crosslink- Retimer+ 2Retimers+ DRS-
+		LnkCtl2: Target Link Speed: 16GT/s, EnterCompliance- SpeedDis-
+			 Transmit Margin: Normal Operating Range, EnterModifiedCompliance- ComplianceSOS-
+			 Compliance Preset/De-emphasis: -6dB de-emphasis, 0dB preshoot
+		LnkSta2: Current De-emphasis Level: -3.5dB, EqualizationComplete+ EqualizationPhase1+
+			 EqualizationPhase2+ EqualizationPhase3+ LinkEqualizationRequest-
+			 Retimer- 2Retimers- CrosslinkRes: unsupported
+	Capabilities: [a0] MSI: Enable- Count=1/4 Maskable- 64bit+
+		Address: 0000000000000000  Data: 0000
+	Capabilities: [c0] MSI-X: Enable+ Count=4 Masked-
+		Vector table: BAR=5 offset=00042000
+		PBA: BAR=5 offset=00043000
+	Capabilities: [100 v1] Vendor Specific Information: ID=0001 Rev=1 Len=010 <?>
+	Capabilities: [200 v1] Physical Resizable BAR
+		BAR 0: current size: 64GB, supported: 256MB 512MB 1GB 2GB 4GB 8GB 16GB 32GB 64GB
+		BAR 2: current size: 256MB, supported: 2MB 4MB 8MB 16MB 32MB 64MB 128MB 256MB
+	Capabilities: [270 v1] Secondary PCI Express
+		LnkCtl3: LnkEquIntrruptEn- PerformEqu-
+		LaneErrStat: 0
+	Capabilities: [2a0 v1] Access Control Services
+		ACSCap:	SrcValid- TransBlk- ReqRedir- CmpltRedir- UpstreamFwd- EgressCtrl- DirectTrans-
+		ACSCtl:	SrcValid- TransBlk- ReqRedir- CmpltRedir- UpstreamFwd- EgressCtrl- DirectTrans-
+	Capabilities: [2b0 v1] Address Translation Service (ATS)
+		ATSCap:	Invalidate Queue Depth: 00
+		ATSCtl:	Enable+, Smallest Translation Unit: 00
+	Capabilities: [2c0 v1] Page Request Interface (PRI)
+		PRICtl: Enable+ Reset-
+		PRISta: RF- UPRGI- Stopped+
+		Page Request Capacity: 00000100, Page Request Allocation: 00000020
+	Capabilities: [2d0 v1] Process Address Space ID (PASID)
+		PASIDCap: Exec+ Priv+, Max PASID Width: 10
+		PASIDCtl: Enable+ Exec- Priv-
+	Capabilities: [410 v1] Physical Layer 16.0 GT/s <?>
+	Capabilities: [450 v1] Lane Margining at the Receiver <?>
+	Kernel driver in use: amdgpu
+	Kernel modules: amdgpu
+
+
+---- 0000:c5:00.1 ----
+c5:00.1 Audio device: Advanced Micro Devices, Inc. [AMD/ATI] Rembrandt Radeon High Definition Audio Controller
+	Subsystem: Device 2014:801d
+	Control: I/O- Mem+ BusMaster+ SpecCycle- MemWINV- VGASnoop- ParErr- Stepping- SERR- FastB2B- DisINTx+
+	Status: Cap+ 66MHz- UDF- FastB2B- ParErr- DEVSEL=fast >TAbort- <TAbort- <MAbort- >SERR- <PERR- INTx-
+	Latency: 0, Cache Line Size: 64 bytes
+	Interrupt: pin B routed to IRQ 142
+	IOMMU group: 21
+	Region 0: Memory at a0308000 (32-bit, non-prefetchable) [size=16K]
+	Capabilities: [48] Vendor Specific Information: Len=08 <?>
+	Capabilities: [50] Power Management version 3
+		Flags: PMEClk- DSI- D1- D2- AuxCurrent=0mA PME(D0-,D1+,D2+,D3hot+,D3cold+)
+		Status: D0 NoSoftRst- PME-Enable- DSel=0 DScale=0 PME-
+	Capabilities: [64] Express (v2) Legacy Endpoint, MSI 00
+		DevCap:	MaxPayload 256 bytes, PhantFunc 0, Latency L0s <4us, L1 unlimited
+			ExtTag+ AttnBtn- AttnInd- PwrInd- RBE+ FLReset-
+		DevCtl:	CorrErr- NonFatalErr- FatalErr- UnsupReq-
+			RlxdOrd+ ExtTag+ PhantFunc- AuxPwr- NoSnoop+
+			MaxPayload 256 bytes, MaxReadReq 512 bytes
+		DevSta:	CorrErr- NonFatalErr- FatalErr- UnsupReq- AuxPwr- TransPend-
+		LnkCap:	Port #0, Speed 16GT/s, Width x16, ASPM L0s L1, Exit Latency L0s <64ns, L1 <1us
+			ClockPM- Surprise- LLActRep- BwNot- ASPMOptComp+
+		LnkCtl:	ASPM Disabled; RCB 64 bytes, Disabled- CommClk+
+			ExtSynch- ClockPM- AutWidDis- BWInt- AutBWInt-
+		LnkSta:	Speed 16GT/s, Width x16
+			TrErr- Train- SlotClk+ DLActive- BWMgmt- ABWMgmt-
+		DevCap2: Completion Timeout: Range ABCD, TimeoutDis+ NROPrPrP- LTR-
+			 10BitTagComp+ 10BitTagReq- OBFF Not Supported, ExtFmt+ EETLPPrefix+, MaxEETLPPrefixes 1
+			 EmergencyPowerReduction Not Supported, EmergencyPowerReductionInit-
+			 FRS-
+			 AtomicOpsCap: 32bit- 64bit- 128bitCAS-
+		DevCtl2: Completion Timeout: 50us to 50ms, TimeoutDis- LTR- 10BitTagReq- OBFF Disabled,
+			 AtomicOpsCtl: ReqEn+
+		LnkSta2: Current De-emphasis Level: -3.5dB, EqualizationComplete- EqualizationPhase1-
+			 EqualizationPhase2- EqualizationPhase3- LinkEqualizationRequest-
+			 Retimer- 2Retimers- CrosslinkRes: unsupported
+	Capabilities: [a0] MSI: Enable+ Count=1/1 Maskable- 64bit+
+		Address: 00000000fee00000  Data: 0000
+	Capabilities: [100 v1] Vendor Specific Information: ID=0001 Rev=1 Len=010 <?>
+	Capabilities: [2a0 v1] Access Control Services
+		ACSCap:	SrcValid- TransBlk- ReqRedir- CmpltRedir- UpstreamFwd- EgressCtrl- DirectTrans-
+		ACSCtl:	SrcValid- TransBlk- ReqRedir- CmpltRedir- UpstreamFwd- EgressCtrl- DirectTrans-
+	Kernel driver in use: snd_hda_intel
+	Kernel modules: snd_hda_intel
+
+
+================================================================================
+DMI / BIOS / PRODUCT
+================================================================================
+# dmidecode 3.5
+Getting SMBIOS data from sysfs.
+SMBIOS 3.7.0 present.
+# SMBIOS implementations newer than version 3.5.0 are not
+# fully supported by this version of dmidecode.
+
+Handle 0x0000, DMI type 0, 26 bytes
+BIOS Information
+	Vendor: American Megatrends International, LLC.
+	Version: EVO-X2 1.12
+	Release Date: 12/09/2025
+	Address: 0xF0000
+	Runtime Size: 64 kB
+	ROM Size: 32 MB
+	Characteristics:
+		PCI is supported
+		BIOS is upgradeable
+		BIOS shadowing is allowed
+		Boot from CD is supported
+		Selectable boot is supported
+		BIOS ROM is socketed
+		EDD is supported
+		ACPI is supported
+		BIOS boot specification is supported
+		Targeted content distribution is supported
+		UEFI is supported
+	BIOS Revision: 1.12
+	Firmware Revision: 1.10
+
+Handle 0x0001, DMI type 1, 27 bytes
+System Information
+	Manufacturer: GMKtec
+	Product Name: NucBox_EVO-X2
+	Version: Version 1.0
+	Serial Number: Default string
+	UUID: 09b5c200-e01f-11f0-a6fd-60121b5d4200
+	Wake-up Type: Power Switch
+	SKU Number: EVO-X2-001
+	Family: MINI
+
+Handle 0x0002, DMI type 2, 15 bytes
+Base Board Information
+	Manufacturer: GMKtec
+	Product Name: GMKtec
+	Version: Version 1.0
+	Serial Number: AXB35605C22H0108
+	Asset Tag: Default string
+	Features:
+		Board is a hosting board
+		Board is replaceable
+	Location In Chassis: Default string
+	Chassis Handle: 0x0003
+	Type: Motherboard
+	Contained Object Handles: 0
+
+Handle 0x0004, DMI type 10, 6 bytes
+On Board Device Information
+	Type: Video
+	Status: Enabled
+	Description:    To Be Filled By O.E.M.
+
+Handle 0x0006, DMI type 12, 5 bytes
+System Configuration Options
+	Option 1: Default string
+
+Handle 0x0007, DMI type 32, 20 bytes
+System Boot Information
+	Status: No errors detected
+
+Handle 0x0039, DMI type 41, 11 bytes
+Onboard Device
+	Reference Designation: OnBoard LAN
+	Type: Ethernet
+	Status: Enabled
+	Type Instance: 1
+	Bus Address: 0000:c1:00.0
+
+Handle 0x003A, DMI type 41, 11 bytes
+Onboard Device
+	Reference Designation: OnBoard Audio
+	Type: Sound
+	Status: Enabled
+	Type Instance: 1
+	Bus Address: 0000:c5:00.6
+
+Handle 0x003B, DMI type 13, 22 bytes
+BIOS Language Information
+	Language Description Format: Long
+	Installable Languages: 1
+		en|US|iso8859-1
+	Currently Installed Language: en|US|iso8859-1
+
+
+================================================================================
+GPU DEVICE NODES / GROUPS
+================================================================================
+crw-rw---- 1 root video  226,   1 Jun  3 08:50 /dev/dri/card1
+crw-rw---- 1 root render 226, 128 Jun  3 08:50 /dev/dri/renderD128
+crw-rw---- 1 root render 234,   0 Jun  3 08:50 /dev/kfd
+operic sudo video users docker render
+uid=1004(operic) gid=1004(operic) groups=1004(operic),27(sudo),44(video),100(users),124(docker),992(render)
+
+================================================================================
+ROCm / HSA DISCOVERY
+================================================================================
+/usr/bin/rocminfo
+[37mROCk module version 6.16.13 is loaded[0m
+=====================    
+HSA System Attributes    
+=====================    
+Runtime Version:         1.18
+Runtime Ext Version:     1.15
+System Timestamp Freq.:  1000.000000MHz
+Sig. Max Wait Duration:  18446744073709551615 (0xFFFFFFFFFFFFFFFF) (timestamp count)
+Machine Model:           LARGE                              
+System Endianness:       LITTLE                             
+Mwaitx:                  DISABLED
+XNACK enabled:           NO
+DMAbuf Support:          YES
+VMM Support:             YES
+
+==========               
+HSA Agents               
+==========               
+*******                  
+Agent 1                  
+*******                  
+  Name:                    AMD RYZEN AI MAX+ 395 w/ Radeon 8060S
+  Uuid:                    CPU-XX                             
+  Marketing Name:          AMD RYZEN AI MAX+ 395 w/ Radeon 8060S
+  Vendor Name:             CPU                                
+  Feature:                 None specified                     
+  Profile:                 FULL_PROFILE                       
+  Float Round Mode:        NEAR                               
+  Max Queue Number:        0(0x0)                             
+  Queue Min Size:          0(0x0)                             
+  Queue Max Size:          0(0x0)                             
+  Queue Type:              MULTI                              
+  Node:                    0                                  
+  Device Type:             CPU                                
+  Cache Info:              
+    L1:                      49152(0xc000) KB                   
+  Chip ID:                 0(0x0)                             
+  ASIC Revision:           0(0x0)                             
+  Cacheline Size:          64(0x40)                           
+  Max Clock Freq. (MHz):   5187                               
+  BDFID:                   0                                  
+  Internal Node ID:        0                                  
+  Compute Unit:            32                                 
+  SIMDs per CU:            0                                  
+  Shader Engines:          0                                  
+  Shader Arrs. per Eng.:   0                                  
+  WatchPts on Addr. Ranges:1                                  
+  Memory Properties:       
+  Features:                None
+  Pool Info:               
+    Pool 1                   
+      Segment:                 GLOBAL; FLAGS: FINE GRAINED        
+      Size:                    65466120(0x3e6ef08) KB             
+      Allocatable:             TRUE                               
+      Alloc Granule:           4KB                                
+      Alloc Recommended Granule:4KB                                
+      Alloc Alignment:         4KB                                
+      Accessible by all:       TRUE                               
+    Pool 2                   
+      Segment:                 GLOBAL; FLAGS: EXTENDED FINE GRAINED
+      Size:                    65466120(0x3e6ef08) KB             
+      Allocatable:             TRUE                               
+      Alloc Granule:           4KB                                
+      Alloc Recommended Granule:4KB                                
+      Alloc Alignment:         4KB                                
+      Accessible by all:       TRUE                               
+    Pool 3                   
+      Segment:                 GLOBAL; FLAGS: KERNARG, FINE GRAINED
+      Size:                    65466120(0x3e6ef08) KB             
+      Allocatable:             TRUE                               
+      Alloc Granule:           4KB                                
+      Alloc Recommended Granule:4KB                                
+      Alloc Alignment:         4KB                                
+      Accessible by all:       TRUE                               
+    Pool 4                   
+      Segment:                 GLOBAL; FLAGS: COARSE GRAINED      
+      Size:                    65466120(0x3e6ef08) KB             
+      Allocatable:             TRUE                               
+      Alloc Granule:           4KB                                
+      Alloc Recommended Granule:4KB                                
+      Alloc Alignment:         4KB                                
+      Accessible by all:       TRUE                               
+  ISA Info:                
+*******                  
+Agent 2                  
+*******                  
+  Name:                    gfx1151                            
+  Uuid:                    GPU-XX                             
+  Marketing Name:          AMD Radeon Graphics                
+  Vendor Name:             AMD                                
+  Feature:                 KERNEL_DISPATCH                    
+  Profile:                 BASE_PROFILE                       
+  Float Round Mode:        NEAR                               
+  Max Queue Number:        128(0x80)                          
+  Queue Min Size:          64(0x40)                           
+  Queue Max Size:          131072(0x20000)                    
+  Queue Type:              MULTI                              
+  Node:                    1                                  
+  Device Type:             GPU                                
+  Cache Info:              
+    L1:                      32(0x20) KB                        
+    L2:                      2048(0x800) KB                     
+    L3:                      32768(0x8000) KB                   
+  Chip ID:                 5510(0x1586)                       
+  ASIC Revision:           0(0x0)                             
+  Cacheline Size:          128(0x80)                          
+  Max Clock Freq. (MHz):   2900                               
+  BDFID:                   50432                              
+  Internal Node ID:        1                                  
+  Compute Unit:            40                                 
+  SIMDs per CU:            2                                  
+  Shader Engines:          2                                  
+  Shader Arrs. per Eng.:   2                                  
+  WatchPts on Addr. Ranges:4                                  
+  Coherent Host Access:    FALSE                              
+  Memory Properties:       APU
+  Features:                KERNEL_DISPATCH 
+  Fast F16 Operation:      TRUE                               
+  Wavefront Size:          32(0x20)                           
+  Workgroup Max Size:      1024(0x400)                        
+  Workgroup Max Size per Dimension:
+    x                        1024(0x400)                        
+    y                        1024(0x400)                        
+    z                        1024(0x400)                        
+  Max Waves Per CU:        32(0x20)                           
+  Max Work-item Per CU:    1024(0x400)                        
+  Grid Max Size:           4294967295(0xffffffff)             
+  Grid Max Size per Dimension:
+    x                        2147483647(0x7fffffff)             
+    y                        65535(0xffff)                      
+    z                        65535(0xffff)                      
+  Max fbarriers/Workgrp:   32                                 
+  Packet Processor uCode:: 32                                 
+  SDMA engine uCode::      17                                 
+  IOMMU Support::          None                               
+  Pool Info:               
+    Pool 1                   
+      Segment:                 GLOBAL; FLAGS: COARSE GRAINED      
+      Size:                    67108864(0x4000000) KB             
+      Allocatable:             TRUE                               
+      Alloc Granule:           4KB                                
+      Alloc Recommended Granule:2048KB                             
+      Alloc Alignment:         4KB                                
+      Accessible by all:       FALSE                              
+    Pool 2                   
+      Segment:                 GLOBAL; FLAGS: EXTENDED FINE GRAINED
+      Size:                    67108864(0x4000000) KB             
+      Allocatable:             TRUE                               
+      Alloc Granule:           4KB                                
+      Alloc Recommended Granule:2048KB                             
+      Alloc Alignment:         4KB                                
+      Accessible by all:       FALSE                              
+    Pool 3                   
+      Segment:                 GROUP                              
+      Size:                    64(0x40) KB                        
+      Allocatable:             FALSE                              
+      Alloc Granule:           0KB                                
+      Alloc Recommended Granule:0KB                                
+      Alloc Alignment:         0KB                                
+      Accessible by all:       FALSE                              
+  ISA Info:                
+    ISA 1                    
+      Name:                    amdgcn-amd-amdhsa--gfx1151         
+      Machine Models:          HSA_MACHINE_MODEL_LARGE            
+      Profiles:                HSA_PROFILE_BASE                   
+      Default Rounding Mode:   NEAR                               
+      Default Rounding Mode:   NEAR                               
+      Fast f16:                TRUE                               
+      Workgroup Max Size:      1024(0x400)                        
+      Workgroup Max Size per Dimension:
+        x                        1024(0x400)                        
+        y                        1024(0x400)                        
+        z                        1024(0x400)                        
+      Grid Max Size:           4294967295(0xffffffff)             
+      Grid Max Size per Dimension:
+        x                        2147483647(0x7fffffff)             
+        y                        65535(0xffff)                      
+        z                        65535(0xffff)                      
+      FBarrier Max Size:       32                                 
+    ISA 2                    
+      Name:                    amdgcn-amd-amdhsa--gfx11-generic   
+      Machine Models:          HSA_MACHINE_MODEL_LARGE            
+      Profiles:                HSA_PROFILE_BASE                   
+      Default Rounding Mode:   NEAR                               
+      Default Rounding Mode:   NEAR                               
+      Fast f16:                TRUE                               
+      Workgroup Max Size:      1024(0x400)                        
+      Workgroup Max Size per Dimension:
+        x                        1024(0x400)                        
+        y                        1024(0x400)                        
+        z                        1024(0x400)                        
+      Grid Max Size:           4294967295(0xffffffff)             
+      Grid Max Size per Dimension:
+        x                        2147483647(0x7fffffff)             
+        y                        65535(0xffff)                      
+        z                        65535(0xffff)                      
+      FBarrier Max Size:       32                                 
+*******                  
+Agent 3                  
+*******                  
+  Name:                    aie2p                              
+  Uuid:                    AIE-XX                             
+  Marketing Name:          RyzenAI-npu5                       
+  Vendor Name:             AMD                                
+  Feature:                 AGENT_DISPATCH                     
+  Profile:                 BASE_PROFILE                       
+  Float Round Mode:        NEAR                               
+  Max Queue Number:        1(0x1)                             
+  Queue Min Size:          64(0x40)                           
+  Queue Max Size:          64(0x40)                           
+  Queue Type:              SINGLE                             
+  Node:                    0                                  
+  Device Type:             DSP                                
+  Cache Info:              
+    L2:                      2048(0x800) KB                     
+    L3:                      32768(0x8000) KB                   
+  Chip ID:                 0(0x0)                             
+  ASIC Revision:           0(0x0)                             
+  Cacheline Size:          0(0x0)                             
+  Max Clock Freq. (MHz):   0                                  
+
+================================================================================
+ROCm SMI / AMD SMI
+================================================================================
+/usr/bin/rocm-smi
+
+
+========================================= ROCm System Management Interface =========================================
+=================================================== Concise Info ===================================================
+Device  Node  IDs              Temp    Power     Partitions          SCLK  MCLK     Fan  Perf  PwrCap  VRAM%  GPU%  
+[3m              (DID,     GUID)  (Edge)  (Socket)  (Mem, Compute, ID)                                                 [0m
+====================================================================================================================
+0       1     0x1586,   40251  40.0°C  22.079W   N/A, N/A, 0         N/A   1000Mhz  0%   auto  N/A     0%     0%    
+====================================================================================================================
+=============================================== End of ROCm SMI Log ================================================
+
+./collect_amd_hw_rocm_report.sh: line 66: amd-smi: command not found
+
+./collect_amd_hw_rocm_report.sh: line 68: amd-smi: command not found
+
+================================================================================
+AMDGPU MODULE
+================================================================================
+filename:       /lib/modules/6.17.0-35-generic/updates/dkms/amdgpu.ko.zst
+version:        6.16.13
+srcversion:     A6F143BEC60C0AFC3263226
+vermagic:       6.17.0-35-generic SMP preempt mod_unload modversions 
+parm:           vramlimit:Restrict VRAM for testing, in megabytes (int)
+parm:           vis_vramlimit:Restrict visible VRAM for testing, in megabytes (int)
+parm:           gartsize:Size of kernel GART to setup in megabytes (32, 64, etc., -1=auto) (uint)
+parm:           gttsize:Size of the GTT userspace domain in megabytes (-1 = auto) (int)
+parm:           moverate:Maximum buffer migration rate in MB/s. (32, 64, etc., -1=auto, 0=1=disabled) (int)
+parm:           audio:HDMI/DP Audio enable for non DC displays (-1 = auto, 0 = disable, 1 = enable) (int)
+parm:           disp_priority:Display Priority (0 = auto, 1 = normal, 2 = high) (int)
+parm:           hw_i2c:hw i2c engine enable (0 = disable) (int)
+parm:           pcie_gen2:PCIE Gen2 mode (-1 = auto, 0 = disable, 1 = enable) (int)
+parm:           msi:MSI support (1 = enable, 0 = disable, -1 = auto) (int)
+parm:           svm_default_granularity:SVM's default granularity in log(2^Pages), default 9 = 2^9 = 2 MiB (uint)
+parm:           lockup_timeout:GPU lockup timeout in ms (default: 2000. 0: keep default value. negative: infinity timeout), format: [single value for all] or [GFX,Compute,SDMA,Video]. (string)
+parm:           dpm:DPM support (1 = enable, 0 = disable, -1 = auto) (int)
+parm:           fw_load_type:firmware loading type (3 = rlc backdoor autoload if supported, 2 = smu load if supported, 1 = psp load, 0 = force direct if supported, -1 = auto) (int)
+parm:           aspm:ASPM support (1 = enable, 0 = disable, -1 = auto) (int)
+parm:           runpm:PX runtime pm (2 = force enable with BAMACO, 1 = force enable with BACO, 0 = disable, -1 = auto, -2 = auto with displays) (int)
+parm:           ip_block_mask:IP Block Mask (all blocks enabled (default)) (uint)
+parm:           bapm:BAPM support (1 = enable, 0 = disable, -1 = auto) (int)
+parm:           deep_color:Deep Color support (1 = enable, 0 = disable (default)) (int)
+parm:           vm_size:VM address space size in gigabytes (default 64GB) (int)
+parm:           vm_fragment_size:VM fragment size in bits (4, 5, etc. 4 = 64K (default), Max 9 = 2M) (int)
+parm:           vm_block_size:VM page table size in bits (default depending on vm_size) (int)
+parm:           vm_fault_stop:Stop on VM fault (0 = never (default), 1 = print first, 2 = always) (int)
+parm:           vm_update_mode:VM update using CPU (0 = never (default except for large BAR(LB)), 1 = Graphics only, 2 = Compute only (default for LB), 3 = Both (int)
+parm:           exp_hw_support:experimental hw support (1 = enable, 0 = disable (default)) (int)
+parm:           dc:Display Core driver (1 = enable, 0 = disable, -1 = auto (default)) (int)
+parm:           sched_jobs:the max number of jobs supported in the sw queue (default 32) (int)
+parm:           sched_hw_submission:the max number of HW submissions (default 2) (int)
+parm:           ppfeaturemask:all power features enabled (default)) (hexint)
+parm:           no_evict:Support pinning request from user space (1 = enable, 0 = disable (default)) (int)
+parm:           direct_gma_size:Direct GMA size in megabytes (max 96MB) (int)
+parm:           forcelongtraining:force memory long training (uint)
+parm:           pcie_gen_cap:PCIE Gen Caps (0: autodetect (default)) (uint)
+parm:           pcie_lane_cap:PCIE Lane Caps (0: autodetect (default)) (uint)
+parm:           cg_mask:Clockgating flags mask (0 = disable clock gating) (ullong)
+parm:           pg_mask:Powergating flags mask (0 = disable power gating) (uint)
+parm:           sdma_phase_quantum:SDMA context switch phase quantum (x 1K GPU clock cycles, 0 = no change (default 32)) (uint)
+parm:           disable_cu:Disable CUs (se.sh.cu,...) (charp)
+parm:           virtual_display:Enable virtual display feature (the virtual_display will be set like xxxx:xx:xx.x,x;xxxx:xx:xx.x,x) (charp)
+parm:           lbpw:Load Balancing Per Watt (LBPW) support (1 = enable, 0 = disable, -1 = auto) (int)
+parm:           compute_multipipe:Force compute queues to be spread across pipes (1 = enable, 0 = disable, -1 = auto) (int)
+parm:           gpu_recovery:Enable GPU recovery mechanism, (1 = enable, 0 = disable, -1 = auto) (int)
+parm:           emu_mode:Emulation mode, (1 = enable, 0 = disable) (int)
+parm:           ras_enable:Enable RAS features on the GPU (0 = disable, 1 = enable, -1 = auto (default)) (int)
+parm:           ras_mask:Mask of RAS features to enable (default 0xffffffff), only valid when ras_enable == 1 (uint)
+parm:           timeout_fatal_disable:disable watchdog timeout fatal error (false = default) (bool)
+parm:           timeout_period:watchdog timeout period (0 = timeout disabled, 1 ~ 0x23 = timeout maxcycles = (1 << period) (uint)
+parm:           si_support:SI support (1 = enabled, 0 = disabled, -1 = default) (int)
+parm:           cik_support:CIK support  (1 = enabled, 0 = disabled, -1 = default) (int)
+parm:           smu_memory_pool_size:reserve gtt for smu debug usage, 0 = disable,0x1 = 256Mbyte, 0x2 = 512Mbyte, 0x4 = 1 Gbyte, 0x8 = 2GByte (uint)
+parm:           async_gfx_ring:Asynchronous GFX rings that could be configured with either different priorities (HP3D ring and LP3D ring), or equal priorities (0 = disabled, 1 = enabled (default)) (int)
+parm:           mcbp:Enable Mid-command buffer preemption (0 = disabled, 1 = enabled), -1 = auto (default) (int)
+parm:           discovery:Allow driver to discover hardware IPs from IP Discovery table at the top of VRAM (int)
+parm:           mes:Enable Micro Engine Scheduler (0 = disabled (default), 1 = enabled) (int)
+parm:           mes_log_enable:Enable Micro Engine Scheduler log (0 = disabled (default), 1 = enabled) (int)
+parm:           mes_kiq:Enable Micro Engine Scheduler KIQ (0 = disabled (default), 1 = enabled) (int)
+parm:           uni_mes:Enable Unified Micro Engine Scheduler (0 = disabled, 1 = enabled(default) (int)
+parm:           noretry:Disable retry faults (0 = retry enabled, 1 = retry disabled, -1 auto (default)) (int)
+parm:           force_asic_type:A non negative value used to specify the asic type for all supported GPUs (int)
+parm:           use_xgmi_p2p:Enable XGMI P2P interface (0 = disable; 1 = enable (default)) (int)
+parm:           sched_policy:Scheduling policy (0 = HWS (Default), 1 = HWS without over-subscription, 2 = Non-HWS (Used for debugging only) (int)
+parm:           hws_max_conc_proc:Max # processes HWS can execute concurrently when sched_policy=0 (0 = no concurrency, #VMIDs for KFD = Maximum(default)) (int)
+parm:           cwsr_enable:CWSR enable (0 = Off, 1 = On (Default)) (int)
+parm:           max_num_of_queues_per_device:Maximum number of supported queues per device (1 = Minimum, 4096 = default) (int)
+parm:           send_sigterm:Send sigterm to HSA process on unhandled exception (0 = disable, 1 = enable) (int)
+parm:           halt_if_hws_hang:Halt if HWS hang is detected (0 = off (default), 1 = on) (int)
+parm:           hws_gws_support:Assume MEC2 FW supports GWS barriers (false = rely on FW version check (Default), true = force supported) (bool)
+parm:           queue_preemption_timeout_ms:queue preemption timeout in ms (1 = Minimum, 9000 = default) (int)
+parm:           debug_evictions:enable eviction debug messages (false = default) (bool)
+parm:           no_system_mem_limit:disable system memory limit (false = default) (bool)
+parm:           no_queue_eviction_on_vm_fault:No queue eviction on VM fault (0 = queue eviction, 1 = no queue eviction) (int)
+parm:           priv_cp_queues:Enable privileged mode for CP queues (0 = off (default), 1 = on) (int)
+parm:           keep_idle_process_evicted:Restore evicted process only if queues are active (N = off(default), Y = on) (bool)
+parm:           mtype_local:MTYPE for local memory (0 = MTYPE_RW (default), 1 = MTYPE_NC, 2 = MTYPE_CC) (int)
+parm:           pcie_p2p:Enable PCIe P2P (requires large-BAR). (N = off, Y = on(default)) (bool)
+parm:           dcfeaturemask:all stable DC features enabled (default)) (uint)
+parm:           dcdebugmask:all debug options disabled (default)) (uint)
+parm:           visualconfirm:Visual confirm (0 = off (default), 1 = MPO, 5 = PSR) (uint)
+parm:           abmlevel:ABM level (0 = off, 1-4 = backlight reduction level, -1 auto (default)) (int)
+parm:           backlight:Backlight control (0 = pwm, 1 = aux, -1 auto (default)) (bint)
+parm:           damageclips:Damage clips support (0 = disable, 1 = enable, -1 auto (default)) (int)
+parm:           tmz:Enable TMZ feature (-1 = auto (default), 0 = off, 1 = on) (int)
+parm:           freesync_video:Adds additional modes via VRR for refresh changes without a full modeset (0 = off (default), 1 = on) (uint)
+parm:           reset_method:GPU reset method (-1 = auto (default), 0 = legacy, 1 = mode0, 2 = mode1, 3 = mode2, 4 = baco/bamaco) (int)
+parm:           bad_page_threshold:Bad page threshold(-1 = ignore threshold (default value), 0 = disable bad page retirement, -2 = threshold determined by a formula, 0 < threshold < max records, user-defined threshold) (int)
+parm:           num_kcq:number of kernel compute queue user want to setup (8 if set to greater than 8 or less than 0, only affect gfx 8+) (int)
+parm:           vcnfw_log:Enable vcnfw log(0 = disable (default value), 1 = enable) (int)
+parm:           sg_display:S/G Display (-1 = auto (default), 0 = disable) (int)
+parm:           umsch_mm:Enable Multi Media User Mode Scheduler (0 = disabled (default), 1 = enabled) (int)
+parm:           umsch_mm_fwlog:Enable umschfw log(0 = disable (default value), 1 = enable) (int)
+parm:           smu_pptable_id:specify pptable id to be used (-1 = auto(default) value, 0 = use pptable from vbios, > 0 = soft pptable id) (int)
+parm:           user_partt_mode:specify partition mode to be used (-2 = AMDGPU_AUTO_COMPUTE_PARTITION_MODE(default value) 						0 = AMDGPU_SPX_PARTITION_MODE, 						1 = AMDGPU_DPX_PARTITION_MODE, 						2 = AMDGPU_TPX_PARTITION_MODE, 						3 = AMDGPU_QPX_PARTITION_MODE, 						4 = AMDGPU_CPX_PARTITION_MODE) (uint)
+parm:           enforce_isolation:enforce process isolation between graphics and compute. (-1 = auto, 0 = disable, 1 = enable, 2 = enable legacy mode, 3 = enable without cleaner shader) (int)
+parm:           modeset:Override nomodeset (1 = enable, -1 = auto) (int)
+parm:           seamless:Seamless boot (-1 = auto (default), 0 = disable, 1 = enable) (int)
+parm:           debug_mask:debug options for amdgpu, disabled by default (uint)
+parm:           agp:AGP (-1 = auto (default), 0 = disable, 1 = enable) (int)
+parm:           wbrf:Enable Wifi RFI interference mitigation (0 = disabled, 1 = enabled, -1 = auto(default) (int)
+parm:           rebar:Resizable BAR (-1 = auto (default), 0 = disable, 1 = enable) (int)
+parm:           user_queue:Enable user queues (-1 = auto (default), 0 = disable, 1 = enable, 2 = enable UQs and disable KQs) (int)
+parm:           ptl:Enable PTL (-1 = auto, 0 = disable (default), 1 = enable, 2 = permanently disable) (int)
+
+amd_atl                69632  1
+edac_mce_amd           28672  0
+kvm_amd               241664  0
+kvm                  1445888  1 kvm_amd
+amdxdna               147456  1
+ccp                   159744  1 kvm_amd
+gpu_sched              65536  1 amdxdna
+amd_pmc                53248  0
+amdgpu              20226048  3
+amddrm_ttm_helper      12288  1 amdgpu
+amdttm                131072  2 amdgpu,amddrm_ttm_helper
+amddrm_buddy           28672  1 amdgpu
+amdxcp                 12288  1 amdgpu
+amddrm_exec            12288  1 amdgpu
+drm_suballoc_helper    24576  1 amdgpu
+amd_sched              65536  1 amdgpu
+amdkcl                 28672  4 amd_sched,amdttm,amddrm_exec,amdgpu
+drm_panel_backlight_quirks    12288  1 amdgpu
+drm_display_helper    290816  1 amdgpu
+cec                    98304  2 drm_display_helper,amdgpu
+i2c_algo_bit           16384  1 amdgpu
+drm_ttm_helper         16384  2 amdgpu
+ttm                   126976  1 drm_ttm_helper
+video                  77824  1 amdgpu
+
+amdgpu/6.16.13-2341068.24.04, 6.17.0-35-generic, x86_64: installed
+
+================================================================================
+INSTALLED ROCm / AMDGPU PACKAGES
+================================================================================
+ii  amdgpu-core                                1:7.2.07020400-2341098.24.04                     all          Core meta package for unified amdgpu driver.
+ii  amdgpu-dkms                                1:6.16.13.30300400-2341068.24.04                 all          amdgpu driver in DKMS format.
+ii  amdgpu-dkms-firmware                       30.30.4.0.30300400-2341068.24.04                 all          firmware blobs used by amdgpu driver in DKMS format
+ii  amdgpu-install                             30.30.4.0.30300400-2341068.24.04                 all          AMDGPU driver repository and installer
+ii  comgr                                      3.0.0.70204-93~24.04                             amd64        Library to provide support functions for ROCm code objects.
+ii  hip-dev                                    7.2.53211.70204-93~24.04                         amd64        HIP:Heterogenous-computing Interface for Portability
+ii  hip-doc                                    7.2.53211.70204-93~24.04                         amd64        HIP:Heterogenous-computing Interface for Portability
+ii  hip-runtime-amd                            7.2.53211.70204-93~24.04                         amd64        HIP:Heterogenous-computing Interface for Portability
+ii  hip-samples                                7.2.53211.70204-93~24.04                         amd64        HIP: Heterogenous-computing Interface for Portability [HIP SAMPLES]
+ii  hipblas                                    3.2.0.70204-93~24.04                             amd64        ROCm BLAS marshalling library
+ii  hipblas-common-dev                         1.4.0.70204-93~24.04                             amd64        Common files for hipBLAS libraries
+ii  hipblas-dev                                3.2.0.70204-93~24.04                             amd64        ROCm BLAS marshalling library
+ii  hipblaslt                                  1.2.2.70204-93~24.04                             amd64        HIP library for GEMM operations with extended functionality
+ii  hipblaslt-dev                              1.2.2.70204-93~24.04                             amd64        HIP library for GEMM operations with extended functionality
+ii  hipcc                                      1.1.1.70204-93~24.04                             amd64        hipcc built using CMake
+ii  hipcub-dev                                 4.2.0.70204-93~24.04                             amd64        hipCUB (rocPRIM backend)
+ii  hipfft                                     1.0.22.70204-93~24.04                            amd64        ROCm FFT marshalling library
+ii  hipfft-dev                                 1.0.22.70204-93~24.04                            amd64        ROCm FFT marshalling library
+ii  hipfort-dev                                0.7.1.70204-93~24.04                             amd64        Fortran Interface For GPU Kernel Libraries
+ii  hipify-clang                               22.0.0.70204-93~24.04                            amd64        Hipify CUDA source
+ii  hiprand                                    3.1.0.70204-93~24.04                             amd64        GPU-based random number generation library, written in HIP
+ii  hiprand-dev                                3.1.0.70204-93~24.04                             amd64        GPU-based random number generation library, written in HIP
+ii  hipsolver                                  3.2.0.70204-93~24.04                             amd64        ROCm LAPACK marshalling library
+ii  hipsolver-dev                              3.2.0.70204-93~24.04                             amd64        ROCm LAPACK marshalling library
+ii  hipsparse                                  4.2.0.70204-93~24.04                             amd64        ROCm SPARSE library
+ii  hipsparse-dev                              4.2.0.70204-93~24.04                             amd64        ROCm SPARSE library
+ii  hipsparselt                                0.2.6.70204-93~24.04                             amd64        ROCm structured sparsity matrix multiplication marshalling library
+ii  hipsparselt-dev                            0.2.6.70204-93~24.04                             amd64        ROCm structured sparsity matrix multiplication marshalling library
+ii  hiptensor                                  2.2.0.70204-93~24.04                             amd64        AMD high-performance HIP library for tensor primitives
+ii  hiptensor-dev                              2.2.0.70204-93~24.04                             amd64        AMD high-performance HIP library for tensor primitives
+ii  hsa-rocr                                   1.18.0.70204-93~24.04                            amd64        AMD Heterogeneous System Architecture HSA - Linux HSA Runtime for Boltzmann (ROCm) platforms
+ii  hsa-rocr-dev                               1.18.0.70204-93~24.04                            amd64        AMD Heterogeneous System Architecture HSA development package.
+ii  libdrm-amdgpu-amdgpu1:amd64                1:2.4.125.07020400-2341098.24.04                 amd64        Userspace interface to amdgpu-specific kernel DRM services -- runtime
+ii  libdrm-amdgpu-common                       1.0.0.07020400-2341098.24.04                     all          List of AMD/ATI cards' device IDs, revision IDs and marketing names
+ii  libdrm-amdgpu-dev:amd64                    1:2.4.125.07020400-2341098.24.04                 amd64        Userspace interface to kernel DRM services -- development files
+ii  libdrm-amdgpu-radeon1:amd64                1:2.4.125.07020400-2341098.24.04                 amd64        Userspace interface to radeon-specific kernel DRM services -- runtime
+ii  libdrm2-amdgpu:amd64                       1:2.4.125.07020400-2341098.24.04                 amd64        Userspace interface to kernel DRM services -- runtime
+ii  libflashrom1:amd64                         1.3.0-2.1ubuntu2                                 amd64        Identify, read, write, erase, and verify BIOS/ROM/flash chips - library
+ii  migraphx                                   2.15.0.70204-93~24.04                            amd64        AMD graph optimizer
+ii  migraphx-dev                               2.15.0.70204-93~24.04                            amd64        AMD graph optimizer
+ii  miopen-hip                                 3.5.1.70204-93~24.04                             amd64        AMD DNN Library
+ii  miopen-hip-dev                             3.5.1.70204-93~24.04                             amd64        AMD DNN Library
+ii  rccl                                       2.27.7.70204-93~24.04                            amd64        ROCm Communication Collectives Library
+ii  rccl-dev                                   2.27.7.70204-93~24.04                            amd64        ROCm Communication Collectives Library
+ii  rocalution                                 4.1.0.70204-93~24.04                             amd64        ROCm library for sparse linear systems
+ii  rocalution-dev                             4.1.0.70204-93~24.04                             amd64        ROCm library for sparse linear systems
+ii  rocblas                                    5.2.0.70204-93~24.04                             amd64        AMD library for BLAS in ROCm. Implemented in HIP and optimized for AMD GPUs
+ii  rocblas-dev                                5.2.0.70204-93~24.04                             amd64        AMD library for BLAS in ROCm. Implemented in HIP and optimized for AMD GPUs
+ii  rocfft                                     1.0.36.70204-93~24.04                            amd64        ROCm FFT library
+ii  rocfft-dev                                 1.0.36.70204-93~24.04                            amd64        ROCm FFT library
+ii  rocm-cmake                                 0.14.0.70204-93~24.04                            amd64        rocm-cmake built using CMake
+ii  rocm-core                                  7.2.4.70204-93~24.04                             amd64        ROCm Runtime software stack
+ii  rocm-device-libs                           1.0.0.70204-93~24.04                             amd64        Radeon Open Compute - device libraries
+ii  rocm-hip                                   7.2.4.70204-93~24.04                             amd64        Radeon Open Compute (ROCm) Runtime software stack
+ii  rocm-language-runtime                      7.2.4.70204-93~24.04                             amd64        Radeon Open Compute (ROCm) Runtime software stack
+ii  rocm-llvm                                  22.0.0.26084.70204-93~24.04                      amd64        ROCm core compiler
+ii  rocm-smi-lib                               7.8.0.70204-93~24.04                             amd64        AMD System Management libraries
+ii  rocminfo                                   1.0.0.70204-93~24.04                             amd64        Radeon Open Compute (ROCm) Runtime rocminfo tool
+ii  rocprim-dev                                4.2.0.70204-93~24.04                             amd64        rocPRIM is a header-only library that provides HIP parallel primitives.
+ii  rocrand                                    4.2.0.70204-93~24.04                             amd64        rocRAND is a ROCm random number generation library
+ii  rocrand-dev                                4.2.0.70204-93~24.04                             amd64        rocRAND is a ROCm random number generation library
+ii  rocsolver                                  3.32.0.70204-93~24.04                            amd64        AMD ROCm SOLVER library
+ii  rocsolver-dev                              3.32.0.70204-93~24.04                            amd64        AMD ROCm SOLVER library
+ii  rocsparse                                  4.2.0.70204-93~24.04                             amd64        ROCm SPARSE library
+ii  rocsparse-dev                              4.2.0.70204-93~24.04                             amd64        ROCm SPARSE library
+ii  rocthrust-dev                              4.2.0.70204-93~24.04                             amd64        rocThrust is a ROCm port of the Thrust library, written in HIP
+ii  whiptail                                   0.52.24-2ubuntu2                                 amd64        Displays user-friendly dialog boxes from shell scripts
+
+================================================================================
+APT POLICY IMPORTANT PACKAGES
+================================================================================
+amdgpu-install:
+  Installed: 30.30.4.0.30300400-2341068.24.04
+  Candidate: 30.30.4.0.30300400-2341068.24.04
+  Version table:
+ *** 30.30.4.0.30300400-2341068.24.04 600
+        600 https://repo.radeon.com/amdgpu/30.30.4/ubuntu noble/main amd64 Packages
+        600 https://repo.radeon.com/amdgpu/30.30.4/ubuntu noble/main i386 Packages
+        100 /var/lib/dpkg/status
+amdgpu-dkms:
+  Installed: 1:6.16.13.30300400-2341068.24.04
+  Candidate: 1:6.16.13.30300400-2341068.24.04
+  Version table:
+ *** 1:6.16.13.30300400-2341068.24.04 600
+        600 https://repo.radeon.com/amdgpu/30.30.4/ubuntu noble/main amd64 Packages
+        600 https://repo.radeon.com/amdgpu/30.30.4/ubuntu noble/main i386 Packages
+        100 /var/lib/dpkg/status
+amdgpu-core:
+  Installed: 1:7.2.07020400-2341098.24.04
+  Candidate: 1:7.2.07020400-2341098.24.04
+  Version table:
+ *** 1:7.2.07020400-2341098.24.04 600
+        600 https://repo.radeon.com/graphics/7.2.4/ubuntu noble/main amd64 Packages
+        600 https://repo.radeon.com/graphics/7.2.4/ubuntu noble/main i386 Packages
+        100 /var/lib/dpkg/status
+amdgpu-dkms-firmware:
+  Installed: 30.30.4.0.30300400-2341068.24.04
+  Candidate: 30.30.4.0.30300400-2341068.24.04
+  Version table:
+ *** 30.30.4.0.30300400-2341068.24.04 600
+        600 https://repo.radeon.com/amdgpu/30.30.4/ubuntu noble/main amd64 Packages
+        600 https://repo.radeon.com/amdgpu/30.30.4/ubuntu noble/main i386 Packages
+        100 /var/lib/dpkg/status
+rocm-core:
+  Installed: 7.2.4.70204-93~24.04
+  Candidate: 7.2.4.70204-93~24.04
+  Version table:
+ *** 7.2.4.70204-93~24.04 600
+        600 https://repo.radeon.com/rocm/apt/7.2.4 noble/main amd64 Packages
+        100 /var/lib/dpkg/status
+hsa-rocr:
+  Installed: 1.18.0.70204-93~24.04
+  Candidate: 1.18.0.70204-93~24.04
+  Version table:
+ *** 1.18.0.70204-93~24.04 600
+        600 https://repo.radeon.com/rocm/apt/7.2.4 noble/main amd64 Packages
+        100 /var/lib/dpkg/status
+hip-runtime-amd:
+  Installed: 7.2.53211.70204-93~24.04
+  Candidate: 7.2.53211.70204-93~24.04
+  Version table:
+ *** 7.2.53211.70204-93~24.04 600
+        600 https://repo.radeon.com/rocm/apt/7.2.4 noble/main amd64 Packages
+        100 /var/lib/dpkg/status
+rocm-hip:
+  Installed: 7.2.4.70204-93~24.04
+  Candidate: 7.2.4.70204-93~24.04
+  Version table:
+ *** 7.2.4.70204-93~24.04 600
+        600 https://repo.radeon.com/rocm/apt/7.2.4 noble/main amd64 Packages
+        100 /var/lib/dpkg/status
+rocminfo:
+  Installed: 1.0.0.70204-93~24.04
+  Candidate: 1.0.0.70204-93~24.04
+  Version table:
+     5.7.1-3build1 500
+        500 http://rs.archive.ubuntu.com/ubuntu noble/universe amd64 Packages
+ *** 1.0.0.70204-93~24.04 600
+        600 https://repo.radeon.com/rocm/apt/7.2.4 noble/main amd64 Packages
+        100 /var/lib/dpkg/status
+migraphx:
+  Installed: 2.15.0.70204-93~24.04
+  Candidate: 2.15.0.70204-93~24.04
+  Version table:
+ *** 2.15.0.70204-93~24.04 600
+        600 https://repo.radeon.com/rocm/apt/7.2.4 noble/main amd64 Packages
+        100 /var/lib/dpkg/status
+migraphx-dev:
+  Installed: 2.15.0.70204-93~24.04
+  Candidate: 2.15.0.70204-93~24.04
+  Version table:
+ *** 2.15.0.70204-93~24.04 600
+        600 https://repo.radeon.com/rocm/apt/7.2.4 noble/main amd64 Packages
+        100 /var/lib/dpkg/status
+libhsa-runtime64-1:
+  Installed: (none)
+  Candidate: 5.7.1-2build1
+  Version table:
+     5.7.1-2build1 500
+        500 http://rs.archive.ubuntu.com/ubuntu noble/universe amd64 Packages
+libhsakmt1:
+  Installed: (none)
+  Candidate: 5.7.0-1build1
+  Version table:
+     5.7.0-1build1 500
+        500 http://rs.archive.ubuntu.com/ubuntu noble/universe amd64 Packages
+libamdhip64-5:
+  Installed: (none)
+  Candidate: 5.7.1-3
+  Version table:
+     5.7.1-3 500
+        500 http://rs.archive.ubuntu.com/ubuntu noble/universe amd64 Packages
+
+================================================================================
+LINKER LIBRARIES
+================================================================================
+
+================================================================================
+KERNELS AVAILABLE / INSTALLED
+================================================================================
+ii  linux-headers-6.17.0-23-generic            6.17.0-23.23~24.04.1                             amd64        Linux kernel headers for version 6.17.0
+ii  linux-headers-6.17.0-29-generic            6.17.0-29.29~24.04.1                             amd64        Linux kernel headers for version 6.17.0
+ii  linux-headers-6.17.0-35-generic            6.17.0-35.35~24.04.1                             amd64        Linux kernel headers for version 6.17.0
+ii  linux-headers-generic-hwe-24.04            6.17.0-35.35~24.04.1                             amd64        Generic Linux kernel headers
+rc  linux-image-6.17.0-14-generic              6.17.0-14.14~24.04.1                             amd64        Signed kernel image generic
+rc  linux-image-6.17.0-19-generic              6.17.0-19.19~24.04.2                             amd64        Signed kernel image generic
+rc  linux-image-6.17.0-20-generic              6.17.0-20.20~24.04.1                             amd64        Signed kernel image generic
+rc  linux-image-6.17.0-22-generic              6.17.0-22.22~24.04.1                             amd64        Signed kernel image generic
+rc  linux-image-6.17.0-23-generic              6.17.0-23.23~24.04.1                             amd64        Signed kernel image generic
+ii  linux-image-6.17.0-29-generic              6.17.0-29.29~24.04.1                             amd64        Signed kernel image generic
+ii  linux-image-6.17.0-35-generic              6.17.0-35.35~24.04.1                             amd64        Signed kernel image generic
+ii  linux-image-generic-hwe-24.04              6.17.0-35.35~24.04.1                             amd64        Generic Linux kernel image
+rc  linux-modules-6.17.0-14-generic            6.17.0-14.14~24.04.1                             amd64        Linux kernel extra modules for version 6.17.0
+rc  linux-modules-6.17.0-19-generic            6.17.0-19.19~24.04.2                             amd64        Linux kernel extra modules for version 6.17.0
+rc  linux-modules-6.17.0-20-generic            6.17.0-20.20~24.04.1                             amd64        Linux kernel extra modules for version 6.17.0
+rc  linux-modules-6.17.0-22-generic            6.17.0-22.22~24.04.1                             amd64        Linux kernel extra modules for version 6.17.0
+ii  linux-modules-6.17.0-23-generic            6.17.0-23.23~24.04.1                             amd64        Linux kernel extra modules for version 6.17.0
+ii  linux-modules-6.17.0-29-generic            6.17.0-29.29~24.04.1                             amd64        Linux kernel extra modules for version 6.17.0
+ii  linux-modules-6.17.0-35-generic            6.17.0-35.35~24.04.1                             amd64        Linux kernel extra modules for version 6.17.0
+rc  linux-modules-extra-6.17.0-14-generic      6.17.0-14.14~24.04.1                             amd64        Linux kernel extra modules for version 6.17.0
+rc  linux-modules-extra-6.17.0-19-generic      6.17.0-19.19~24.04.2                             amd64        Linux kernel extra modules for version 6.17.0
+rc  linux-modules-extra-6.17.0-20-generic      6.17.0-20.20~24.04.1                             amd64        Linux kernel extra modules for version 6.17.0
+rc  linux-modules-extra-6.17.0-22-generic      6.17.0-22.22~24.04.1                             amd64        Linux kernel extra modules for version 6.17.0
+ii  linux-modules-extra-6.17.0-23-generic      6.17.0-23.23~24.04.1                             amd64        Linux kernel extra modules for version 6.17.0
+ii  linux-modules-extra-6.17.0-29-generic      6.17.0-29.29~24.04.1                             amd64        Linux kernel extra modules for version 6.17.0
+ii  linux-modules-extra-6.17.0-35-generic      6.17.0-35.35~24.04.1                             amd64        Linux kernel extra modules for version 6.17.0
+
+linux-image-unsigned-6.8.0-36-lowlatency - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-38-generic - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-38-lowlatency - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-39-generic - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-39-lowlatency - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-40-generic - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-40-lowlatency - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-41-generic - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-41-lowlatency - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-44-generic - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-44-lowlatency - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-45-generic - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-45-lowlatency - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-47-generic - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-47-lowlatency - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-48-generic - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-48-lowlatency - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-49-generic - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-49-lowlatency - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-50-generic - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-50-lowlatency - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-51-generic - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-51-lowlatency - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-52-generic - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-52-lowlatency - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-53-generic - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-53-lowlatency - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-54-generic - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-54-lowlatency - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-55-generic - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-55-lowlatency - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-56-generic - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-56-lowlatency - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-57-generic - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-57-lowlatency - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-58-generic - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-58-lowlatency - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-59-generic - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-59-lowlatency - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-60-generic - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-60-lowlatency - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-62-generic - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-62-lowlatency - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-63-generic - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-63-lowlatency - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-64-generic - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-64-lowlatency - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-65-lowlatency - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-71-generic - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-78-generic - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-78-lowlatency - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-79-generic - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-79-lowlatency - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-83-generic - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-83-lowlatency - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-84-generic - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-84-lowlatency - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-85-generic - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-85-lowlatency - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-86-generic - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-86-lowlatency - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-87-generic - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-87-lowlatency - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-88-generic - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-88-lowlatency - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-90-generic - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-90-lowlatency - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-94-generic - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-94-lowlatency - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-7.0.0-14-generic - Linux kernel image for version 7.0.0
+linux-image-virtual-6.11 - Virtual Linux kernel image
+linux-image-virtual-6.14 - Virtual Linux kernel image
+linux-image-virtual-6.17 - Virtual Linux kernel image
+linux-image-virtual-6.8 - Virtual Linux kernel image
+linux-image-virtual-7.0 - Virtual Linux kernel image
+linux-virtual-6.11 - Minimal Generic Linux kernel and headers
+linux-virtual-6.14 - Minimal Generic Linux kernel and headers
+linux-virtual-6.17 - Minimal Generic Linux kernel and headers
+linux-virtual-6.8 - Minimal Generic Linux kernel and headers
+linux-virtual-7.0 - Minimal Generic Linux kernel and headers
+linux-image-6.11.0-1008-azure - Signed kernel image azure
+linux-image-6.11.0-1008-azure-fde - Signed kernel image azure for CVM
+linux-image-6.8.0-1001-gkeop - Signed kernel image gkeop
+linux-image-6.8.0-1002-gkeop - Signed kernel image gkeop
+linux-image-6.8.0-1003-gkeop - Signed kernel image gkeop
+linux-image-6.8.0-1004-gkeop - Signed kernel image gkeop
+linux-image-6.8.0-1005-intel - Signed kernel image intel
+linux-image-6.8.0-1006-gkeop - Signed kernel image gkeop
+linux-image-6.8.0-1006-intel - Signed kernel image intel
+linux-image-6.8.0-1007-gkeop - Signed kernel image gkeop
+linux-image-6.8.0-1008-gkeop - Signed kernel image gkeop
+linux-image-6.8.0-1009-gkeop - Signed kernel image gkeop
+linux-image-6.8.0-1010-gkeop - Signed kernel image gkeop
+linux-image-6.8.0-1011-gkeop - Signed kernel image gkeop
+linux-image-6.8.0-1012-gkeop - Signed kernel image gkeop
+linux-image-6.8.0-1013-gkeop - Signed kernel image gkeop
+linux-image-6.8.0-1014-gkeop - Signed kernel image gkeop
+linux-image-6.8.0-1015-gkeop - Signed kernel image gkeop
+linux-image-6.8.0-1016-gkeop - Signed kernel image gkeop
+linux-image-6.8.0-1019-gkeop - Signed kernel image gkeop
+linux-image-6.8.1-1015-realtime - Signed kernel image realtime
+linux-image-uc-6.8.1-1015-realtime - Signed kernel image realtime for Ubuntu Core
+linux-image-unsigned-6.11.0-1008-azure - Linux kernel image for version 6.11.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-1001-gkeop - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-1002-gkeop - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-1003-gkeop - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-1004-gkeop - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-1006-gkeop - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-1007-gkeop - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-1008-gkeop - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-1009-gkeop - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-1010-gkeop - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-1011-gkeop - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-1012-gkeop - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-1013-gkeop - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-1014-gkeop - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-1015-gkeop - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-1016-gkeop - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.0-1019-gkeop - Linux kernel image for version 6.8.0 on 64 bit x86 SMP
+linux-image-unsigned-6.8.1-1015-realtime - Linux kernel image for version 6.8.1 on 64 bit x86 SMP
+
+================================================================================
+FIRMWARE AMDGPU
+================================================================================
+/usr/lib/firmware/updates/amdgpu/raven_me.bin
+/usr/lib/firmware/updates/amdgpu/raven_mec2.bin
+/usr/lib/firmware/updates/amdgpu/raven_mec.bin
+/usr/lib/firmware/updates/amdgpu/raven_pfp.bin
+/usr/lib/firmware/updates/amdgpu/raven_rlc.bin
+/usr/lib/firmware/updates/amdgpu/raven_sdma.bin
+/usr/lib/firmware/updates/amdgpu/raven_ta.bin
+/usr/lib/firmware/updates/amdgpu/raven_vcn.bin
+/usr/lib/firmware/updates/amdgpu/renoir_asd.bin
+/usr/lib/firmware/updates/amdgpu/renoir_ce.bin
+/usr/lib/firmware/updates/amdgpu/renoir_dmcub.bin
+/usr/lib/firmware/updates/amdgpu/renoir_gpu_info.bin
+/usr/lib/firmware/updates/amdgpu/renoir_me.bin
+/usr/lib/firmware/updates/amdgpu/renoir_mec2.bin
+/usr/lib/firmware/updates/amdgpu/renoir_mec.bin
+/usr/lib/firmware/updates/amdgpu/renoir_pfp.bin
+/usr/lib/firmware/updates/amdgpu/renoir_rlc.bin
+/usr/lib/firmware/updates/amdgpu/renoir_sdma.bin
+/usr/lib/firmware/updates/amdgpu/renoir_ta.bin
+/usr/lib/firmware/updates/amdgpu/renoir_vcn.bin
+/usr/lib/firmware/updates/amdgpu/sdma_4_4_2.bin
+/usr/lib/firmware/updates/amdgpu/sdma_4_4_4.bin
+/usr/lib/firmware/updates/amdgpu/sdma_4_4_5.bin
+/usr/lib/firmware/updates/amdgpu/sdma_5_2_6.bin
+/usr/lib/firmware/updates/amdgpu/sdma_5_2_7.bin
+/usr/lib/firmware/updates/amdgpu/sdma_6_0_0.bin
+/usr/lib/firmware/updates/amdgpu/sdma_6_0_1.bin
+/usr/lib/firmware/updates/amdgpu/sdma_6_0_2.bin
+/usr/lib/firmware/updates/amdgpu/sdma_6_0_3.bin
+/usr/lib/firmware/updates/amdgpu/sdma_6_1_0.bin
+/usr/lib/firmware/updates/amdgpu/sdma_6_1_1.bin
+/usr/lib/firmware/updates/amdgpu/sdma_6_1_2.bin
+/usr/lib/firmware/updates/amdgpu/sdma_6_1_3.bin
+/usr/lib/firmware/updates/amdgpu/sdma_7_0_0.bin
+/usr/lib/firmware/updates/amdgpu/sdma_7_0_1.bin
+/usr/lib/firmware/updates/amdgpu/si58_mc.bin
+/usr/lib/firmware/updates/amdgpu/sienna_cichlid_cap.bin
+/usr/lib/firmware/updates/amdgpu/sienna_cichlid_ce.bin
+/usr/lib/firmware/updates/amdgpu/sienna_cichlid_dmcub.bin
+/usr/lib/firmware/updates/amdgpu/sienna_cichlid_me.bin
+/usr/lib/firmware/updates/amdgpu/sienna_cichlid_mec2.bin
+/usr/lib/firmware/updates/amdgpu/sienna_cichlid_mec.bin
+/usr/lib/firmware/updates/amdgpu/sienna_cichlid_mes.bin
+/usr/lib/firmware/updates/amdgpu/sienna_cichlid_pfp.bin
+/usr/lib/firmware/updates/amdgpu/sienna_cichlid_rlc.bin
+/usr/lib/firmware/updates/amdgpu/sienna_cichlid_sdma.bin
+/usr/lib/firmware/updates/amdgpu/sienna_cichlid_smc.bin
+/usr/lib/firmware/updates/amdgpu/sienna_cichlid_sos.bin
+/usr/lib/firmware/updates/amdgpu/sienna_cichlid_ta.bin
+/usr/lib/firmware/updates/amdgpu/sienna_cichlid_vcn.bin
+/usr/lib/firmware/updates/amdgpu/smu_13_0_0.bin
+/usr/lib/firmware/updates/amdgpu/smu_13_0_0_kicker.bin
+/usr/lib/firmware/updates/amdgpu/smu_13_0_10.bin
+/usr/lib/firmware/updates/amdgpu/smu_13_0_14.bin
+/usr/lib/firmware/updates/amdgpu/smu_13_0_6.bin
+/usr/lib/firmware/updates/amdgpu/smu_13_0_7.bin
+/usr/lib/firmware/updates/amdgpu/smu_14_0_2.bin
+/usr/lib/firmware/updates/amdgpu/smu_14_0_3.bin
+/usr/lib/firmware/updates/amdgpu/smu_14_0_3_kicker.bin
+/usr/lib/firmware/updates/amdgpu/stoney_ce.bin
+/usr/lib/firmware/updates/amdgpu/stoney_me.bin
+/usr/lib/firmware/updates/amdgpu/stoney_mec.bin
+/usr/lib/firmware/updates/amdgpu/stoney_pfp.bin
+/usr/lib/firmware/updates/amdgpu/stoney_rlc.bin
+/usr/lib/firmware/updates/amdgpu/stoney_sdma.bin
+/usr/lib/firmware/updates/amdgpu/stoney_uvd.bin
+/usr/lib/firmware/updates/amdgpu/stoney_vce.bin
+/usr/lib/firmware/updates/amdgpu/tahiti_ce.bin
+/usr/lib/firmware/updates/amdgpu/tahiti_k_smc.bin
+/usr/lib/firmware/updates/amdgpu/tahiti_mc.bin
+/usr/lib/firmware/updates/amdgpu/tahiti_me.bin
+/usr/lib/firmware/updates/amdgpu/tahiti_pfp.bin
+/usr/lib/firmware/updates/amdgpu/tahiti_rlc.bin
+/usr/lib/firmware/updates/amdgpu/tahiti_smc.bin
+/usr/lib/firmware/updates/amdgpu/tahiti_uvd.bin
+/usr/lib/firmware/updates/amdgpu/tonga_ce.bin
+/usr/lib/firmware/updates/amdgpu/tonga_k_smc.bin
+/usr/lib/firmware/updates/amdgpu/tonga_mc.bin
+/usr/lib/firmware/updates/amdgpu/tonga_me.bin
+/usr/lib/firmware/updates/amdgpu/tonga_mec2.bin
+/usr/lib/firmware/updates/amdgpu/tonga_mec.bin
+/usr/lib/firmware/updates/amdgpu/tonga_pfp.bin
+/usr/lib/firmware/updates/amdgpu/tonga_rlc.bin
+/usr/lib/firmware/updates/amdgpu/tonga_sdma1.bin
+/usr/lib/firmware/updates/amdgpu/tonga_sdma.bin
+/usr/lib/firmware/updates/amdgpu/tonga_smc.bin
+/usr/lib/firmware/updates/amdgpu/tonga_uvd.bin
+/usr/lib/firmware/updates/amdgpu/tonga_vce.bin
+/usr/lib/firmware/updates/amdgpu/topaz_ce.bin
+/usr/lib/firmware/updates/amdgpu/topaz_k_smc.bin
+/usr/lib/firmware/updates/amdgpu/topaz_mc.bin
+/usr/lib/firmware/updates/amdgpu/topaz_me.bin
+/usr/lib/firmware/updates/amdgpu/topaz_mec2.bin
+/usr/lib/firmware/updates/amdgpu/topaz_mec.bin
+/usr/lib/firmware/updates/amdgpu/topaz_pfp.bin
+/usr/lib/firmware/updates/amdgpu/topaz_rlc.bin
+/usr/lib/firmware/updates/amdgpu/topaz_sdma1.bin
+/usr/lib/firmware/updates/amdgpu/topaz_sdma.bin
+/usr/lib/firmware/updates/amdgpu/topaz_smc.bin
+/usr/lib/firmware/updates/amdgpu/umsch_mm_4_0_0.bin
+/usr/lib/firmware/updates/amdgpu/vangogh_asd.bin
+/usr/lib/firmware/updates/amdgpu/vangogh_ce.bin
+/usr/lib/firmware/updates/amdgpu/vangogh_dmcub.bin
+/usr/lib/firmware/updates/amdgpu/vangogh_me.bin
+/usr/lib/firmware/updates/amdgpu/vangogh_mec2.bin
+/usr/lib/firmware/updates/amdgpu/vangogh_mec.bin
+/usr/lib/firmware/updates/amdgpu/vangogh_pfp.bin
+/usr/lib/firmware/updates/amdgpu/vangogh_rlc.bin
+/usr/lib/firmware/updates/amdgpu/vangogh_sdma.bin
+/usr/lib/firmware/updates/amdgpu/vangogh_toc.bin
+/usr/lib/firmware/updates/amdgpu/vangogh_vcn.bin
+/usr/lib/firmware/updates/amdgpu/vcn_3_1_2.bin
+/usr/lib/firmware/updates/amdgpu/vcn_4_0_0.bin
+/usr/lib/firmware/updates/amdgpu/vcn_4_0_2.bin
+/usr/lib/firmware/updates/amdgpu/vcn_4_0_3.bin
+/usr/lib/firmware/updates/amdgpu/vcn_4_0_4.bin
+/usr/lib/firmware/updates/amdgpu/vcn_4_0_5.bin
+/usr/lib/firmware/updates/amdgpu/vcn_4_0_6_1.bin
+/usr/lib/firmware/updates/amdgpu/vcn_4_0_6.bin
+/usr/lib/firmware/updates/amdgpu/vcn_5_0_0.bin
+/usr/lib/firmware/updates/amdgpu/vcn_5_0_1.bin
+/usr/lib/firmware/updates/amdgpu/vega10_acg_smc.bin
+/usr/lib/firmware/updates/amdgpu/vega10_asd.bin
+/usr/lib/firmware/updates/amdgpu/vega10_ce.bin
+/usr/lib/firmware/updates/amdgpu/vega10_gpu_info.bin
+/usr/lib/firmware/updates/amdgpu/vega10_ip_discovery.bin
+/usr/lib/firmware/updates/amdgpu/vega10_me.bin
+/usr/lib/firmware/updates/amdgpu/vega10_mec2.bin
+/usr/lib/firmware/updates/amdgpu/vega10_mec.bin
+/usr/lib/firmware/updates/amdgpu/vega10_pfp.bin
+/usr/lib/firmware/updates/amdgpu/vega10_rlc.bin
+/usr/lib/firmware/updates/amdgpu/vega10_sdma1.bin
+/usr/lib/firmware/updates/amdgpu/vega10_sdma.bin
+/usr/lib/firmware/updates/amdgpu/vega10_smc.bin
+/usr/lib/firmware/updates/amdgpu/vega10_sos.bin
+/usr/lib/firmware/updates/amdgpu/vega10_uvd.bin
+/usr/lib/firmware/updates/amdgpu/vega10_vce.bin
+/usr/lib/firmware/updates/amdgpu/vega12_asd.bin
+/usr/lib/firmware/updates/amdgpu/vega12_ce.bin
+/usr/lib/firmware/updates/amdgpu/vega12_gpu_info.bin
+/usr/lib/firmware/updates/amdgpu/vega12_ip_discovery.bin
+/usr/lib/firmware/updates/amdgpu/vega12_me.bin
+/usr/lib/firmware/updates/amdgpu/vega12_mec2.bin
+/usr/lib/firmware/updates/amdgpu/vega12_mec.bin
+/usr/lib/firmware/updates/amdgpu/vega12_pfp.bin
+/usr/lib/firmware/updates/amdgpu/vega12_rlc.bin
+/usr/lib/firmware/updates/amdgpu/vega12_sdma1.bin
+/usr/lib/firmware/updates/amdgpu/vega12_sdma.bin
+/usr/lib/firmware/updates/amdgpu/vega12_smc.bin
+/usr/lib/firmware/updates/amdgpu/vega12_sos.bin
+/usr/lib/firmware/updates/amdgpu/vega12_uvd.bin
+/usr/lib/firmware/updates/amdgpu/vega12_vce.bin
+/usr/lib/firmware/updates/amdgpu/vega20_asd.bin
+/usr/lib/firmware/updates/amdgpu/vega20_ce.bin
+/usr/lib/firmware/updates/amdgpu/vega20_ip_discovery.bin
+/usr/lib/firmware/updates/amdgpu/vega20_me.bin
+/usr/lib/firmware/updates/amdgpu/vega20_mec2.bin
+/usr/lib/firmware/updates/amdgpu/vega20_mec.bin
+/usr/lib/firmware/updates/amdgpu/vega20_pfp.bin
+/usr/lib/firmware/updates/amdgpu/vega20_rlc.bin
+/usr/lib/firmware/updates/amdgpu/vega20_sdma1.bin
+/usr/lib/firmware/updates/amdgpu/vega20_sdma.bin
+/usr/lib/firmware/updates/amdgpu/vega20_smc.bin
+/usr/lib/firmware/updates/amdgpu/vega20_sos.bin
+/usr/lib/firmware/updates/amdgpu/vega20_ta.bin
+/usr/lib/firmware/updates/amdgpu/vega20_uvd.bin
+/usr/lib/firmware/updates/amdgpu/vega20_vce.bin
+/usr/lib/firmware/updates/amdgpu/vegam_ce.bin
+/usr/lib/firmware/updates/amdgpu/vegam_me.bin
+/usr/lib/firmware/updates/amdgpu/vegam_mec2.bin
+/usr/lib/firmware/updates/amdgpu/vegam_mec.bin
+/usr/lib/firmware/updates/amdgpu/vegam_pfp.bin
+/usr/lib/firmware/updates/amdgpu/vegam_rlc.bin
+/usr/lib/firmware/updates/amdgpu/vegam_sdma1.bin
+/usr/lib/firmware/updates/amdgpu/vegam_sdma.bin
+/usr/lib/firmware/updates/amdgpu/vegam_smc.bin
+/usr/lib/firmware/updates/amdgpu/vegam_uvd.bin
+/usr/lib/firmware/updates/amdgpu/vegam_vce.bin
+/usr/lib/firmware/updates/amdgpu/verde_ce.bin
+/usr/lib/firmware/updates/amdgpu/verde_k_smc.bin
+/usr/lib/firmware/updates/amdgpu/verde_mc.bin
+/usr/lib/firmware/updates/amdgpu/verde_me.bin
+/usr/lib/firmware/updates/amdgpu/verde_pfp.bin
+/usr/lib/firmware/updates/amdgpu/verde_rlc.bin
+/usr/lib/firmware/updates/amdgpu/verde_smc.bin
+/usr/lib/firmware/updates/amdgpu/verde_uvd.bin
+/usr/lib/firmware/updates/amdgpu/vpe_6_1_0.bin
+/usr/lib/firmware/updates/amdgpu/vpe_6_1_1.bin
+/usr/lib/firmware/updates/amdgpu/vpe_6_1_3.bin
+/usr/lib/firmware/updates/amdgpu/yellow_carp_ce.bin
+/usr/lib/firmware/updates/amdgpu/yellow_carp_dmcub.bin
+/usr/lib/firmware/updates/amdgpu/yellow_carp_me.bin
+/usr/lib/firmware/updates/amdgpu/yellow_carp_mec2.bin
+/usr/lib/firmware/updates/amdgpu/yellow_carp_mec.bin
+/usr/lib/firmware/updates/amdgpu/yellow_carp_pfp.bin
+/usr/lib/firmware/updates/amdgpu/yellow_carp_rlc.bin
+/usr/lib/firmware/updates/amdgpu/yellow_carp_sdma.bin
+/usr/lib/firmware/updates/amdgpu/yellow_carp_ta.bin
+/usr/lib/firmware/updates/amdgpu/yellow_carp_toc.bin
+/usr/lib/firmware/updates/amdgpu/yellow_carp_vcn.bin
+
+================================================================================
+RECENT AMDGPU / KFD / HSA DMESG
+================================================================================
+[    0.003232] Using GB pages for direct mapping
+[    0.141788] pid_max: default: 32768 minimum: 301
+[    0.244630] NMI watchdog: Enabled. Permanently consumes one hw-PMU counter.
+[    0.244630] smp: Bringing up secondary CPUs ...
+[    0.256236] ACPI: PM: Registering ACPI NVS region [mem 0x0a200000-0x0a287fff] (557056 bytes)
+[    0.256236] ACPI: PM: Registering ACPI NVS region [mem 0x7037f000-0x7137efff] (16777216 bytes)
+[    0.475936] PCI: Ignoring E820 reservations for host bridge windows
+[    0.504647] Low-power S0 idle used by default for system suspend
+[    0.504749] iommu: Default domain type: Translated
+[    0.508785] NetLabel:  unlabeled traffic allowed by default
+[    0.540009] PCI: CLS 64 bytes, default 64
+[    0.543464] AMD-Vi: Interrupt remapping enabled
+[    0.543603] PCI-DMA: Using software bounce buffering for IO (SWIOTLB)
+[    0.557601] Initialise system trusted keyrings
+[    0.557656] workingset: timestamp_bits=36 max_order=24 bucket_order=0
+[    0.557986] integrity: Platform Keyring initialized
+[    0.557989] integrity: Machine keyring initialized
+[    0.570540] Estimated ratio of average max frequency by base frequency (times 1024): 1397
+[    0.570830] Serial: 8250/16550 driver, 32 ports, IRQ sharing enabled
+[    1.763404] usb usb1: New USB device strings: Mfr=3, Product=2, SerialNumber=1
+[    1.763839] usb usb2: New USB device strings: Mfr=3, Product=2, SerialNumber=1
+[    1.764906] usb usb3: New USB device strings: Mfr=3, Product=2, SerialNumber=1
+[    1.766262] usb usb4: New USB device strings: Mfr=3, Product=2, SerialNumber=1
+[    1.767619] usb usb5: New USB device strings: Mfr=3, Product=2, SerialNumber=1
+[    1.767989] usb usb6: New USB device strings: Mfr=3, Product=2, SerialNumber=1
+[    1.769114] usb usb7: New USB device strings: Mfr=3, Product=2, SerialNumber=1
+[    1.769484] usb usb8: New USB device strings: Mfr=3, Product=2, SerialNumber=1
+[    2.044552] x86/amd: Previous system reset reason [0x00080800]: software wrote 0x6 to reset control register 0xCF9
+[    2.045872] resctrl: L3 monitoring detected
+[    2.115855] x86/mm: Checked W+X mappings: passed, no W+X pages found.
+[    2.155919] usb 3-2: New USB device strings: Mfr=1, Product=2, SerialNumber=0
+[    2.185192] r8169 0000:c1:00.0 eth0: jumbo features [frames: 16362 bytes, tx checksumming: ko]
+[    2.300137] nvme nvme0: 16/0/0 default/read/poll queues
+[    2.455162] usb 3-5: New USB device strings: Mfr=5, Product=6, SerialNumber=7
+[    3.680787] [drm] amdgpu kernel modesetting enabled.
+[    3.680789] [drm] amdgpu version: 6.16.13
+[    3.682096] amdgpu: Virtual CRAT table created for CPU
+[    3.682103] amdgpu: Topology: Add CPU node
+[    3.683736] amdgpu 0000:c5:00.0: enabling device (0006 -> 0007)
+[    3.683763] amdgpu 0000:c5:00.0: amdgpu: initializing kernel modesetting (IP DISCOVERY 0x1002:0x1586 0x2014:0x801D 0xC1).
+[    3.683771] amdgpu 0000:c5:00.0: amdgpu: register mmio base: 0xA0200000
+[    3.683771] amdgpu 0000:c5:00.0: amdgpu: register mmio size: 1048576
+[    3.686682] amdgpu 0000:c5:00.0: amdgpu: detected ip block number 0 <common_v1_0_0> (soc21_common)
+[    3.686684] amdgpu 0000:c5:00.0: amdgpu: detected ip block number 1 <gmc_v11_0_0> (gmc_v11_0)
+[    3.686685] amdgpu 0000:c5:00.0: amdgpu: detected ip block number 2 <ih_v6_0_0> (ih_v6_1)
+[    3.686686] amdgpu 0000:c5:00.0: amdgpu: detected ip block number 3 <psp_v13_0_0> (psp)
+[    3.686687] amdgpu 0000:c5:00.0: amdgpu: detected ip block number 4 <smu_v14_0_0> (smu)
+[    3.686688] amdgpu 0000:c5:00.0: amdgpu: detected ip block number 5 <dce_v1_0_0> (dm)
+[    3.686689] amdgpu 0000:c5:00.0: amdgpu: detected ip block number 6 <gfx_v11_0_0> (gfx_v11_0)
+[    3.686689] amdgpu 0000:c5:00.0: amdgpu: detected ip block number 7 <sdma_v6_0_0> (sdma_v6_0)
+[    3.686690] amdgpu 0000:c5:00.0: amdgpu: detected ip block number 8 <vcn_v4_0_5> (vcn_v4_0_5)
+[    3.686691] amdgpu 0000:c5:00.0: amdgpu: detected ip block number 9 <jpeg_v4_0_5> (jpeg_v4_0_5)
+[    3.686692] amdgpu 0000:c5:00.0: amdgpu: detected ip block number 10 <mes_v11_0_0> (mes_v11_0)
+[    3.686692] amdgpu 0000:c5:00.0: amdgpu: detected ip block number 11 <vpe_v6_1_0> (vpe_v6_1)
+[    3.686715] amdgpu 0000:c5:00.0: amdgpu: Fetched VBIOS from VFCT
+[    3.686716] amdgpu: ATOM BIOS: 113-STRXLGEN-001
+[    3.688233] amdgpu 0000:c5:00.0: amdgpu: VPE: collaborate mode true
+[    3.717547] amdgpu 0000:c5:00.0: amdgpu: Trusted Memory Zone (TMZ) feature disabled as experimental (default)
+[    3.717590] amdgpu 0000:c5:00.0: amdgpu: vm size is 262144 GB, 4 levels, block size is 9-bit, fragment size is 9-bit
+[    3.717610] amdgpu 0000:c5:00.0: amdgpu: VRAM: 65536M 0x0000008000000000 - 0x0000008FFFFFFFFF (65536M used)
+[    3.717611] amdgpu 0000:c5:00.0: amdgpu: GART: 512M 0x00007FFF00000000 - 0x00007FFF1FFFFFFF
+[    3.717721] amdgpu 0000:c5:00.0: amdgpu: amdgpu: 65536M of VRAM memory ready
+[    3.717722] amdgpu 0000:c5:00.0: amdgpu: amdgpu: 31965M of GTT memory ready.
+[    3.717735] [drm] GART: num cpu pages 131072, num gpu pages 131072
+[    3.718815] amdgpu 0000:c5:00.0: amdgpu: [drm] Loading DMUB firmware via PSP: version=0x09003500
+[    3.719184] amdgpu 0000:c5:00.0: amdgpu: [VCN instance 0] Found VCN firmware Version ENC: 1.24 DEC: 9 VEP: 0 Revision: 27
+[    3.719227] amdgpu 0000:c5:00.0: amdgpu: [VCN instance 1] Found VCN firmware Version ENC: 1.24 DEC: 9 VEP: 0 Revision: 27
+[    3.742628] amdgpu 0000:c5:00.0: amdgpu: reserve 0x8c00000 from 0x8fe0000000 for PSP TMR
+[    4.079114] amdgpu 0000:c5:00.0: amdgpu: RAS: optional ras ta ucode is not available
+[    4.083115] amdgpu 0000:c5:00.0: amdgpu: RAP: optional rap ta ucode is not available
+[    4.083116] amdgpu 0000:c5:00.0: amdgpu: SECUREDISPLAY: optional securedisplay ta ucode is not available
+[    4.117346] amdgpu 0000:c5:00.0: amdgpu: SMU is initialized successfully!
+[    4.118728] amdgpu 0000:c5:00.0: amdgpu: [drm] Display Core v3.2.359 initialized on DCN 3.5.1
+[    4.118729] amdgpu 0000:c5:00.0: amdgpu: [drm] DP-HDMI FRL PCON supported
+[    4.121495] amdgpu 0000:c5:00.0: amdgpu: [drm] DMUB hardware initialized: version=0x09003500
+[    4.173225] amdgpu 0000:c5:00.0: amdgpu: [drm] PSR support 0, DC PSR ver -1, sink PSR ver 0 DPCD caps 0x0 su_y_granularity 0
+[    4.173629] amdgpu 0000:c5:00.0: amdgpu: [drm] PSR support 0, DC PSR ver -1, sink PSR ver 0 DPCD caps 0x0 su_y_granularity 0
+[    4.173892] amdgpu 0000:c5:00.0: amdgpu: [drm] PSR support 0, DC PSR ver -1, sink PSR ver 0 DPCD caps 0x0 su_y_granularity 0
+[    4.174112] amdgpu 0000:c5:00.0: amdgpu: [drm] PSR support 0, DC PSR ver -1, sink PSR ver 0 DPCD caps 0x0 su_y_granularity 0
+[    4.174317] amdgpu 0000:c5:00.0: amdgpu: [drm] PSR support 0, DC PSR ver -1, sink PSR ver 0 DPCD caps 0x0 su_y_granularity 0
+[    4.174436] amdgpu 0000:c5:00.0: amdgpu: [drm] PSR support 0, DC PSR ver -1, sink PSR ver 0 DPCD caps 0x0 su_y_granularity 0
+[    4.174554] amdgpu 0000:c5:00.0: amdgpu: [drm] PSR support 0, DC PSR ver -1, sink PSR ver 0 DPCD caps 0x0 su_y_granularity 0
+[    4.174674] amdgpu 0000:c5:00.0: amdgpu: [drm] PSR support 0, DC PSR ver -1, sink PSR ver 0 DPCD caps 0x0 su_y_granularity 0
+[    4.174786] amdgpu 0000:c5:00.0: amdgpu: [drm] PSR support 0, DC PSR ver -1, sink PSR ver 0 DPCD caps 0x0 su_y_granularity 0
+[    4.281648] amdgpu: HMM registered 65536MB device memory
+[    4.282932] kfd kfd: amdgpu: Allocated 3969056 bytes on gart
+[    4.282956] kfd kfd: amdgpu: Total number of KFD nodes to be created: 1
+[    4.283482] amdgpu: Virtual CRAT table created for GPU
+[    4.286255] amdgpu: Topology: Add dGPU node [0x1586:0x1002]
+[    4.286256] kfd kfd: amdgpu: added device 1002:1586
+[    4.286268] amdgpu 0000:c5:00.0: amdgpu: SE 2, SH per SE 2, CU per SH 10, active_cu_number 40
+[    4.286273] amdgpu 0000:c5:00.0: amdgpu: ring gfx_0.0.0 uses VM inv eng 0 on hub 0
+[    4.286275] amdgpu 0000:c5:00.0: amdgpu: ring comp_1.0.0 uses VM inv eng 1 on hub 0
+[    4.286276] amdgpu 0000:c5:00.0: amdgpu: ring comp_1.1.0 uses VM inv eng 4 on hub 0
+[    4.286276] amdgpu 0000:c5:00.0: amdgpu: ring comp_1.2.0 uses VM inv eng 6 on hub 0
+[    4.286277] amdgpu 0000:c5:00.0: amdgpu: ring comp_1.3.0 uses VM inv eng 7 on hub 0
+[    4.286278] amdgpu 0000:c5:00.0: amdgpu: ring comp_1.0.1 uses VM inv eng 8 on hub 0
+[    4.286278] amdgpu 0000:c5:00.0: amdgpu: ring comp_1.1.1 uses VM inv eng 9 on hub 0
+[    4.286279] amdgpu 0000:c5:00.0: amdgpu: ring comp_1.2.1 uses VM inv eng 10 on hub 0
+[    4.286279] amdgpu 0000:c5:00.0: amdgpu: ring comp_1.3.1 uses VM inv eng 11 on hub 0
+[    4.286280] amdgpu 0000:c5:00.0: amdgpu: ring sdma0 uses VM inv eng 12 on hub 0
+[    4.286281] amdgpu 0000:c5:00.0: amdgpu: ring vcn_unified_0 uses VM inv eng 0 on hub 8
+[    4.286282] amdgpu 0000:c5:00.0: amdgpu: ring vcn_unified_1 uses VM inv eng 1 on hub 8
+[    4.286282] amdgpu 0000:c5:00.0: amdgpu: ring jpeg_dec_0 uses VM inv eng 4 on hub 8
+[    4.286283] amdgpu 0000:c5:00.0: amdgpu: ring jpeg_dec_1 uses VM inv eng 6 on hub 8
+[    4.286284] amdgpu 0000:c5:00.0: amdgpu: ring mes_kiq_3.1.0 uses VM inv eng 13 on hub 0
+[    4.286284] amdgpu 0000:c5:00.0: amdgpu: ring vpe uses VM inv eng 7 on hub 8
+[    4.290678] amdgpu 0000:c5:00.0: amdgpu: Runtime PM not available
+[    4.291721] amdgpu 0000:c5:00.0: [drm] Registered 4 planes with drm panic
+[    4.291721] [drm] Initialized amdgpu 3.64.0 for 0000:c5:00.0 on minor 1
+[    4.298751] amdgpu 0000:c5:00.0: amdgpu: [drm] Failed to setup vendor infoframe on connector HDMI-A-1: -22
+[    4.300040] fbcon: amdgpudrmfb (fb0) is primary device
+[    4.380024] amdgpu 0000:c5:00.0: [drm] fb0: amdgpudrmfb frame buffer device
+[   18.027137] systemd[1]: systemd 255.4-1ubuntu8.15 running in system mode (+PAM +AUDIT +SELINUX +APPARMOR +IMA +SMACK +SECCOMP +GCRYPT -GNUTLS +OPENSSL +ACL +BLKID +CURL +ELFUTILS +FIDO2 +IDN2 -IDN +IPTC +KMOD +LIBCRYPTSETUP +LIBFDISK +PCRE2 -PWQUALITY +P11KIT +QRENCODE +TPM2 +BZIP2 +LZ4 +XZ +ZLIB +ZSTD -BPF_FRAMEWORK -XKBCOMMON +UTMP +SYSVINIT default-hierarchy=unified)
+[   18.173729] systemd[1]: Queued start job for default target graphical.target.
+[   18.192238] systemd[1]: Reached target integritysetup.target - Local Integrity Protected Volumes.
+[   18.192265] systemd[1]: Reached target veritysetup.target - Local Verity Protected Volumes.
+[   18.193745] systemd[1]: Mounting dev-mqueue.mount - POSIX Message Queue File System...
+[   18.197092] systemd[1]: Starting lvm2-monitor.service - Monitoring of LVM2 mirrors, snapshots etc. using dmeventd or progress polling...
+[   18.201197] systemd[1]: Mounted dev-mqueue.mount - POSIX Message Queue File System.
+[   18.204700] systemd-journald[1084]: Collecting audit messages is disabled.
+[   18.497373] snd_hda_intel 0000:c5:00.1: bound 0000:c5:00.0 (ops amdgpu_dm_audio_component_bind_ops [amdgpu])
+[   18.916132] mt7925e 0000:c3:00.0: WM Firmware Version: ____000000, Build Time: 20251210093025
+[   26.513298] audit: type=1400 audit(1780469414.978:161): apparmor="STATUS" operation="profile_load" profile="unconfined" name="docker-default" pid=2666 comm="apparmor_parser"
+[   26.742595] bridge: filtering via arp/ip/ip6tables is no longer available by default. Update your scripts to load br_netfilter if you need this.
+[   40.414096] audit: type=1400 audit(1780469428.879:162): apparmor="AUDIT" operation="userns_create" class="namespace" info="Userns create - transitioning profile" profile="unconfined" pid=3765 comm="bwrap" requested="userns_create" target="unprivileged_userns" execpath="/usr/bin/bwrap"
+[  104.212747] amdgpu 0000:c5:00.0: amdgpu: [gfxhub] page fault (src_id:0 ring:153 vmid:8 pasid:32770)
+[  104.212785] amdgpu 0000:c5:00.0: amdgpu:  Process python pid 6381 thread python pid 6381
+[  104.212797] amdgpu 0000:c5:00.0: amdgpu:   in page starting at address 0x00007817830a8000 from client 10
+[  104.212810] amdgpu 0000:c5:00.0: amdgpu: GCVM_L2_PROTECTION_FAULT_STATUS:0x00800932
+[  104.212821] amdgpu 0000:c5:00.0: amdgpu: 	 Faulty UTCL2 client ID: CPF (0x4)
+[  104.212830] amdgpu 0000:c5:00.0: amdgpu: 	 MORE_FAULTS: 0x0
+[  104.212838] amdgpu 0000:c5:00.0: amdgpu: 	 WALKER_ERROR: 0x1
+[  104.212845] amdgpu 0000:c5:00.0: amdgpu: 	 PERMISSION_FAULTS: 0x3
+[  104.212853] amdgpu 0000:c5:00.0: amdgpu: 	 MAPPING_ERROR: 0x1
+[  104.212860] amdgpu 0000:c5:00.0: amdgpu: 	 RW: 0x0
+[  394.341510] amdgpu 0000:c5:00.0: amdgpu: [gfxhub] page fault (src_id:0 ring:153 vmid:8 pasid:32771)
+[  394.341550] amdgpu 0000:c5:00.0: amdgpu:  Process python pid 11754 thread python pid 11754
+[  394.341564] amdgpu 0000:c5:00.0: amdgpu:   in page starting at address 0x000070de51c7a000 from client 10
+[  394.341578] amdgpu 0000:c5:00.0: amdgpu: GCVM_L2_PROTECTION_FAULT_STATUS:0x00800932
+[  394.341589] amdgpu 0000:c5:00.0: amdgpu: 	 Faulty UTCL2 client ID: CPF (0x4)
+[  394.341599] amdgpu 0000:c5:00.0: amdgpu: 	 MORE_FAULTS: 0x0
+[  394.341607] amdgpu 0000:c5:00.0: amdgpu: 	 WALKER_ERROR: 0x1
+[  394.341615] amdgpu 0000:c5:00.0: amdgpu: 	 PERMISSION_FAULTS: 0x3
+[  394.341623] amdgpu 0000:c5:00.0: amdgpu: 	 MAPPING_ERROR: 0x1
+[  394.341630] amdgpu 0000:c5:00.0: amdgpu: 	 RW: 0x0
+[  442.701609] amdgpu 0000:c5:00.0: amdgpu: [gfxhub] page fault (src_id:0 ring:153 vmid:8 pasid:32771)
+[  442.701646] amdgpu 0000:c5:00.0: amdgpu:  Process python pid 28409 thread python pid 28409
+[  442.701659] amdgpu 0000:c5:00.0: amdgpu:   in page starting at address 0x00007e75e687a000 from client 10
+[  442.701671] amdgpu 0000:c5:00.0: amdgpu: GCVM_L2_PROTECTION_FAULT_STATUS:0x00800932
+[  442.701681] amdgpu 0000:c5:00.0: amdgpu: 	 Faulty UTCL2 client ID: CPF (0x4)
+[  442.701690] amdgpu 0000:c5:00.0: amdgpu: 	 MORE_FAULTS: 0x0
+[  442.701697] amdgpu 0000:c5:00.0: amdgpu: 	 WALKER_ERROR: 0x1
+[  442.701704] amdgpu 0000:c5:00.0: amdgpu: 	 PERMISSION_FAULTS: 0x3
+[  442.701712] amdgpu 0000:c5:00.0: amdgpu: 	 MAPPING_ERROR: 0x1
+[  442.701719] amdgpu 0000:c5:00.0: amdgpu: 	 RW: 0x0
+[  530.083749] amdgpu 0000:c5:00.0: amdgpu: [gfxhub] page fault (src_id:0 ring:153 vmid:8 pasid:32771)
+[  530.083785] amdgpu 0000:c5:00.0: amdgpu:  Process python pid 41655 thread python pid 41655
+[  530.083796] amdgpu 0000:c5:00.0: amdgpu:   in page starting at address 0x00007d676fd29000 from client 10
+[  530.083808] amdgpu 0000:c5:00.0: amdgpu: GCVM_L2_PROTECTION_FAULT_STATUS:0x00800932
+[  530.083818] amdgpu 0000:c5:00.0: amdgpu: 	 Faulty UTCL2 client ID: CPF (0x4)
+[  530.083827] amdgpu 0000:c5:00.0: amdgpu: 	 MORE_FAULTS: 0x0
+[  530.083834] amdgpu 0000:c5:00.0: amdgpu: 	 WALKER_ERROR: 0x1
+[  530.083841] amdgpu 0000:c5:00.0: amdgpu: 	 PERMISSION_FAULTS: 0x3
+[  530.083849] amdgpu 0000:c5:00.0: amdgpu: 	 MAPPING_ERROR: 0x1
+[  530.083856] amdgpu 0000:c5:00.0: amdgpu: 	 RW: 0x0
+[  635.519911] audit: type=1400 audit(1780470024.363:165): apparmor="DENIED" operation="open" class="file" profile="snap.firmware-updater.firmware-notifier" name="/proc/sys/vm/max_map_count" pid=48313 comm="firmware-notifi" requested_mask="r" denied_mask="r" fsuid=1001 ouid=0
+[  635.519927] audit: type=1400 audit(1780470024.363:167): apparmor="DENIED" operation="open" class="file" profile="snap.firmware-updater.firmware-notifier" name="/proc/sys/vm/max_map_count" pid=48311 comm="firmware-notifi" requested_mask="r" denied_mask="r" fsuid=1005 ouid=0
+[  635.519931] audit: type=1400 audit(1780470024.363:166): apparmor="DENIED" operation="open" class="file" profile="snap.firmware-updater.firmware-notifier" name="/proc/sys/vm/max_map_count" pid=48312 comm="firmware-notifi" requested_mask="r" denied_mask="r" fsuid=1004 ouid=0
+[  728.458150] amdgpu 0000:c5:00.0: amdgpu: [gfxhub] page fault (src_id:0 ring:153 vmid:8 pasid:32771)
+[  728.458190] amdgpu 0000:c5:00.0: amdgpu:  Process python pid 51079 thread python pid 51079
+[  728.458205] amdgpu 0000:c5:00.0: amdgpu:   in page starting at address 0x000071320007b000 from client 10
+[  728.458219] amdgpu 0000:c5:00.0: amdgpu: GCVM_L2_PROTECTION_FAULT_STATUS:0x00800932
+[  728.458230] amdgpu 0000:c5:00.0: amdgpu: 	 Faulty UTCL2 client ID: CPF (0x4)
+[  728.458240] amdgpu 0000:c5:00.0: amdgpu: 	 MORE_FAULTS: 0x0
+[  728.458248] amdgpu 0000:c5:00.0: amdgpu: 	 WALKER_ERROR: 0x1
+[  728.458256] amdgpu 0000:c5:00.0: amdgpu: 	 PERMISSION_FAULTS: 0x3
+[  728.458265] amdgpu 0000:c5:00.0: amdgpu: 	 MAPPING_ERROR: 0x1
+[  728.458272] amdgpu 0000:c5:00.0: amdgpu: 	 RW: 0x0
+[  776.081762] amdgpu 0000:c5:00.0: amdgpu: [gfxhub] page fault (src_id:0 ring:153 vmid:8 pasid:32771)
+[  776.081803] amdgpu 0000:c5:00.0: amdgpu:  Process python pid 51981 thread python pid 51981
+[  776.081817] amdgpu 0000:c5:00.0: amdgpu:   in page starting at address 0x00007e2a0eac7000 from client 10
+[  776.081830] amdgpu 0000:c5:00.0: amdgpu: GCVM_L2_PROTECTION_FAULT_STATUS:0x00800932
+[  776.081841] amdgpu 0000:c5:00.0: amdgpu: 	 Faulty UTCL2 client ID: CPF (0x4)
+[  776.081851] amdgpu 0000:c5:00.0: amdgpu: 	 MORE_FAULTS: 0x0
+[  776.081860] amdgpu 0000:c5:00.0: amdgpu: 	 WALKER_ERROR: 0x1
+[  776.081867] amdgpu 0000:c5:00.0: amdgpu: 	 PERMISSION_FAULTS: 0x3
+[  776.081876] amdgpu 0000:c5:00.0: amdgpu: 	 MAPPING_ERROR: 0x1
+[  776.081884] amdgpu 0000:c5:00.0: amdgpu: 	 RW: 0x0
+
+================================================================================
+PYTHON / TORCH ENV
+================================================================================
+VIRTUAL_ENV=/home/operic/lightweight-human-pose-estimation.pytorch-AMD/venv
+/home/operic/lightweight-human-pose-estimation.pytorch-AMD/venv/bin/python
+Python 3.12.3
+python: 3.12.3 (main, Mar 23 2026, 19:04:32) [GCC 13.3.0]
+executable: /home/operic/lightweight-human-pose-estimation.pytorch-AMD/venv/bin/python
+torch: 2.11.0+rocm7.2
+torch hip: 7.2.26015
+cuda available: True
+device: AMD Radeon 8060S
+migraphx: 2.15.0.dev+20250912-17-221-gdd11a7555 /opt/rocm-7.2.4/lib/migraphx.cpython-312-x86_64-linux-gnu.so
+has parse_onnx: True

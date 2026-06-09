@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Compile an arbitrary ONNX graph to MIGraphX MXR.
 
-Unlike compile_migraphx_static_batches.py, this tool does not assume a pose-model
+Unlike tools/compile_migraphx_static_batches.py, this tool does not assume a pose-model
 input named `input`. It is meant for generated postprocess graphs whose ONNX
 already contains fixed/static shapes.
 """

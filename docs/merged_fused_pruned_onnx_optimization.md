@@ -113,7 +113,7 @@ Dead-end debug outputs
 
 ## 5. Compile optimized ONNX to MXR
 
-Do not use `compile_migraphx_static_batches.py` here, because this is not the pose model and its inputs are not named `input`.
+Do not use `tools/compile_migraphx_static_batches.py` here, because this is not the pose model and its inputs are not named `input`.
 
 ```bash
 OPT_MXR="${OPT_ONNX%.onnx}.mxr"

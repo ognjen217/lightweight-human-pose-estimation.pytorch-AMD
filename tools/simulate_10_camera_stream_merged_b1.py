@@ -115,6 +115,7 @@ def json_safe(obj: Any) -> Any:
         return float(obj)
     return obj
 
+
 def maybe_profile_worker(stage: str, worker_id: Any, fn, *args, **kwargs):
     profile_dir = os.environ.get("STREAM_CPROFILE_DIR", "")
     if not profile_dir:
@@ -146,7 +147,7 @@ class RocTxTracer:
         self._roctx = None
         if self.enabled:
             try:
-                import roctx # pyright: ignore[reportMissingImports]
+                import roctx
                 self._roctx = roctx
             except Exception:
                 self.enabled = False
@@ -192,6 +193,8 @@ def allow_ptrace_attach_if_requested() -> None:
             print(f"[TRACE pid={os.getpid()}] prctl(PR_SET_PTRACER_ANY) failed errno={err}", flush=True)
     except Exception as exc:
         print(f"[TRACE pid={os.getpid()}] ptrace attach opt-in failed: {exc}", flush=True)
+
+
 
 def _dtype_from_name(name: str):
     return np.float16 if str(name) == "float16" else np.float32
@@ -255,69 +258,6 @@ def close_shared_map_views(handles: Sequence[shared_memory.SharedMemory]) -> Non
             shm.close()
         except Exception:
             pass
-
-
-def create_shared_input_buffers(
-    num_slots: int,
-    target_h: int,
-    target_w: int,
-    dtype_name: str = "float32",
-) -> Tuple[List[Dict[str, Any]], List[shared_memory.SharedMemory]]:
-    """Create shared-memory slots for preprocessed 1x3xHxW input tensors."""
-    dtype = _dtype_from_name(dtype_name)
-    shape = (1, 3, int(target_h), int(target_w))
-    nbytes = int(np.prod(shape) * np.dtype(dtype).itemsize)
-    descs: List[Dict[str, Any]] = []
-    handles: List[shared_memory.SharedMemory] = []
-    for slot_id in range(max(0, int(num_slots))):
-        shm = shared_memory.SharedMemory(create=True, size=nbytes)
-        handles.append(shm)
-        descs.append({
-            "slot_id": slot_id,
-            "dtype": np.dtype(dtype).name,
-            "shape": shape,
-            "input_name": shm.name,
-        })
-    return descs, handles
-
-
-def open_shared_input_buffers(descs: Optional[Sequence[Dict[str, Any]]]):
-    if not descs:
-        return {}, []
-    slots: Dict[int, Dict[str, Any]] = {}
-    handles = []
-    for desc in descs:
-        shm = shared_memory.SharedMemory(name=desc["input_name"])
-        handles.append(shm)
-        dtype = np.dtype(desc["dtype"])
-        slots[int(desc["slot_id"])] = {
-            "input": np.ndarray(tuple(desc["shape"]), dtype=dtype, buffer=shm.buf),
-        }
-    return slots, handles
-
-
-def close_shared_input_buffers(handles: Sequence[shared_memory.SharedMemory]) -> None:
-    for shm in handles:
-        try:
-            shm.close()
-        except Exception:
-            pass
-        try:
-            shm.unlink()
-        except Exception:
-            pass
-
-
-def _input_tensor_from_item(
-    item: Dict[str, Any],
-    shared_input_slots: Optional[Dict[int, Dict[str, Any]]] = None,
-) -> np.ndarray:
-    """Return queued item tensor, either from shared memory or old Queue payload."""
-    if shared_input_slots and "shared_input_slot" in item:
-        slot_id = int(item["shared_input_slot"])
-        return np.asarray(shared_input_slots[slot_id]["input"])
-    return np.asarray(item["input_tensor"])
-
 
 
 def latest_put_with_dropped(q, item):
@@ -657,11 +597,7 @@ def configure_worker_thread_env(num_threads: int) -> None:
 
 
 def configure_child_cpu_runtime(num_threads: int = 1) -> None:
-
-
     allow_ptrace_attach_if_requested()
-
-
     configure_worker_thread_env(num_threads)
     try:
         import cv2
@@ -925,7 +861,6 @@ def make_migraphx_input_batch(
     items: Sequence[Dict[str, Any]],
     expected_dtype: str,
     compiled_batch_size: int,
-    shared_input_slots: Optional[Dict[int, Dict[str, Any]]] = None,
 ) -> Tuple[np.ndarray, int]:
     """
     Build Bx3xHxW input for MIGraphX.
@@ -940,7 +875,7 @@ def make_migraphx_input_batch(
     actual_batch_size = len(items)
     tensors = []
     for item in items:
-        x = _input_tensor_from_item(item, shared_input_slots)
+        x = np.asarray(item["input_tensor"])
         if x.ndim != 4:
             raise ValueError(f"input_tensor must be 4D, got shape={x.shape}")
         if x.shape[0] != 1:
@@ -1568,12 +1503,8 @@ def camera_preprocess_worker(
 ) -> None:
     try:
         import cv2
-
-
         tracer = RocTxTracer(roctx_enabled, f"camera:{camera_id}:pid:{os.getpid()}")
         tracer.mark("worker_start")
-
-
         configure_child_cpu_runtime(int(os.environ.get("STREAM_WORKER_THREADS", "1")))
 
         if not os.path.exists(video_path):
@@ -1696,12 +1627,8 @@ def inference_worker(
     roctx_enabled: bool = False,
 ) -> None:
     try:
-
-
         tracer = RocTxTracer(roctx_enabled, f"infer:{worker_id}:pid:{os.getpid()}")
         tracer.mark("worker_start")
-
-
         configure_child_cpu_runtime(int(os.environ.get("STREAM_WORKER_THREADS", "1")))
         import migraphx
 
@@ -1803,7 +1730,6 @@ def inference_worker(
                 _out_item["decode_ms"] = float(t_dec.ms) / float(max(1, len(out_items)))
                 _out_item["batch_decode_ms"] = float(t_dec.ms)
 
-
             trace_print(
                 trace_log_every,
                 batch_runs,
@@ -1896,15 +1822,12 @@ def postprocess_worker(
     migraphx_nms_mxr: str = "",
     migraphx_nms_cache_dir: str = "",
     prealloc_resize_buffers: bool = False,
-
-
     trace_log_every: int = 0,
     roctx_enabled: bool = False,
 ) -> None:
     try:
         tracer = RocTxTracer(roctx_enabled, f"post:{worker_id}:pid:{os.getpid()}")
         tracer.mark("worker_start")
-
         configure_child_cpu_runtime(int(os.environ.get("STREAM_WORKER_THREADS", "1")))
         canonical, registry_mode, wants_torch = resolve_registry_mode(user_variant)
 
@@ -2150,23 +2073,14 @@ def camera_preprocess_latest_worker(
     realtime: bool,
     camera_fps: float,
     keep_frame_for_output: bool = False,
-    shared_input_descs: Optional[Sequence[Dict[str, Any]]] = None,
-    shared_input_dtype: str = "float32",
     trace_log_every: int = 0,
     roctx_enabled: bool = False,
 ) -> None:
     """Camera worker that maintains a newest-frame-only slot for its camera."""
-    shared_input_slots = {}
-    shared_input_handles = []
     try:
         import cv2
-        shared_input_slots, shared_input_handles = open_shared_input_buffers(shared_input_descs)
-
-
         tracer = RocTxTracer(roctx_enabled, f"camera:{camera_id}:pid:{os.getpid()}")
         tracer.mark("worker_start")
-
-
         configure_child_cpu_runtime(int(os.environ.get("STREAM_WORKER_THREADS", "1")))
 
         if not os.path.exists(video_path):
@@ -2223,13 +2137,6 @@ def camera_preprocess_latest_worker(
             }
             if keep_frame_for_output:
                 item["frame_bgr"] = frame.copy()
-            if shared_input_slots:
-                slot = shared_input_slots[int(camera_id)]["input"]
-                if slot.shape != tensor.shape:
-                    raise ValueError(f"shared input slot shape mismatch: {slot.shape}!={tensor.shape}")
-                np.copyto(slot, tensor.astype(slot.dtype, copy=False), casting="same_kind")
-                item.pop("input_tensor", None)
-                item["shared_input_slot"] = int(camera_id)
             replaced_before_infer += latest_put(q, item)
             published += 1
             trace_print(
@@ -2273,8 +2180,6 @@ def camera_preprocess_latest_worker(
         except Exception:
             pass
         error_q.put({"stage": "camera_preprocess", "camera_id": camera_id, "traceback": traceback.format_exc()})
-    finally:
-        close_shared_map_views(shared_input_handles)
 
 
 def inference_latest_worker(
@@ -2302,31 +2207,16 @@ def inference_latest_worker(
     migraphx_nms_cache_dir: str = "",
     shared_map_descs: Optional[Sequence[Dict[str, Any]]] = None,
     free_map_slots=None,
-    shared_input_descs: Optional[Sequence[Dict[str, Any]]] = None,
-
-
     migraphx_batch_size: int = 1,
     migraphx_batch_timeout_ms: float = 0.0,
     merged_pose_fused_pruned: bool = False,
     trace_log_every: int = 0,
     roctx_enabled: bool = False,
 ) -> None:
-
-    """Round-robin MIGraphX worker over newest-frame slots, one slot per camera.
-
-    backpressure_mode:
-      "off"    – never skip (maximum throughput, results may be overwritten).
-      "strict" – skip camera while post_pending flag is set (original behaviour).
-      "soft"   – skip only while pending AND result is fresher than
-                 max_pending_age_ms; allows re-inference when a result is stale.
-    target_period_s > 0 enables per-camera rate throttling: a camera is not
-    eligible for inference until at least target_period_s seconds have elapsed
-    since its last completed postprocess result.
-    """
+    """Round-robin MIGraphX worker over newest-frame slots, with optional batched inference."""
     try:
         tracer = RocTxTracer(roctx_enabled, f"infer:{worker_id}:pid:{os.getpid()}")
         tracer.mark("worker_start")
-
         configure_child_cpu_runtime(int(os.environ.get("STREAM_WORKER_THREADS", "1")))
         import migraphx
 
@@ -2353,7 +2243,6 @@ def inference_latest_worker(
         out_h = target_h // stride
         out_w = target_w // stride
         shared_slots, shared_handles = open_shared_map_buffers(shared_map_descs)
-        shared_input_slots, shared_input_handles = open_shared_input_buffers(shared_input_descs)
         shared_map_misses = 0
         ncam = len(in_queues)
         next_cam = worker_id % max(1, ncam)
@@ -2408,8 +2297,6 @@ def inference_latest_worker(
                 next_cam = (next_cam + 1) % ncam
                 scanned += 1
 
-
-
                 before_bp = skipped_due_backpressure
                 before_thr = throttle_skips
                 if not _camera_is_eligible(cam_id, count_skip=True):
@@ -2429,7 +2316,7 @@ def inference_latest_worker(
             if item is None:
                 if all_done(camera_done) and all_queues_empty(in_queues):
                     break
-                if skipped_this_scan > 0 or throttle_skips > 0:
+                if skipped_this_scan > 0:
                     backpressure_idle_loops += 1
                 time.sleep(poll_sleep_s)
                 continue
@@ -2457,7 +2344,6 @@ def inference_latest_worker(
                 batch_items,
                 expected_dtype=expected_dtype,
                 compiled_batch_size=configured_batch_size,
-                shared_input_slots=shared_input_slots,
             )
 
             with Timer() as t_inf:
@@ -2500,7 +2386,6 @@ def inference_latest_worker(
             for _out_item in out_items:
                 _out_item["decode_ms"] = float(t_dec.ms) / float(max(1, len(out_items)))
                 _out_item["batch_decode_ms"] = float(t_dec.ms)
-
 
             trace_print(
                 trace_log_every,
@@ -2556,8 +2441,8 @@ def inference_latest_worker(
                     if dropped_item is not None:
                         replaced_before_post += 1
                         release_shared_slot_from_item(dropped_item, free_map_slots)
-                processed += 1
 
+                processed += 1
 
         infer_done[worker_id] = 1
         stats_q.put(
@@ -2590,7 +2475,6 @@ def inference_latest_worker(
             }
         )
         close_shared_map_views(shared_handles)
-        close_shared_map_views(shared_input_handles)
         print(
             f"[INFER:{worker_id}] Done. processed={processed} batch_runs={batch_runs} "
             f"avg_real_batch={mean(batch_sizes_seen):.2f} replaced_before_post={replaced_before_post} "
@@ -2636,17 +2520,13 @@ def postprocess_latest_worker(
     prealloc_resize_buffers: bool = False,
     gpu_nms_batch_size: int = 1,
     gpu_nms_batch_timeout_ms: float = 0.0,
-
-
     trace_log_every: int = 0,
     roctx_enabled: bool = False,
 ) -> None:
     """Round-robin postprocess worker over newest decoded-map slots, one slot per camera."""
-
     try:
         tracer = RocTxTracer(roctx_enabled, f"post:{worker_id}:pid:{os.getpid()}")
         tracer.mark("worker_start")
-
         configure_child_cpu_runtime(int(os.environ.get("STREAM_WORKER_THREADS", "1")))
         canonical, registry_mode, wants_torch = resolve_registry_mode(user_variant)
 
@@ -2774,8 +2654,6 @@ def postprocess_latest_worker(
                         )
                     config.extra["migraphx_nms_mxr"] = selected_mxr
 
-
-
                 with tracer.range(f"postprocess_{registry_mode}_batch{len(batch_items)}"):
                     if use_gpu_nms_batch and len(batch_items) > 1:
                         batch_inputs = []
@@ -2810,60 +2688,6 @@ def postprocess_latest_worker(
                                         config=config,
                                     )
                                 )
-
-
-                if registry_mode == "mx_merged_pose_fused_pruned":
-                    batch_outputs = []
-                    for bi in batch_items:
-                        if not bi.get("merged_pose_fused_pruned_precomputed"):
-                            raise RuntimeError(
-                                "mx_merged_pose_fused_pruned expects precomputed merged outputs from the inference worker. "
-                                "Use --model <merged_b1.mxr> --variant mx_merged_pose_fused_pruned --migraphx-batch-size 1."
-                            )
-                        batch_outputs.append(
-                            postprocess_precomputed_merged_pose_fused_pruned_item(
-                                item=bi,
-                                threshold=threshold,
-                                min_pair_score=0.0,
-                            )
-                        )
-                elif use_gpu_nms_batch and len(batch_items) > 1:
-                    batch_inputs = []
-                    for bi in batch_items:
-                        hm, pf = _maps_for(bi)
-                        batch_inputs.append((hm, pf, tuple(bi["original_hw"])))
-                    batch_outputs = postprocess_gpu_nms_fullres_batch(batch_inputs, config=config)
-                else:
-                    batch_outputs = []
-                    for bi in batch_items:
-                        if registry_mode == "mx_merged_pose_fused_pruned":
-                            if not bi.get("merged_pose_fused_pruned_precomputed"):
-                                raise RuntimeError(
-                                    "mx_merged_pose_fused_pruned expects precomputed merged outputs from the inference worker. "
-                                    "Use --model <merged_b1.mxr> --variant mx_merged_pose_fused_pruned --migraphx-batch-size 1."
-                                )
-                            batch_outputs.append(
-                                postprocess_precomputed_merged_pose_fused_pruned_item(
-                                    item=bi,
-                                    threshold=threshold,
-                                    min_pair_score=0.0,
-                                )
-                            )
-                            continue
-
-                        hm, pf = _maps_for(bi)
-                        batch_outputs.append(
-                            postprocess_from_maps(
-                                registry_mode,
-                                hm,
-                                pf,
-                                tuple(bi["original_hw"]),
-                                config=config,
-                            )
-                        )
-
-
-
             except Exception:
                 for bi in batch_items:
                     _release_item(bi)
@@ -2927,8 +2751,6 @@ def postprocess_latest_worker(
                     last_processed_ts[cam_done_id] = time.perf_counter()
                 _release_item(bi)
                 processed += 1
-
-
                 trace_print(
                     trace_log_every,
                     processed,
@@ -2936,8 +2758,6 @@ def postprocess_latest_worker(
                     f"processed={processed} cam={row['camera_id']} frame={row['frame_id']} "
                     f"batch={len(batch_items)} queue={queue_wait_ms:.2f}ms post={post_ms:.2f}ms e2e={e2e_ms:.2f}ms poses={row['num_poses']}",
                 )
-
-
 
         close_shared_map_views(shared_handles)
         stats_q.put(
@@ -3118,19 +2938,12 @@ def write_summary_json(path: str, summary: Dict[str, Any]) -> None:
 # Main orchestration
 # ---------------------------------------------------------------------------
 def run_queue(args) -> Dict[str, Any]:
-
-
     if getattr(args, "allow_ptrace_attach", False):
         os.environ["STREAM_ALLOW_PTRACE_ATTACH"] = "1"
     else:
         os.environ.pop("STREAM_ALLOW_PTRACE_ATTACH", None)
     configure_worker_thread_env(args.worker_threads)
     ctx = mp.get_context(getattr(args, "mp_start_method", "spawn"))
-
-
-    configure_worker_thread_env(args.worker_threads)
-    ctx = mp.get_context("spawn")
-
 
     videos = args.videos or DEFAULT_VIDEO_CYCLE
     sources = camera_sources(args.num_cameras, videos)
@@ -3253,15 +3066,11 @@ def run_queue(args) -> Dict[str, Any]:
                 shared_dtype=args.shared_dtype,
                 shared_map_descs=shared_map_descs,
                 free_map_slots=free_map_slots,
-
-
                 migraphx_batch_size=args.migraphx_batch_size,
                 migraphx_batch_timeout_ms=args.migraphx_batch_timeout_ms,
                 merged_pose_fused_pruned=(registry_mode == "mx_merged_pose_fused_pruned"),
                 trace_log_every=args.trace_log_every,
                 roctx_enabled=args.roctx,
-
-
             ),
             name=f"migraphx_inference_{worker_id}",
         )
@@ -3291,12 +3100,8 @@ def run_queue(args) -> Dict[str, Any]:
                 migraphx_nms_mxr=args.migraphx_nms_mxr,
                 migraphx_nms_cache_dir=args.migraphx_nms_cache_dir,
                 prealloc_resize_buffers=args.prealloc_resize_buffers,
-
-
                 trace_log_every=args.trace_log_every,
                 roctx_enabled=args.roctx,
-
-
             ),
             name=f"postprocess_{worker_id}",
         )
@@ -3392,11 +3197,7 @@ def run_queue(args) -> Dict[str, Any]:
                 p.join(timeout=2.0)
         if monitor is not None:
             system_profile = monitor.stop()
-
-
         close_shared_map_buffers(shared_map_handles)
-
-
 
     wall_s = time.perf_counter() - t0
     summary_rows, warmup_info = apply_warmup_filter(rows, args)
@@ -3435,19 +3236,12 @@ def run_queue(args) -> Dict[str, Any]:
 
 def run_latest(args) -> Dict[str, Any]:
     """Run the pipeline with newest-frame-only slots per camera between stages."""
-
-
     if getattr(args, "allow_ptrace_attach", False):
         os.environ["STREAM_ALLOW_PTRACE_ATTACH"] = "1"
     else:
         os.environ.pop("STREAM_ALLOW_PTRACE_ATTACH", None)
     configure_worker_thread_env(args.worker_threads)
     ctx = mp.get_context(getattr(args, "mp_start_method", "spawn"))
-
-
-    configure_worker_thread_env(args.worker_threads)
-    ctx = mp.get_context("spawn")
-
 
     videos = args.videos or DEFAULT_VIDEO_CYCLE
     sources = camera_sources(args.num_cameras, videos)
@@ -3476,16 +3270,6 @@ def run_latest(args) -> Dict[str, Any]:
         if getattr(args, "target_output_fps_per_camera", 0.0) > 0.0
         else 0.0
     )
-
-    shared_input_descs: List[Dict[str, Any]] = []
-    shared_input_handles: List[shared_memory.SharedMemory] = []
-    shared_input_slots_arg = int(getattr(args, "shared_input_slots", 0))
-    if 0 < shared_input_slots_arg < int(args.num_cameras):
-        raise ValueError("--shared-input-slots must be 0 or at least --num-cameras for one stable slot per camera")
-    if shared_input_slots_arg > 0:
-        shared_input_descs, shared_input_handles = create_shared_input_buffers(
-            shared_input_slots_arg, args.target_height, args.target_width, args.shared_input_dtype
-        )
 
     shared_map_descs: List[Dict[str, Any]] = []
     shared_map_handles: List[shared_memory.SharedMemory] = []
@@ -3572,8 +3356,6 @@ def run_latest(args) -> Dict[str, Any]:
                 realtime=args.realtime,
                 camera_fps=args.camera_fps,
                 keep_frame_for_output=bool(args.grid_video),
-                shared_input_descs=shared_input_descs,
-                shared_input_dtype=args.shared_input_dtype,
                 trace_log_every=args.trace_log_every,
                 roctx_enabled=args.roctx,
             ),
@@ -3606,16 +3388,11 @@ def run_latest(args) -> Dict[str, Any]:
                 shared_dtype=args.shared_dtype,
                 shared_map_descs=shared_map_descs,
                 free_map_slots=free_map_slots,
-                shared_input_descs=shared_input_descs,
-
-
                 migraphx_batch_size=args.migraphx_batch_size,
                 migraphx_batch_timeout_ms=args.migraphx_batch_timeout_ms,
                 merged_pose_fused_pruned=(registry_mode == "mx_merged_pose_fused_pruned"),
                 trace_log_every=args.trace_log_every,
                 roctx_enabled=args.roctx,
-
-
             ),
             name=f"migraphx_inference_latest_{worker_id}",
         )
@@ -3652,12 +3429,8 @@ def run_latest(args) -> Dict[str, Any]:
                 prealloc_resize_buffers=args.prealloc_resize_buffers,
                 gpu_nms_batch_size=args.gpu_nms_batch_size,
                 gpu_nms_batch_timeout_ms=args.gpu_nms_batch_timeout_ms,
-
-
                 trace_log_every=args.trace_log_every,
                 roctx_enabled=args.roctx,
-
-
             ),
             name=f"postprocess_latest_{worker_id}",
         )
@@ -3743,7 +3516,6 @@ def run_latest(args) -> Dict[str, Any]:
         if monitor is not None:
             system_profile = monitor.stop()
         close_shared_map_buffers(shared_map_handles)
-        close_shared_input_buffers(shared_input_handles)
 
     wall_s = time.perf_counter() - t0
     summary_rows, warmup_info = apply_warmup_filter(rows, args)
@@ -3766,10 +3538,6 @@ def run_latest(args) -> Dict[str, Any]:
     summary["max_pending_age_ms"] = args.max_pending_age_ms if backpressure_mode == "soft" else None
     summary["target_output_fps_per_camera"] = getattr(args, "target_output_fps_per_camera", 0.0)
     summary["shared_map_slots"] = getattr(args, "shared_map_slots", 0)
-    summary["shared_input_slots"] = getattr(args, "shared_input_slots", 0)
-    summary["shared_input_dtype"] = getattr(args, "shared_input_dtype", "float32")
-
-
     summary["migraphx_batch_size"] = getattr(args, "migraphx_batch_size", 1)
     summary["migraphx_batch_timeout_ms"] = getattr(args, "migraphx_batch_timeout_ms", 0.0)
     summary["merged_pose_fused_pruned"] = (registry_mode == "mx_merged_pose_fused_pruned")
@@ -3779,16 +3547,6 @@ def run_latest(args) -> Dict[str, Any]:
     summary["roctx"] = bool(getattr(args, "roctx", False))
     summary["trace_log_every"] = int(getattr(args, "trace_log_every", 0) or 0)
     summary["allow_ptrace_attach"] = bool(getattr(args, "allow_ptrace_attach", False))
-
-    summary["prealloc_resize_buffers"] = bool(getattr(args, "prealloc_resize_buffers", False))
-    summary["gpu_nms_batch_size"] = getattr(args, "gpu_nms_batch_size", 1)
-    summary["gpu_nms_batch_timeout_ms"] = getattr(args, "gpu_nms_batch_timeout_ms", 0.0)
-
-
-    summary["prealloc_resize_buffers"] = bool(getattr(args, "prealloc_resize_buffers", False))
-    summary["gpu_nms_batch_size"] = getattr(args, "gpu_nms_batch_size", 1)
-    summary["gpu_nms_batch_timeout_ms"] = getattr(args, "gpu_nms_batch_timeout_ms", 0.0)
-
     summary["realtime"] = args.realtime
     summary["camera_sources"] = sources
     if system_profile:
@@ -3908,22 +3666,6 @@ def parse_args():
         default=0,
         help="Latest-mode only: preallocate this many shared-memory heatmap/PAF slots between inference and postprocess. 0 keeps Queue pickle/copy.",
     )
-    parser.add_argument(
-        "--shared-input-slots",
-        type=int,
-        default=0,
-        help=(
-            "Latest-mode only: preallocate this many shared-memory preprocessed input slots "
-            "between camera/preprocess and inference. Use --num-cameras so each camera "
-            "has one stable slot. 0 keeps old Queue pickle/copy behavior."
-        ),
-    )
-    parser.add_argument(
-        "--shared-input-dtype",
-        choices=["float32", "float16"],
-        default="float32",
-        help="dtype used for shared camera->inference input slots. float32 matches current preprocess output.",
-    )
 
     parser.add_argument("--torch-device", choices=["auto", "cuda", "cpu"], default="cuda")
     parser.add_argument("--require-gpu", action="store_true")
@@ -4026,8 +3768,6 @@ def parse_args():
         action="store_true",
         help="Let same-user tools such as rocprofv3 --attach attach to worker processes on Yama ptrace_scope systems.",
     )
-
-
 
     parser.add_argument("--print-every", type=int, default=100)
     parser.add_argument("--detailed-csv", default="outputs/stream_10cam_detailed.csv")
