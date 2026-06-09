@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Export graph-clean ONNX variants for MIGraphX experiments.
 
-This exporter is intentionally separate from export_dynamic_onnx.py. It can
+This exporter is intentionally separate from tools/export_dynamic_onnx.py. It can
 optionally skip the model's final DeQuantStub during export and optionally run
 onnxsim. The default output still exposes separate heatmap and PAF tensors, so
 existing validation/postprocessing code can keep the same assumptions.
@@ -11,7 +11,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 import torch
 import onnx

@@ -1,8 +1,14 @@
 #!/usr/bin/env python3
 
-from pathlib import Path
 import argparse
+import sys
+from pathlib import Path
+
 import migraphx
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 from modules.migraphx_fused_postprocess_pruned_compiler import (
     append_pruning_tail,

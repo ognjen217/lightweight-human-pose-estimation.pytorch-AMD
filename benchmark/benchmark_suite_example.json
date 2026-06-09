@@ -1,0 +1,36 @@
+{
+  "baseline": "previous_strict_manual",
+  "ap_ar_guard": {
+    "baseline_ap": 0.415,
+    "baseline_ar": 0.473,
+    "max_ap_drop": 0.005,
+    "max_ar_drop": 0.005
+  },
+  "runs": [
+    {
+      "name": "previous_strict_manual",
+      "summary_inline": {
+        "aggregate_output_fps": 15.27,
+        "avg_inference_ms": 36.5,
+        "avg_queue_infer_to_post_ms": 184.0,
+        "avg_post_ms": 274.7,
+        "avg_e2e_ms": 585.0,
+        "p95_e2e_ms": 791.0,
+        "num_cameras": 10,
+        "infer_workers": 1,
+        "post_workers": 5,
+        "buffer_mode": "latest",
+        "backpressure_mode": "strict"
+      },
+      "ap": 0.415,
+      "ar": 0.473
+    },
+    {
+      "name": "softbp_300_throttle_3p0",
+      "summary_json": "outputs/stream_10cam_softbp_opt_summary.json",
+      "detailed_csv": "outputs/stream_10cam_softbp_opt.csv",
+      "ap": 0.415,
+      "ar": 0.473
+    }
+  ]
+}

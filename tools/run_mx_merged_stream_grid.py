@@ -28,7 +28,7 @@ Markdown/plots report can be generated from them without parsing logs again.
 
 Example:
 
-  python run_mx_merged_stream_grid.py \
+  python tools/run_mx_merged_stream_grid.py \
     --duration-s 250 \
     --warmup-s 30 \
     --camera-fps-values 24 \
@@ -38,7 +38,7 @@ Example:
 
 Recommended faster smoke run:
 
-  python run_mx_merged_stream_grid.py --duration-s 60 --warmup-s 10 --smoke
+  python tools/run_mx_merged_stream_grid.py --duration-s 60 --warmup-s 10 --smoke
 """
 
 from __future__ import annotations
