@@ -1,42 +1,32 @@
-*.pyc
-__pycache__
+# Python / tool caches
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.nbc
+*.nbi
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 .idea/
-# Python cache files
-__pycache__/
-*.py[cod]
-*.pyo
-*.pyc
-*.nbc
-*.nbi
+.vscode/
+.claude/
 
-# Python cache
-__pycache__/
-*.py[cod]
-*.pyo
-*.pyd
-
-# Numba cache
-*.nbc
-*.nbi
-
-# Python cache
-__pycache__/
-*.py[cod]
-*.pyo
-*.pyd
-
-# Numba cache
-*.nbc
-*.nbi
-
-# Local datasets / videos / generated outputs
+# Local environments / generated outputs
+venv/
+.venv/
+env/
+.env/
+rocm721_sys/
 coco/
 coco2017_postprocess_bench/
 outputs/
 build/
+dist/
+runs/
+logs/
+rocprof_results/
 .rocprofv3/
-.vscode/
-venv/
 
 # Large media / model artifacts
 *.mp4
@@ -45,6 +35,9 @@ venv/
 *.onnx
 *.onnx.data
 *.pth
+*.mxr
+*.debug.json
+perf.data
 
 # Generated caches
 models/*cache*/
@@ -65,10 +58,12 @@ models/resize_nms_topk_coco_cache/
 models/resize_nms_topk_coco_cache_k20_thr008/
 
 # Temporary experiment files
+*.bak*
+*.bak_*
 detections.json
 results_fp16_ref1.json
 mem_*.log
 rss_*.log
 output_pose*.mp4
 report.txt
-"postprocess optimization report.txt"
+postprocess optimization report.txt

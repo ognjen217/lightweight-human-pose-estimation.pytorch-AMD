@@ -15,11 +15,17 @@ DEFAULT_IGNORE_DIRS = {
     "env",
     ".env",
     "node_modules",
+    ".claude",
+    ".rocprofv3",
     "build",
     "dist",
     "runs",
     "logs",
+    "outputs",
     "rocprof_results",
+    "coco",
+    "coco2017_postprocess_bench",
+    "rocm721_sys",
 }
 
 DEFAULT_IGNORE_FILES = {
