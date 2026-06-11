@@ -108,6 +108,47 @@ def build_parser() -> argparse.ArgumentParser:
             "to reproduce the previous strict round-robin collector behavior."
         ),
     )
+    parser.add_argument(
+        "--collector-policy",
+        choices=["strict_timeout", "freshness_first", "balanced_fill"],
+        default="strict_timeout",
+        help=(
+            "Latest-mode MIGraphX batch launch policy. "
+            "strict_timeout reproduces fixed timeout behavior. "
+            "freshness_first launches early when the oldest staged frame exceeds "
+            "--collector-freshness-budget-ms. balanced_fill also launches early when "
+            "a nearly full batch sees no immediate queue improvement."
+        ),
+    )
+    parser.add_argument(
+        "--collector-freshness-budget-ms",
+        type=float,
+        default=0.0,
+        help=(
+            "Freshness budget for dynamic collector policies. When >0, freshness_first "
+            "and balanced_fill may launch before --migraphx-batch-timeout-ms once the "
+            "oldest staged frame reaches this age. 0 disables freshness-triggered launch."
+        ),
+    )
+    parser.add_argument(
+        "--collector-empty-scan-grace-ms",
+        type=float,
+        default=0.5,
+        help=(
+            "balanced_fill only: after a full camera scan finds no extra eligible frame, "
+            "launch once this short grace window expires, provided the staged batch has "
+            "at least --collector-min-early-batch-size real frames. Default: 0.5 ms."
+        ),
+    )
+    parser.add_argument(
+        "--collector-min-early-batch-size",
+        type=int,
+        default=0,
+        help=(
+            "balanced_fill only: minimum real batch size allowed for no_improvement early launch. "
+            "0 means compiled batch size - 1, so B4 requires at least 3 real frames."
+        ),
+    )
     parser.add_argument("--preprocess-queue-size", type=int, default=30)
     parser.add_argument("--postprocess-queue-size", type=int, default=30)
 

@@ -174,6 +174,10 @@ def postprocess_worker(
                 "num_keypoints": int(len(out.all_keypoints)) if out.all_keypoints is not None else 0,
                 "collector_stale_records_discarded_pre_batch": int(item.get("collector_stale_records_discarded_pre_batch", 0)),
                 "collector_stale_records_discarded_pre_batch_cumulative": int(item.get("collector_stale_records_discarded_pre_batch_cumulative", 0)),
+                "collector_wait_fill_ms": float(item.get("collector_wait_fill_ms", 0.0)),
+                "collector_wait_freshness_ms": float(item.get("collector_wait_freshness_ms", 0.0)),
+                "oldest_pending_age_at_launch_ms": float(item.get("oldest_pending_age_at_launch_ms", 0.0)),
+                "batch_launch_reason": str(item.get("batch_launch_reason", "")),
             }
             for key, value in timings.items():
                 row[f"timing_{key}"] = safe_float(value)
@@ -519,6 +523,10 @@ def postprocess_latest_worker(
                     "num_keypoints": int(len(out.all_keypoints)) if out.all_keypoints is not None else 0,
                     "collector_stale_records_discarded_pre_batch": int(bi.get("collector_stale_records_discarded_pre_batch", 0)),
                     "collector_stale_records_discarded_pre_batch_cumulative": int(bi.get("collector_stale_records_discarded_pre_batch_cumulative", 0)),
+                    "collector_wait_fill_ms": float(bi.get("collector_wait_fill_ms", 0.0)),
+                    "collector_wait_freshness_ms": float(bi.get("collector_wait_freshness_ms", 0.0)),
+                    "oldest_pending_age_at_launch_ms": float(bi.get("oldest_pending_age_at_launch_ms", 0.0)),
+                    "batch_launch_reason": str(bi.get("batch_launch_reason", "")),
                 }
                 for key, value in timings.items():
                     row[f"timing_{key}"] = safe_float(value)

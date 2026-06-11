@@ -258,6 +258,10 @@ def inference_latest_worker(
     migraphx_batch_size: int = 1,
     migraphx_batch_timeout_ms: float = 0.0,
     collector_coalesce: bool = True,
+    collector_policy: str = "strict_timeout",
+    collector_freshness_budget_ms: float = 0.0,
+    collector_empty_scan_grace_ms: float = 0.5,
+    collector_min_early_batch_size: int = 0,
     merged_pose_fused_pruned: bool = False,
     trace_log_every: int = 0,
     roctx_enabled: bool = False,
@@ -292,7 +296,10 @@ def inference_latest_worker(
         print(
             f"[INFER:{worker_id}] MIGraphX inference batch size={int(migraphx_batch_size)} "
             f"timeout={float(migraphx_batch_timeout_ms):.2f} ms "
-            f"collector_coalesce={bool(collector_coalesce)}",
+            f"collector_coalesce={bool(collector_coalesce)} "
+            f"collector_policy={collector_policy} "
+            f"freshness_budget={float(collector_freshness_budget_ms):.2f} ms "
+            f"empty_grace={float(collector_empty_scan_grace_ms):.2f} ms",
             flush=True,
         )
         if merged_pose_fused_pruned:
@@ -311,6 +318,15 @@ def inference_latest_worker(
         next_cam = worker_id % max(1, ncam)
         configured_batch_size = max(1, int(migraphx_batch_size))
         batch_timeout_s = max(0.0, float(migraphx_batch_timeout_ms)) / 1000.0
+        collector_policy = str(collector_policy or "strict_timeout")
+        if collector_policy not in {"strict_timeout", "freshness_first", "balanced_fill"}:
+            raise ValueError(f"Unsupported collector_policy={collector_policy!r}")
+        freshness_budget_s = max(0.0, float(collector_freshness_budget_ms)) / 1000.0
+        empty_scan_grace_s = max(0.0, float(collector_empty_scan_grace_ms)) / 1000.0
+        effective_min_early_batch_size = int(collector_min_early_batch_size)
+        if effective_min_early_batch_size <= 0:
+            effective_min_early_batch_size = max(1, configured_batch_size - 1)
+        effective_min_early_batch_size = min(configured_batch_size, max(1, effective_min_early_batch_size))
 
         processed = 0
         batch_runs = 0
@@ -326,6 +342,10 @@ def inference_latest_worker(
         stale_records_discarded_pre_batch = 0
         stale_discards_per_batch: List[int] = []
         batches_with_stale_discards = 0
+        collector_wait_fill_times: List[float] = []
+        collector_wait_freshness_times: List[float] = []
+        oldest_pending_ages_at_launch: List[float] = []
+        batch_launch_reasons: Dict[str, int] = {}
         t_worker_start = time.perf_counter()
 
         def _camera_is_eligible(cam_id: int, count_skip: bool = True) -> bool:
@@ -443,22 +463,65 @@ def inference_latest_worker(
                 continue
 
             stale_before_batch = stale_records_discarded_pre_batch
+            collector_start = time.perf_counter()
             batch_items = [item]
             batch_index_by_camera = {int(item["camera_id"]): 0}
+            batch_launch_reason = "single" if configured_batch_size <= 1 else "full"
 
             if configured_batch_size > 1:
-                deadline = time.perf_counter() + batch_timeout_s
+                deadline = collector_start + batch_timeout_s
+                no_improvement_since = None
+
                 while len(batch_items) < configured_batch_size:
+                    now = time.perf_counter()
+
+                    if collector_policy in {"freshness_first", "balanced_fill"} and freshness_budget_s > 0.0:
+                        oldest_age_s = max(
+                            now - float(bi.get("preprocess_done_ts", now))
+                            for bi in batch_items
+                        )
+                        if oldest_age_s >= freshness_budget_s:
+                            batch_launch_reason = "oldest_freshness_budget"
+                            break
+
                     extra, _ = _get_next_item()
                     if extra is not None:
                         if collector_coalesce:
                             _add_or_replace_batch_item(batch_items, batch_index_by_camera, extra)
                         else:
                             batch_items.append(extra)
+                        no_improvement_since = None
+                        if len(batch_items) >= configured_batch_size:
+                            batch_launch_reason = "full"
+                            break
                         continue
-                    if batch_timeout_s <= 0.0 or time.perf_counter() >= deadline:
+
+                    now = time.perf_counter()
+                    if batch_timeout_s <= 0.0:
+                        batch_launch_reason = "timeout_0"
                         break
-                    time.sleep(min(poll_sleep_s, max(0.0, deadline - time.perf_counter())))
+                    if now >= deadline:
+                        batch_launch_reason = "timeout"
+                        break
+
+                    if collector_policy == "balanced_fill":
+                        if len(batch_items) >= effective_min_early_batch_size:
+                            if no_improvement_since is None:
+                                no_improvement_since = now
+                            if (now - no_improvement_since) >= empty_scan_grace_s:
+                                batch_launch_reason = "no_improvement"
+                                break
+                        else:
+                            no_improvement_since = None
+
+                    sleep_until = deadline
+                    if collector_policy in {"freshness_first", "balanced_fill"} and freshness_budget_s > 0.0:
+                        oldest_ts = min(float(bi.get("preprocess_done_ts", now)) for bi in batch_items)
+                        sleep_until = min(sleep_until, oldest_ts + freshness_budget_s)
+                    if collector_policy == "balanced_fill" and no_improvement_since is not None:
+                        sleep_until = min(sleep_until, no_improvement_since + empty_scan_grace_s)
+
+                    time.sleep(min(poll_sleep_s, max(0.0, sleep_until - time.perf_counter())))
 
             if collector_coalesce and batch_items:
                 # Last-moment coalescing: while waiting for B4/B8 fill, a selected
@@ -477,6 +540,18 @@ def inference_latest_worker(
                 batches_with_stale_discards += 1
 
             infer_start = time.perf_counter()
+            collector_wait_fill_ms = (infer_start - collector_start) * 1000.0
+            oldest_pending_age_at_launch_ms = max(
+                (infer_start - float(bi.get("preprocess_done_ts", infer_start))) * 1000.0
+                for bi in batch_items
+            )
+            collector_wait_freshness_ms = (
+                collector_wait_fill_ms if batch_launch_reason == "oldest_freshness_budget" else 0.0
+            )
+            collector_wait_fill_times.append(collector_wait_fill_ms)
+            collector_wait_freshness_times.append(collector_wait_freshness_ms)
+            oldest_pending_ages_at_launch.append(oldest_pending_age_at_launch_ms)
+            batch_launch_reasons[batch_launch_reason] = batch_launch_reasons.get(batch_launch_reason, 0) + 1
             batch_queue_wait_ms = [
                 (infer_start - float(bi.get("preprocess_done_ts", infer_start))) * 1000.0
                 for bi in batch_items
@@ -538,7 +613,9 @@ def inference_latest_worker(
                 f"[TRACE infer:{worker_id} pid={os.getpid()} latest] "
                 f"batch_run={batch_runs} actual_batch={actual_batch_size} "
                 f"queue_avg={mean(batch_queue_wait_ms):.2f}ms infer={t_inf.ms:.2f}ms "
-                f"decode={t_dec.ms:.2f}ms stale_pre_batch={batch_stale_discards}",
+                f"decode={t_dec.ms:.2f}ms stale_pre_batch={batch_stale_discards} "
+                f"launch={batch_launch_reason} wait_fill={collector_wait_fill_ms:.2f}ms "
+                f"oldest_age={oldest_pending_age_at_launch_ms:.2f}ms",
             )
 
             for out_item in out_items:
@@ -547,6 +624,10 @@ def inference_latest_worker(
                 out_item["collector_stale_records_discarded_pre_batch_cumulative"] = int(
                     stale_records_discarded_pre_batch
                 )
+                out_item["collector_wait_fill_ms"] = float(collector_wait_fill_ms)
+                out_item["collector_wait_freshness_ms"] = float(collector_wait_freshness_ms)
+                out_item["oldest_pending_age_at_launch_ms"] = float(oldest_pending_age_at_launch_ms)
+                out_item["batch_launch_reason"] = str(batch_launch_reason)
 
                 if out_item.get("merged_pose_fused_pruned_precomputed") or out_item.get("fused_pruned_precomputed"):
                     out_item.pop("heatmaps", None)
@@ -612,6 +693,23 @@ def inference_latest_worker(
                 "batches_with_stale_records_pre_batch": int(batches_with_stale_discards),
                 "avg_stale_records_discarded_pre_batch_per_batch": mean(stale_discards_per_batch),
                 "p95_stale_records_discarded_pre_batch_per_batch": percentile(stale_discards_per_batch, 95),
+                "collector_policy": collector_policy,
+                "collector_freshness_budget_ms": float(collector_freshness_budget_ms),
+                "collector_empty_scan_grace_ms": float(collector_empty_scan_grace_ms),
+                "collector_min_early_batch_size": int(collector_min_early_batch_size),
+                "effective_collector_min_early_batch_size": int(effective_min_early_batch_size),
+                "avg_collector_wait_fill_ms": mean(collector_wait_fill_times),
+                "p95_collector_wait_fill_ms": percentile(collector_wait_fill_times, 95),
+                "avg_collector_wait_freshness_ms": mean(collector_wait_freshness_times),
+                "p95_collector_wait_freshness_ms": percentile(collector_wait_freshness_times, 95),
+                "avg_oldest_pending_age_at_launch_ms": mean(oldest_pending_ages_at_launch),
+                "p95_oldest_pending_age_at_launch_ms": percentile(oldest_pending_ages_at_launch, 95),
+                "batch_launch_reasons": dict(sorted(batch_launch_reasons.items())),
+                "batch_launch_full": int(batch_launch_reasons.get("full", 0)),
+                "batch_launch_timeout": int(batch_launch_reasons.get("timeout", 0)),
+                "batch_launch_timeout_0": int(batch_launch_reasons.get("timeout_0", 0)),
+                "batch_launch_oldest_freshness_budget": int(batch_launch_reasons.get("oldest_freshness_budget", 0)),
+                "batch_launch_no_improvement": int(batch_launch_reasons.get("no_improvement", 0)),
                 "shared_map_misses": shared_map_misses,
                 "backpressure_mode": backpressure_mode,
                 "backpressure_enabled": backpressure_mode != "off",
@@ -635,7 +733,8 @@ def inference_latest_worker(
             f"[INFER:{worker_id}] Done. processed={processed} batch_runs={batch_runs} "
             f"avg_real_batch={mean(batch_sizes_seen):.2f} replaced_before_post={replaced_before_post} "
             f"backpressure_skips={skipped_due_backpressure} soft_overrides={soft_overrides} "
-            f"throttle_skips={throttle_skips} stale_pre_batch={stale_records_discarded_pre_batch}",
+            f"throttle_skips={throttle_skips} stale_pre_batch={stale_records_discarded_pre_batch} "
+            f"collector_policy={collector_policy} launch_reasons={dict(sorted(batch_launch_reasons.items()))}",
             flush=True,
         )
 

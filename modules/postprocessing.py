@@ -407,9 +407,9 @@ def _batch_extract(
             out = extractor(
                 heatmaps_18,
                 max_keypoints_per_type=max_keypoints_per_type,
-                return_timing=True,
+                return_timing=True, # type: ignore
             )
-            all_kpts, total, extract_times = out
+            all_kpts, total, extract_times = out # type: ignore
             timings.update({k: float(v) for k, v in extract_times.items()})
             return all_kpts, total
         except TypeError:
@@ -633,11 +633,11 @@ def _resolve_torch_device(device_arg: str, require_gpu: bool = False):
     _ensure_torch_imported()
 
     if device_arg == "cpu":
-        device = torch.device("cpu")
+        device = torch.device("cpu") # pyright: ignore[reportOptionalMemberAccess]
     elif device_arg == "cuda":
-        if not torch.cuda.is_available():
+        if not torch.cuda.is_available(): # type: ignore
             raise RuntimeError("Requested torch_device='cuda', but torch.cuda.is_available() is False.")
-        device = torch.device("cuda")
+        device = torch.device("cuda") # type: ignore
     elif device_arg == "auto":
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     else:
@@ -670,10 +670,10 @@ def extract_keypoints_gpu_nms(
 
     if compute_dtype == "float16":
         heatmaps_np = np.ascontiguousarray(heatmaps[:, :, :18], dtype=np.float16)
-        torch_dtype = torch.float16
+        torch_dtype = torch.float16 # type: ignore
     elif compute_dtype == "float32":
         heatmaps_np = np.ascontiguousarray(heatmaps[:, :, :18], dtype=np.float32)
-        torch_dtype = torch.float32
+        torch_dtype = torch.float32 # type: ignore
     else:
         raise ValueError(f"Unsupported compute_dtype: {compute_dtype}")
 

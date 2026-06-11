@@ -72,6 +72,27 @@ def summarize(rows: List[Dict[str, Any]], stage_stats: List[Dict[str, Any]], wal
         [s.get("avg_stale_records_discarded_pre_batch_per_batch", 0.0) for s in inference_stats]
     )
 
+    batch_launch_reasons = {}
+    for s in inference_stats:
+        for reason, count in dict(s.get("batch_launch_reasons", {}) or {}).items():
+            batch_launch_reasons[str(reason)] = batch_launch_reasons.get(str(reason), 0) + int(count)
+    summary["batch_launch_reasons"] = batch_launch_reasons
+    summary["avg_collector_wait_fill_ms"] = mean(
+        [s.get("avg_collector_wait_fill_ms", 0.0) for s in inference_stats]
+    )
+    summary["p95_collector_wait_fill_ms"] = mean(
+        [s.get("p95_collector_wait_fill_ms", 0.0) for s in inference_stats]
+    )
+    summary["avg_collector_wait_freshness_ms"] = mean(
+        [s.get("avg_collector_wait_freshness_ms", 0.0) for s in inference_stats]
+    )
+    summary["avg_oldest_pending_age_at_launch_ms"] = mean(
+        [s.get("avg_oldest_pending_age_at_launch_ms", 0.0) for s in inference_stats]
+    )
+    summary["p95_oldest_pending_age_at_launch_ms"] = mean(
+        [s.get("p95_oldest_pending_age_at_launch_ms", 0.0) for s in inference_stats]
+    )
+
     by_cam: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
     for row in rows:
         by_cam[int(row["camera_id"])].append(row)
@@ -146,6 +167,10 @@ def write_detailed_csv(path: str, rows: List[Dict[str, Any]]) -> None:
         "queue_pre_to_infer_ms",
         "collector_stale_records_discarded_pre_batch",
         "collector_stale_records_discarded_pre_batch_cumulative",
+        "collector_wait_fill_ms",
+        "collector_wait_freshness_ms",
+        "oldest_pending_age_at_launch_ms",
+        "batch_launch_reason",
         "inference_ms",
         "decode_ms",
         "queue_infer_to_post_ms",
