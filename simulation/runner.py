@@ -447,6 +447,7 @@ def run_latest(args) -> Dict[str, Any]:
         print(f"Max pending:   {args.max_pending_age_ms:.0f} ms")
     if target_period_s > 0.0:
         print(f"Target FPS/cam:{args.target_output_fps_per_camera:.2f}  (period={target_period_s*1000:.0f} ms)")
+    print(f"Collector coalesce: {bool(getattr(args, 'collector_coalesce', True))}")
     print(f"Realtime:      {args.realtime}")
     if args.grid_video:
         print(f"Grid video:    {args.grid_video} ({args.grid_cols}x{args.grid_rows})")
@@ -534,6 +535,7 @@ def run_latest(args) -> Dict[str, Any]:
 
                 migraphx_batch_size=args.migraphx_batch_size,
                 migraphx_batch_timeout_ms=args.migraphx_batch_timeout_ms,
+                collector_coalesce=bool(getattr(args, "collector_coalesce", True)),
                 merged_pose_fused_pruned=(registry_mode == "mx_merged_pose_fused_pruned"),
                 trace_log_every=args.trace_log_every,
                 roctx_enabled=args.roctx,
@@ -695,6 +697,7 @@ def run_latest(args) -> Dict[str, Any]:
 
     summary["migraphx_batch_size"] = getattr(args, "migraphx_batch_size", 1)
     summary["migraphx_batch_timeout_ms"] = getattr(args, "migraphx_batch_timeout_ms", 0.0)
+    summary["collector_coalesce"] = bool(getattr(args, "collector_coalesce", True))
     summary["merged_pose_fused_pruned"] = (registry_mode == "mx_merged_pose_fused_pruned")
     summary["prealloc_resize_buffers"] = bool(getattr(args, "prealloc_resize_buffers", False))
     summary["gpu_nms_batch_size"] = getattr(args, "gpu_nms_batch_size", 1)

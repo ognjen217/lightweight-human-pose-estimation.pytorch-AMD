@@ -61,6 +61,17 @@ def summarize(rows: List[Dict[str, Any]], stage_stats: List[Dict[str, Any]], wal
         "stage_stats": stage_stats,
     }
 
+    inference_stats = [s for s in stage_stats if s.get("stage") == "inference"]
+    summary["stale_records_discarded_pre_batch"] = sum(
+        int(s.get("stale_records_discarded_pre_batch", 0) or 0) for s in inference_stats
+    )
+    summary["batches_with_stale_records_pre_batch"] = sum(
+        int(s.get("batches_with_stale_records_pre_batch", 0) or 0) for s in inference_stats
+    )
+    summary["avg_stale_records_discarded_pre_batch_per_batch"] = mean(
+        [s.get("avg_stale_records_discarded_pre_batch_per_batch", 0.0) for s in inference_stats]
+    )
+
     by_cam: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
     for row in rows:
         by_cam[int(row["camera_id"])].append(row)
@@ -133,6 +144,8 @@ def write_detailed_csv(path: str, rows: List[Dict[str, Any]]) -> None:
         "post_worker_id",
         "preprocess_ms",
         "queue_pre_to_infer_ms",
+        "collector_stale_records_discarded_pre_batch",
+        "collector_stale_records_discarded_pre_batch_cumulative",
         "inference_ms",
         "decode_ms",
         "queue_infer_to_post_ms",

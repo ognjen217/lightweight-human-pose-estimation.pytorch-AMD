@@ -97,6 +97,17 @@ def build_parser() -> argparse.ArgumentParser:
             "Use a small value such as 2-8 ms for live simulation."
         ),
     )
+    parser.add_argument(
+        "--collector-coalesce",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Latest-mode inference collector only. When enabled, drain each selected "
+            "per-camera input slot to the newest metadata record and coalesce duplicate "
+            "camera records before MIGraphX input assembly. Use --no-collector-coalesce "
+            "to reproduce the previous strict round-robin collector behavior."
+        ),
+    )
     parser.add_argument("--preprocess-queue-size", type=int, default=30)
     parser.add_argument("--postprocess-queue-size", type=int, default=30)
 

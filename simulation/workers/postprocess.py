@@ -172,6 +172,8 @@ def postprocess_worker(
                 "post_done_ts": post_done,
                 "num_poses": int(len(out.pose_entries)) if out.pose_entries is not None else 0,
                 "num_keypoints": int(len(out.all_keypoints)) if out.all_keypoints is not None else 0,
+                "collector_stale_records_discarded_pre_batch": int(item.get("collector_stale_records_discarded_pre_batch", 0)),
+                "collector_stale_records_discarded_pre_batch_cumulative": int(item.get("collector_stale_records_discarded_pre_batch_cumulative", 0)),
             }
             for key, value in timings.items():
                 row[f"timing_{key}"] = safe_float(value)
@@ -515,6 +517,8 @@ def postprocess_latest_worker(
                     "post_done_ts": post_done,
                     "num_poses": int(len(out.pose_entries)) if out.pose_entries is not None else 0,
                     "num_keypoints": int(len(out.all_keypoints)) if out.all_keypoints is not None else 0,
+                    "collector_stale_records_discarded_pre_batch": int(bi.get("collector_stale_records_discarded_pre_batch", 0)),
+                    "collector_stale_records_discarded_pre_batch_cumulative": int(bi.get("collector_stale_records_discarded_pre_batch_cumulative", 0)),
                 }
                 for key, value in timings.items():
                     row[f"timing_{key}"] = safe_float(value)

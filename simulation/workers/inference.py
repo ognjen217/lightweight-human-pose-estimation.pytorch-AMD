@@ -257,6 +257,7 @@ def inference_latest_worker(
 
     migraphx_batch_size: int = 1,
     migraphx_batch_timeout_ms: float = 0.0,
+    collector_coalesce: bool = True,
     merged_pose_fused_pruned: bool = False,
     trace_log_every: int = 0,
     roctx_enabled: bool = False,
@@ -290,7 +291,8 @@ def inference_latest_worker(
         print(f"[INFER:{worker_id}] Model loaded. Expected dtype: {expected_dtype}", flush=True)
         print(
             f"[INFER:{worker_id}] MIGraphX inference batch size={int(migraphx_batch_size)} "
-            f"timeout={float(migraphx_batch_timeout_ms):.2f} ms",
+            f"timeout={float(migraphx_batch_timeout_ms):.2f} ms "
+            f"collector_coalesce={bool(collector_coalesce)}",
             flush=True,
         )
         if merged_pose_fused_pruned:
@@ -321,6 +323,9 @@ def inference_latest_worker(
         inference_times: List[float] = []
         decode_times: List[float] = []
         queue_wait_times: List[float] = []
+        stale_records_discarded_pre_batch = 0
+        stale_discards_per_batch: List[int] = []
+        batches_with_stale_discards = 0
         t_worker_start = time.perf_counter()
 
         def _camera_is_eligible(cam_id: int, count_skip: bool = True) -> bool:
@@ -349,6 +354,59 @@ def inference_latest_worker(
 
             return True
 
+        def _item_preprocess_ts(item: Dict[str, Any]) -> float:
+            return float(item.get("preprocess_done_ts", item.get("capture_ts", 0.0)))
+
+        def _drain_latest_for_camera(cam_id: int) -> Optional[Dict[str, Any]]:
+            """Return newest queued metadata for a camera, discarding older records.
+
+            In the current latest path each camera queue is normally maxsize=1,
+            so this is usually a no-op. It still makes the collector robust to
+            races, future queue-size changes, and duplicate camera records staged
+            while a batch is being assembled.
+            """
+            nonlocal stale_records_discarded_pre_batch
+
+            if not collector_coalesce:
+                try:
+                    return in_queues[cam_id].get_nowait()
+                except py_queue.Empty:
+                    return None
+
+            newest = None
+            while True:
+                try:
+                    candidate = in_queues[cam_id].get_nowait()
+                except py_queue.Empty:
+                    break
+                if newest is not None:
+                    stale_records_discarded_pre_batch += 1
+                newest = candidate
+            return newest
+
+        def _add_or_replace_batch_item(
+            batch_items: List[Dict[str, Any]],
+            batch_index_by_camera: Dict[int, int],
+            candidate: Dict[str, Any],
+        ) -> bool:
+            """Add candidate or replace an older staged item from same camera.
+
+            Returns True only when real batch size increased.
+            """
+            nonlocal stale_records_discarded_pre_batch
+
+            cam_id = int(candidate["camera_id"])
+            existing_idx = batch_index_by_camera.get(cam_id)
+            if existing_idx is None:
+                batch_index_by_camera[cam_id] = len(batch_items)
+                batch_items.append(candidate)
+                return True
+
+            stale_records_discarded_pre_batch += 1
+            if _item_preprocess_ts(candidate) >= _item_preprocess_ts(batch_items[existing_idx]):
+                batch_items[existing_idx] = candidate
+            return False
+
         def _get_next_item() -> Tuple[Optional[Dict[str, Any]], int]:
             nonlocal next_cam
             scanned = 0
@@ -367,10 +425,10 @@ def inference_latest_worker(
                         skipped_this_scan += 1
                     continue
 
-                try:
-                    return in_queues[cam_id].get_nowait(), skipped_this_scan
-                except py_queue.Empty:
-                    continue
+                item = _drain_latest_for_camera(cam_id)
+                if item is not None:
+                    return item, skipped_this_scan
+
             return None, skipped_this_scan
 
         while True:
@@ -384,17 +442,39 @@ def inference_latest_worker(
                 time.sleep(poll_sleep_s)
                 continue
 
+            stale_before_batch = stale_records_discarded_pre_batch
             batch_items = [item]
+            batch_index_by_camera = {int(item["camera_id"]): 0}
+
             if configured_batch_size > 1:
                 deadline = time.perf_counter() + batch_timeout_s
                 while len(batch_items) < configured_batch_size:
                     extra, _ = _get_next_item()
                     if extra is not None:
-                        batch_items.append(extra)
+                        if collector_coalesce:
+                            _add_or_replace_batch_item(batch_items, batch_index_by_camera, extra)
+                        else:
+                            batch_items.append(extra)
                         continue
                     if batch_timeout_s <= 0.0 or time.perf_counter() >= deadline:
                         break
                     time.sleep(min(poll_sleep_s, max(0.0, deadline - time.perf_counter())))
+
+            if collector_coalesce and batch_items:
+                # Last-moment coalescing: while waiting for B4/B8 fill, a selected
+                # camera may publish a newer metadata record. Replace the staged
+                # record before input batch assembly.
+                for cam_id in list(batch_index_by_camera.keys()):
+                    if not _camera_is_eligible(cam_id, count_skip=False):
+                        continue
+                    latest = _drain_latest_for_camera(cam_id)
+                    if latest is not None:
+                        _add_or_replace_batch_item(batch_items, batch_index_by_camera, latest)
+
+            batch_stale_discards = stale_records_discarded_pre_batch - stale_before_batch
+            stale_discards_per_batch.append(batch_stale_discards)
+            if batch_stale_discards > 0:
+                batches_with_stale_discards += 1
 
             infer_start = time.perf_counter()
             batch_queue_wait_ms = [
@@ -457,11 +537,16 @@ def inference_latest_worker(
                 batch_runs,
                 f"[TRACE infer:{worker_id} pid={os.getpid()} latest] "
                 f"batch_run={batch_runs} actual_batch={actual_batch_size} "
-                f"queue_avg={mean(batch_queue_wait_ms):.2f}ms infer={t_inf.ms:.2f}ms decode={t_dec.ms:.2f}ms",
+                f"queue_avg={mean(batch_queue_wait_ms):.2f}ms infer={t_inf.ms:.2f}ms "
+                f"decode={t_dec.ms:.2f}ms stale_pre_batch={batch_stale_discards}",
             )
 
             for out_item in out_items:
                 cam_id = int(out_item["camera_id"])
+                out_item["collector_stale_records_discarded_pre_batch"] = int(batch_stale_discards)
+                out_item["collector_stale_records_discarded_pre_batch_cumulative"] = int(
+                    stale_records_discarded_pre_batch
+                )
 
                 if out_item.get("merged_pose_fused_pruned_precomputed") or out_item.get("fused_pruned_precomputed"):
                     out_item.pop("heatmaps", None)
@@ -522,6 +607,11 @@ def inference_latest_worker(
                 "configured_migraphx_batch_size": configured_batch_size,
                 "migraphx_batch_timeout_ms": float(migraphx_batch_timeout_ms),
                 "replaced_before_post": replaced_before_post,
+                "collector_coalesce": bool(collector_coalesce),
+                "stale_records_discarded_pre_batch": int(stale_records_discarded_pre_batch),
+                "batches_with_stale_records_pre_batch": int(batches_with_stale_discards),
+                "avg_stale_records_discarded_pre_batch_per_batch": mean(stale_discards_per_batch),
+                "p95_stale_records_discarded_pre_batch_per_batch": percentile(stale_discards_per_batch, 95),
                 "shared_map_misses": shared_map_misses,
                 "backpressure_mode": backpressure_mode,
                 "backpressure_enabled": backpressure_mode != "off",
@@ -545,7 +635,7 @@ def inference_latest_worker(
             f"[INFER:{worker_id}] Done. processed={processed} batch_runs={batch_runs} "
             f"avg_real_batch={mean(batch_sizes_seen):.2f} replaced_before_post={replaced_before_post} "
             f"backpressure_skips={skipped_due_backpressure} soft_overrides={soft_overrides} "
-            f"throttle_skips={throttle_skips}",
+            f"throttle_skips={throttle_skips} stale_pre_batch={stale_records_discarded_pre_batch}",
             flush=True,
         )
 
