@@ -14,25 +14,20 @@ This script does not change the production model. It creates diagnostic heads
 that keep the same parameters and progressively stop after each stage so the
 cost of the full-resolution heatmap branch can be measured in isolation.
 
-Modes:
+Modes with full-resolution outputs:
     resize_only             resize heatmaps to [B,C,full_h,full_w]
     resize_pool             resize + NMS pooling
     resize_pool_mask        resize + NMS pooling + peak masking
     resize_pool_mask_topk   full current heatmap branch ending in TopK
 
-Example:
-    python tools/export_heatmap_topk_ablation_heads.py \
-      --shape 68 121 1080 1920 \
-      --batch-size 4 \
-      --channels 18 \
-      --topk 20 \
-      --threshold 0.1 \
-      --nms-radius 6 \
-      --nms-impl separable \
-      --compile \
-      --benchmark \
-      --output-dir models/heatmap_topk_ablation_b4 \
-      --report-json outputs/heatmap_topk_ablation_b4/benchmark.json
+Reduced-output modes:
+    resize_only_reduce      resize + reduce to small [B] output
+    resize_pool_reduce      resize + NMS pooling + reduce to small [B] output
+    resize_pool_mask_reduce resize + NMS pooling + peak masking + reduce to small [B] output
+
+The reduced modes are useful because they avoid returning the huge full-res
+intermediate tensor. They are diagnostic only: the ReduceSum itself adds work,
+but it makes the output contract comparable across stages.
 """
 
 from __future__ import annotations
@@ -44,7 +39,7 @@ import subprocess
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Iterable, List, Optional, Sequence
+from typing import List, Optional
 
 import numpy as np
 import torch
@@ -52,12 +47,20 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-MODES = (
+FULL_OUTPUT_MODES = (
     "resize_only",
     "resize_pool",
     "resize_pool_mask",
     "resize_pool_mask_topk",
 )
+REDUCED_OUTPUT_MODES = (
+    "resize_only_reduce",
+    "resize_pool_reduce",
+    "resize_pool_mask_reduce",
+)
+MODES = FULL_OUTPUT_MODES + REDUCED_OUTPUT_MODES
+DEFAULT_MODES = FULL_OUTPUT_MODES
+REDUCED_MODES = REDUCED_OUTPUT_MODES + ("resize_pool_mask_topk",)
 
 
 def safe_float_token(x: float) -> str:
@@ -65,11 +68,7 @@ def safe_float_token(x: float) -> str:
 
 
 def cubic_weights_and_indices(in_size: int, out_size: int, a: float = -0.75):
-    """Return four cubic interpolation index/weight vectors.
-
-    This mirrors the current manual-cubic exporter so the diagnostic branch uses
-    the same sampling convention as the validated model.
-    """
+    """Return four cubic interpolation index/weight vectors."""
     scale = float(in_size) / float(out_size)
     dst = torch.arange(out_size, dtype=torch.float32)
     src = (dst + 0.5) * scale - 0.5
@@ -132,6 +131,12 @@ class HeatmapTopKAblationHead(nn.Module):
         self.register_buffer("y_idx", y_idx, persistent=True)
         self.register_buffer("y_w", y_w, persistent=True)
 
+    @staticmethod
+    def reduce_small(x: torch.Tensor) -> torch.Tensor:
+        # Keep a tiny output while forcing the preceding full-res computation to run.
+        # Shape: [B,C,H,W] -> [B]
+        return x.sum(dim=(1, 2, 3))
+
     def manual_cubic_resize_heatmaps(self, heatmaps: torch.Tensor) -> torch.Tensor:
         x0 = torch.index_select(heatmaps, 3, self.x_idx[0]) * self.x_w[0].view(1, 1, 1, self.full_w)
         x1 = torch.index_select(heatmaps, 3, self.x_idx[1]) * self.x_w[1].view(1, 1, 1, self.full_w)
@@ -162,14 +167,20 @@ class HeatmapTopKAblationHead(nn.Module):
         hm = self.manual_cubic_resize_heatmaps(heatmaps)
         if self.mode == "resize_only":
             return hm
+        if self.mode == "resize_only_reduce":
+            return self.reduce_small(hm)
 
         pooled = self.nms_pool(hm)
         if self.mode == "resize_pool":
             return pooled
+        if self.mode == "resize_pool_reduce":
+            return self.reduce_small(pooled)
 
         masked = self.mask_peaks(hm, pooled)
         if self.mode == "resize_pool_mask":
             return masked
+        if self.mode == "resize_pool_mask_reduce":
+            return self.reduce_small(masked)
 
         flat = masked.flatten(start_dim=2)
         return torch.topk(flat, k=self.topk, dim=2, largest=True, sorted=True)
@@ -371,8 +382,13 @@ def benchmark_mxr(mxr_path: Path, *, runs: int, warmup: int, seed: int, mode: st
 
 
 def parse_modes(text: str) -> List[str]:
-    if text.strip().lower() == "all":
+    normalized = text.strip().lower()
+    if normalized == "all":
         return list(MODES)
+    if normalized == "default":
+        return list(DEFAULT_MODES)
+    if normalized == "reduced":
+        return list(REDUCED_MODES)
     modes = [x.strip() for x in text.split(",") if x.strip()]
     invalid = [m for m in modes if m not in MODES]
     if invalid:
@@ -391,7 +407,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--nms-impl", choices=["2d", "separable"], default="separable")
     p.add_argument("--cubic-a", type=float, default=-0.75)
     p.add_argument("--opset", type=int, default=18)
-    p.add_argument("--modes", type=parse_modes, default=list(MODES), help="Comma-separated modes or 'all'.")
+    p.add_argument("--modes", type=parse_modes, default=list(DEFAULT_MODES), help="Comma-separated modes, or one of: default, reduced, all.")
     p.add_argument("--output-dir", type=Path, default=Path("models/heatmap_topk_ablation"))
     p.add_argument("--compile", action="store_true", help="Compile exported ONNX heads to MXR.")
     p.add_argument("--exhaustive-tune", action="store_true")
