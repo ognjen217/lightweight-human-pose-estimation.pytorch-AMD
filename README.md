@@ -208,7 +208,7 @@ Typical structure:
 ├── accuracy_validation.py
 ├── speed_validation.py
 ├── video_val.py
-├── simulate_10_camera_stream.py
+├── simulate_camera_stream.py
 ├── migraphx_nms.py
 ├── export_heatmap_nms_head.py
 ├── compile_heatmap_nms_migraphx.py
@@ -224,7 +224,7 @@ Typical structure:
 | `accuracy_validation.py` | Runs COCO-style accuracy validation and exports AP/AR summaries. |
 | `speed_validation.py` | Runs video speed validation and exports stage-level latency summaries. |
 | `video_val.py` | Main video validation / debugging entrypoint for frame-level timing. |
-| `simulate_10_camera_stream.py` | Multi-camera live-feed simulation; treated as a separate system story. |
+| `simulate_camera_stream.py` | Multi-camera live-feed simulation; treated as a separate system story. |
 | `modules/keypoints.py` | Original and optimized CPU keypoint extraction/grouping logic. |
 | `modules/keypoints_gpu_variant.py` | GPU postprocessing variants and hybrid paths. |
 | `migraphx_nms.py` | Runtime wrapper for compiled MIGraphX NMS path. |
@@ -476,7 +476,7 @@ These columns are useful for identifying whether the current bottleneck is in in
 The repository also contains live-feed simulation tooling:
 
 ```bash
-python simulate_10_camera_stream.py \
+python simulate_camera_stream.py \
   --model pose_model1_fp16_ref1.mxr \
   --variant gpu_nms_fullres_two_process \
   --num-cameras 10 \

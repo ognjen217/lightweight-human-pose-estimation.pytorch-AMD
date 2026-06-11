@@ -4,7 +4,7 @@ benchmark_stream_suite.py
 
 Run, collect, analyze and plot multi-camera stream benchmark results.
 
-Designed for simulate_10_camera_stream.py outputs:
+Designed for simulate_camera_stream.py outputs:
   - --summary-json <run_summary.json>
   - --detailed-csv <run_detailed.csv>
 
@@ -38,7 +38,7 @@ Manifest format
       "name": "strict_baseline",
       "summary_json": "outputs/strict_summary.json",
       "detailed_csv": "outputs/strict.csv",
-      "command": "python simulate_10_camera_stream.py --model models/pose_model1_fp16_ref1.mxr ...",
+      "command": "python simulate_camera_stream.py --model models/pose_model1_fp16_ref1.mxr ...",
       "ap": 0.415,
       "ar": 0.473
     },
@@ -889,7 +889,7 @@ def write_example_manifests(out_dir: Path) -> None:
                 "name": "strict_baseline",
                 "summary_json": "outputs/stream_10cam_strict_summary.json",
                 "detailed_csv": "outputs/stream_10cam_strict.csv",
-                "command": "python simulate_10_camera_stream.py --model models/pose_model1_fp16_ref1.mxr --variant gpu_nms_fullres_two_process --num-cameras 10 --frames-per-camera 700 --buffer-mode latest --backpressure-mode strict --infer-workers 1 --post-workers 5 --detailed-csv outputs/stream_10cam_strict.csv --summary-json outputs/stream_10cam_strict_summary.json",
+                "command": "python simulate_camera_stream.py --model models/pose_model1_fp16_ref1.mxr --variant gpu_nms_fullres_two_process --num-cameras 10 --frames-per-camera 700 --buffer-mode latest --backpressure-mode strict --infer-workers 1 --post-workers 5 --detailed-csv outputs/stream_10cam_strict.csv --summary-json outputs/stream_10cam_strict_summary.json",
                 "ap": 0.415,
                 "ar": 0.473,
             },
@@ -897,7 +897,7 @@ def write_example_manifests(out_dir: Path) -> None:
                 "name": "softbp_300_throttle_3p0",
                 "summary_json": "outputs/stream_10cam_softbp_300_thr3_summary.json",
                 "detailed_csv": "outputs/stream_10cam_softbp_300_thr3.csv",
-                "command": "python simulate_10_camera_stream.py --model models/pose_model1_fp16_ref1.mxr --variant gpu_nms_fullres_two_process --num-cameras 10 --frames-per-camera 700 --buffer-mode latest --backpressure-mode soft --max-pending-age-ms 300 --infer-workers 2 --post-workers 5 --target-output-fps-per-camera 3.0 --detailed-csv outputs/stream_10cam_softbp_300_thr3.csv --summary-json outputs/stream_10cam_softbp_300_thr3_summary.json",
+                "command": "python simulate_camera_stream.py --model models/pose_model1_fp16_ref1.mxr --variant gpu_nms_fullres_two_process --num-cameras 10 --frames-per-camera 700 --buffer-mode latest --backpressure-mode soft --max-pending-age-ms 300 --infer-workers 2 --post-workers 5 --target-output-fps-per-camera 3.0 --detailed-csv outputs/stream_10cam_softbp_300_thr3.csv --summary-json outputs/stream_10cam_softbp_300_thr3_summary.json",
                 "ap": 0.415,
                 "ar": 0.473,
             },
@@ -905,7 +905,7 @@ def write_example_manifests(out_dir: Path) -> None:
                 "name": "softbp_350_throttle_1p5",
                 "summary_json": "outputs/stream_10cam_softbp_350_thr1p5_summary.json",
                 "detailed_csv": "outputs/stream_10cam_softbp_350_thr1p5.csv",
-                "command": "python simulate_10_camera_stream.py --model models/pose_model1_fp16_ref1.mxr --variant gpu_nms_fullres_two_process --num-cameras 10 --frames-per-camera 700 --buffer-mode latest --backpressure-mode soft --max-pending-age-ms 350 --infer-workers 2 --post-workers 5 --target-output-fps-per-camera 1.5 --detailed-csv outputs/stream_10cam_softbp_350_thr1p5.csv --summary-json outputs/stream_10cam_softbp_350_thr1p5_summary.json",
+                "command": "python simulate_camera_stream.py --model models/pose_model1_fp16_ref1.mxr --variant gpu_nms_fullres_two_process --num-cameras 10 --frames-per-camera 700 --buffer-mode latest --backpressure-mode soft --max-pending-age-ms 350 --infer-workers 2 --post-workers 5 --target-output-fps-per-camera 1.5 --detailed-csv outputs/stream_10cam_softbp_350_thr1p5.csv --summary-json outputs/stream_10cam_softbp_350_thr1p5_summary.json",
                 "ap": 0.415,
                 "ar": 0.473,
             },

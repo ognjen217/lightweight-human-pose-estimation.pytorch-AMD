@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-simulate_10_camera_stream.py
+simulate_camera_stream.py
 
 Multi-camera live-feed simulator for the lightweight-human-pose-estimation.pytorch-AMD
 MIGraphX + postprocessing pipeline.
