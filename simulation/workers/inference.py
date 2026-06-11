@@ -6,7 +6,7 @@ import os
 import queue as py_queue
 import time
 import traceback
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -510,7 +510,7 @@ def inference_latest_worker(
 
 
         infer_done[worker_id] = 1
-        stats_q.put(
+        stats_q.put( # type: ignore
             {
                 "stage": "inference",
                 "buffer_mode": "latest",
