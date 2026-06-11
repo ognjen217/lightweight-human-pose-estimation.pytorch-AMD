@@ -7,7 +7,7 @@ modules/migraphx_fused_postprocess_pruned_compiler.py
 modules/migraphx_fused_postprocess_pruned.py
 modules/mx_pair_assembly_pruned.py
 modules/postprocessing.py
-simulate_10_camera_stream.py
+simulate_camera_stream.py
 ```
 
 ## Sanity check
@@ -18,7 +18,7 @@ python -m py_compile \
   modules/migraphx_fused_postprocess_pruned.py \
   modules/mx_pair_assembly_pruned.py \
   modules/postprocessing.py \
-  simulate_10_camera_stream.py
+  simulate_camera_stream.py
 ```
 
 ## Compile v2 MXR
@@ -44,7 +44,7 @@ python modules/migraphx_fused_postprocess_pruned_compiler.py \
 ## Stream test with multiple CPU post workers
 
 ```bash
-python simulate_10_camera_stream.py \
+python simulate_camera_stream.py \
   --model pose_model1_fp16_ref1.mxr \
   --variant mx_fused_cubic_topk_fullres_paf_pruned \
   --num-cameras 10 \

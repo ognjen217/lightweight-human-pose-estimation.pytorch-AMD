@@ -19,12 +19,109 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
+import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Sequence
+from typing import Any, Dict, List, Mapping, Sequence
 
 import cv2
 import numpy as np
+
+B1_MERGED_POSE_FUSED_PRUNED_MODEL = Path(
+    "models/merged_pose_fused_pruned_batchaware/"
+    "pose_fused_pruned_batchaware_b1_1080x1920_k20_m20_thr0p1_r6_separable.mxr"
+)
+
+
+def build_simulate_10_camera_merged_b1_command(
+    *,
+    model: str | Path = B1_MERGED_POSE_FUSED_PRUNED_MODEL,
+    script: str | Path = "simulate_camera_stream.py",
+    python_executable: str | Path = sys.executable,
+    videos: Sequence[str | Path] | None = None,
+    num_cameras: int = 10,
+    duration_s: float = 60.0,
+    warmup_s: float = 10.0,
+    frames_per_camera: int = 0,
+    camera_fps: float = 24.0,
+    infer_workers: int = 1,
+    post_workers: int = 4,
+    shared_input_slots: int | None = None,
+    summary_json: str | Path = "outputs/stream_merged_pose_fused_pruned_b1_summary.json",
+    detailed_csv: str | Path = "outputs/stream_merged_pose_fused_pruned_b1_detailed.csv",
+    realtime: bool = True,
+    pin_cpus: bool = False,
+    print_every: int = 100,
+    extra_args: Sequence[str | Path] = (),
+) -> List[str]:
+    """Build a simulate_camera_stream.py command for the compiled B1 merged MXR."""
+
+    cmd = [
+        str(python_executable),
+        str(script),
+        "--model",
+        str(model),
+        "--variant",
+        "mx_merged_pose_fused_pruned",
+        "--migraphx-batch-size",
+        "1",
+        "--num-cameras",
+        str(num_cameras),
+        "--frames-per-camera",
+        str(frames_per_camera),
+        "--duration-s",
+        str(duration_s),
+        "--camera-fps",
+        str(camera_fps),
+        "--buffer-mode",
+        "latest",
+        "--backpressure-mode",
+        "soft",
+        "--infer-workers",
+        str(infer_workers),
+        "--post-workers",
+        str(post_workers),
+        "--warmup-s",
+        str(warmup_s),
+        "--summary-json",
+        str(summary_json),
+        "--detailed-csv",
+        str(detailed_csv),
+        "--print-every",
+        str(print_every),
+    ]
+
+    if realtime:
+        cmd.append("--realtime")
+    if pin_cpus:
+        cmd.extend(["--pin-cpus", "--pin-all-threads"])
+
+    if shared_input_slots is None:
+        shared_input_slots = num_cameras
+    if shared_input_slots > 0:
+        cmd.extend(["--shared-input-slots", str(shared_input_slots)])
+
+    if videos:
+        cmd.append("--videos")
+        cmd.extend(str(v) for v in videos)
+
+    cmd.extend(str(arg) for arg in extra_args)
+    return cmd
+
+
+def run_simulate_10_camera_merged_b1(
+    *,
+    check: bool = True,
+    cwd: str | Path | None = None,
+    env: Mapping[str, str] | None = None,
+    **kwargs: Any,
+) -> subprocess.CompletedProcess[bytes]:
+    """Run simulate_camera_stream.py with the compiled B1 merged pose model."""
+
+    cmd = build_simulate_10_camera_merged_b1_command(**kwargs)
+    print("[simulate]", " ".join(cmd), flush=True)
+    return subprocess.run(cmd, cwd=cwd, env=env, check=check)
 
 
 def _shape_lens(shape_obj) -> List[int]:

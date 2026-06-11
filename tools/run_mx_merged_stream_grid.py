@@ -3,7 +3,7 @@
 Small grid search runner for the merged fused-pruned MIGraphX multi-camera stream
 pipeline.
 
-The script runs simulate_10_camera_stream.py across the key parameters that were
+The script runs simulate_camera_stream.py across the key parameters that were
 introduced/changed during the stream optimization work:
 
   * MIGraphX static batch size: B2 / B4 / B8
@@ -487,7 +487,7 @@ def load_existing_rows(summary_csv: Path) -> List[Dict[str, Any]]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
-    parser.add_argument("--sim-script", default="simulate_10_camera_stream.py")
+    parser.add_argument("--sim-script", default="simulate_camera_stream.py")
     parser.add_argument("--model-template", default=DEFAULT_MODEL_TEMPLATE)
     parser.add_argument("--out-root", default="outputs/rocm721_stream_tests/mx_merged_stream_grid")
 
