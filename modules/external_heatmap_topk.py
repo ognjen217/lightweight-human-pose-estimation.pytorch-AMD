@@ -49,10 +49,50 @@ class HeatmapTopKConfig:
     cubic_a: float = -0.75
 
 
+def torch_device_summary() -> str:
+    """Return a compact PyTorch device diagnostic string for error messages."""
+
+    cuda_built = False
+    try:
+        cuda_built = bool(torch.backends.cuda.is_built())
+    except Exception:
+        cuda_built = False
+    try:
+        cuda_available = bool(torch.cuda.is_available())
+    except Exception:
+        cuda_available = False
+    hip_version = getattr(torch.version, "hip", None)
+    cuda_version = getattr(torch.version, "cuda", None)
+    return (
+        f"torch={getattr(torch, '__version__', 'unknown')} "
+        f"hip={hip_version} cuda={cuda_version} "
+        f"cuda_built={cuda_built} cuda_available={cuda_available}"
+    )
+
+
 def _select_device(device: str | None = None) -> torch.device:
-    if device:
-        return torch.device(device)
-    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    requested = (device or "").strip().lower()
+    if requested in {"", "auto"}:
+        requested = "cuda" if torch.cuda.is_available() else "cpu"
+    if requested in {"rocm", "hip"}:
+        # PyTorch exposes ROCm devices through the cuda device namespace.
+        requested = "cuda"
+    if requested.startswith("cuda"):
+        try:
+            cuda_built = bool(torch.backends.cuda.is_built())
+        except Exception:
+            cuda_built = False
+        try:
+            cuda_available = bool(torch.cuda.is_available())
+        except Exception:
+            cuda_available = False
+        if not cuda_built or not cuda_available:
+            raise RuntimeError(
+                "Requested PyTorch GPU device, but this Python environment does not expose a usable "
+                "PyTorch CUDA/ROCm backend. On ROCm builds, torch.version.hip should be non-null and "
+                f"torch.cuda.is_available() should be True. Diagnostics: {torch_device_summary()}"
+            )
+    return torch.device(requested)
 
 
 def _to_numpy_pair(scores: torch.Tensor, indices: torch.Tensor) -> Tuple[np.ndarray, np.ndarray]:
