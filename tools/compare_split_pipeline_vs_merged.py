@@ -22,7 +22,7 @@ import json
 import math
 import time
 from pathlib import Path
-from typing import Dict, Iterable, List, Mapping, MutableMapping, Sequence, Tuple
+from typing import Dict, List, Mapping, MutableMapping, Sequence, Tuple
 
 import numpy as np
 
@@ -179,11 +179,98 @@ def compare_arrays(a: np.ndarray, b: np.ndarray, *, atol: float, rtol: float) ->
     return out
 
 
-def compare_output_dicts(ref: Mapping[str, np.ndarray], cand: Mapping[str, np.ndarray], names: Sequence[str], *, atol: float, rtol: float) -> Dict[str, object]:
+def compare_topk_index_semantics(
+    ref_scores: np.ndarray,
+    ref_indices: np.ndarray,
+    cand_scores: np.ndarray,
+    cand_indices: np.ndarray,
+    *,
+    invalid_score_threshold: float = -1.0e8,
+) -> Dict[str, object]:
+    """Classify TopK index mismatches into valid and invalid/tie slots.
+
+    MIGraphX TopK and PyTorch topk can legally pick different indices when the
+    score values are tied.  In this graph the most common tie is the invalid
+    sentinel value -1e9.  Those invalid index mismatches are not semantically
+    meaningful because downstream PAF scoring rejects them via the score mask.
+    """
+
+    rs = np.asarray(ref_scores)
+    cs = np.asarray(cand_scores)
+    ri = np.asarray(ref_indices)
+    ci = np.asarray(cand_indices)
+    if tuple(rs.shape) != tuple(cs.shape) or tuple(ri.shape) != tuple(ci.shape) or tuple(rs.shape) != tuple(ri.shape):
+        return {
+            "same_shape": False,
+            "semantic_match": False,
+            "reason": "shape mismatch between scores/indices",
+            "valid_topk_count": None,
+            "valid_index_mismatch_count": None,
+            "invalid_index_mismatch_count": None,
+        }
+
+    valid_ref = rs > float(invalid_score_threshold)
+    valid_cand = cs > float(invalid_score_threshold)
+    valid_any = valid_ref | valid_cand
+    valid_mask_match = bool(np.array_equal(valid_ref, valid_cand))
+    index_mismatch = ri != ci
+    valid_mismatch = index_mismatch & valid_any
+    invalid_mismatch = index_mismatch & (~valid_any)
+
+    valid_count = int(np.count_nonzero(valid_any))
+    valid_index_mismatch_count = int(np.count_nonzero(valid_mismatch))
+    invalid_index_mismatch_count = int(np.count_nonzero(invalid_mismatch))
+
+    return {
+        "same_shape": True,
+        "semantic_match": bool(valid_mask_match and valid_index_mismatch_count == 0),
+        "valid_mask_match": valid_mask_match,
+        "valid_topk_count": valid_count,
+        "valid_index_mismatch_count": valid_index_mismatch_count,
+        "invalid_index_mismatch_count": invalid_index_mismatch_count,
+        "total_index_mismatch_count": int(np.count_nonzero(index_mismatch)),
+        "invalid_score_threshold": float(invalid_score_threshold),
+    }
+
+
+def compare_output_dicts(
+    ref: Mapping[str, np.ndarray],
+    cand: Mapping[str, np.ndarray],
+    names: Sequence[str],
+    *,
+    atol: float,
+    rtol: float,
+    ignore_invalid_topk_indices: bool,
+    invalid_score_threshold: float,
+) -> Dict[str, object]:
     per_output = {name: compare_arrays(ref[name], cand[name], atol=atol, rtol=rtol) for name in names}
-    passed = all(bool(v.get("allclose", False)) for v in per_output.values())
+    strict_passed = all(bool(v.get("allclose", False)) for v in per_output.values())
     exact = all(bool(v.get("exact", False)) for v in per_output.values())
-    return {"passed": passed, "exact": exact, "outputs": per_output}
+
+    semantic_outputs_passed = dict((name, bool(metrics.get("allclose", False))) for name, metrics in per_output.items())
+    topk_semantics = None
+    if "top_scores" in ref and "top_scores" in cand and "top_indices" in ref and "top_indices" in cand:
+        topk_semantics = compare_topk_index_semantics(
+            ref["top_scores"],
+            ref["top_indices"],
+            cand["top_scores"],
+            cand["top_indices"],
+            invalid_score_threshold=float(invalid_score_threshold),
+        )
+        if ignore_invalid_topk_indices:
+            semantic_outputs_passed["top_indices"] = bool(topk_semantics.get("semantic_match", False))
+
+    semantic_passed = all(semantic_outputs_passed.values())
+    return {
+        "passed": bool(semantic_passed if ignore_invalid_topk_indices else strict_passed),
+        "strict_passed": bool(strict_passed),
+        "semantic_passed": bool(semantic_passed),
+        "exact": bool(exact),
+        "ignore_invalid_topk_indices": bool(ignore_invalid_topk_indices),
+        "outputs": per_output,
+        "semantic_outputs_passed": semantic_outputs_passed,
+        "topk_index_semantics": topk_semantics,
+    }
 
 
 def write_markdown_report(path: Path, payload: Mapping[str, object]) -> None:
@@ -194,7 +281,10 @@ def write_markdown_report(path: Path, payload: Mapping[str, object]) -> None:
     lines.append(f"- batch_size: `{payload['batch_size']}`")
     lines.append(f"- runs: `{payload['runs']}`")
     lines.append(f"- passed_all_runs: `{payload['passed_all_runs']}`")
+    lines.append(f"- strict_passed_all_runs: `{payload['strict_passed_all_runs']}`")
+    lines.append(f"- semantic_passed_all_runs: `{payload['semantic_passed_all_runs']}`")
     lines.append(f"- exact_all_runs: `{payload['exact_all_runs']}`")
+    lines.append(f"- ignore_invalid_topk_indices: `{payload['ignore_invalid_topk_indices']}`")
     lines.append("")
     lines.append("## Timings")
     lines.append("")
@@ -205,10 +295,29 @@ def write_markdown_report(path: Path, payload: Mapping[str, object]) -> None:
         for k, v in timings.items():
             lines.append(f"| {k} | {float(v):.4f} |")
     lines.append("")
+    lines.append("## TopK index semantics")
+    lines.append("")
+    lines.append("| run | semantic_match | valid_topk | valid_idx_mismatch | invalid_idx_mismatch | total_idx_mismatch |")
+    lines.append("|---:|:---:|---:|---:|---:|---:|")
+    for run in payload.get("runs_detail", []):
+        if not isinstance(run, Mapping):
+            continue
+        comp = run.get("comparison", {})
+        if not isinstance(comp, Mapping):
+            continue
+        sem = comp.get("topk_index_semantics")
+        if not isinstance(sem, Mapping):
+            continue
+        lines.append(
+            f"| {run.get('run_index')} | {sem.get('semantic_match')} | {sem.get('valid_topk_count')} | "
+            f"{sem.get('valid_index_mismatch_count')} | {sem.get('invalid_index_mismatch_count')} | "
+            f"{sem.get('total_index_mismatch_count')} |"
+        )
+    lines.append("")
     lines.append("## Per-run output checks")
     lines.append("")
-    lines.append("| run | passed | exact | output | allclose | exact output | max_abs | mean_abs | mismatches |")
-    lines.append("|---:|:---:|:---:|---|:---:|:---:|---:|---:|---:|")
+    lines.append("| run | passed | strict | semantic | exact | output | allclose | exact output | semantic output | max_abs | mean_abs | mismatches |")
+    lines.append("|---:|:---:|:---:|:---:|:---:|---|:---:|:---:|:---:|---:|---:|---:|")
     for run in payload.get("runs_detail", []):
         if not isinstance(run, Mapping):
             continue
@@ -216,15 +325,18 @@ def write_markdown_report(path: Path, payload: Mapping[str, object]) -> None:
         if not isinstance(comp, Mapping):
             continue
         outs = comp.get("outputs", {})
+        sem_outs = comp.get("semantic_outputs_passed", {})
         if not isinstance(outs, Mapping):
             continue
         for name, metrics in outs.items():
             if not isinstance(metrics, Mapping):
                 continue
+            semantic_output = sem_outs.get(name) if isinstance(sem_outs, Mapping) else None
             lines.append(
-                f"| {run.get('run_index')} | {comp.get('passed')} | {comp.get('exact')} | {name} | "
-                f"{metrics.get('allclose')} | {metrics.get('exact')} | {metrics.get('max_abs')} | "
-                f"{metrics.get('mean_abs')} | {metrics.get('mismatch_count')} |"
+                f"| {run.get('run_index')} | {comp.get('passed')} | {comp.get('strict_passed')} | "
+                f"{comp.get('semantic_passed')} | {comp.get('exact')} | {name} | "
+                f"{metrics.get('allclose')} | {metrics.get('exact')} | {semantic_output} | "
+                f"{metrics.get('max_abs')} | {metrics.get('mean_abs')} | {metrics.get('mismatch_count')} |"
             )
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines) + "\n")
@@ -252,6 +364,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--nms-radius", type=int, default=6)
     p.add_argument("--nms-impl", default="separable")
     p.add_argument("--cubic-a", type=float, default=-0.75)
+    p.add_argument("--ignore-invalid-topk-indices", action="store_true", help="Treat TopK index mismatches in invalid -1e9 slots as semantic ties instead of failures.")
+    p.add_argument("--invalid-score-threshold", type=float, default=-1.0e8)
     p.add_argument("--json", default="outputs/split_pipeline_compare/compare.json")
     p.add_argument("--markdown", default="outputs/split_pipeline_compare/compare.md")
     return p.parse_args()
@@ -318,7 +432,15 @@ def main() -> None:
             "top_indices": top_indices,
             **mxr2_out,
         }
-        comparison = compare_output_dicts(merged_out, split_out, MERGED_OUTPUT_NAMES, atol=float(args.atol), rtol=float(args.rtol))
+        comparison = compare_output_dicts(
+            merged_out,
+            split_out,
+            MERGED_OUTPUT_NAMES,
+            atol=float(args.atol),
+            rtol=float(args.rtol),
+            ignore_invalid_topk_indices=bool(args.ignore_invalid_topk_indices),
+            invalid_score_threshold=float(args.invalid_score_threshold),
+        )
 
         timing_acc["merged"].append((t1 - t0) * 1000.0)
         timing_acc["mxr1"].append((t2 - split_t0) * 1000.0)
@@ -333,9 +455,17 @@ def main() -> None:
             "timing_ms": {k: v[-1] for k, v in timing_acc.items()},
         })
         print(
-            f"[run {i}] passed={comparison['passed']} exact={comparison['exact']} "
+            f"[run {i}] passed={comparison['passed']} strict={comparison['strict_passed']} "
+            f"semantic={comparison['semantic_passed']} exact={comparison['exact']} "
             f"merged_ms={timing_acc['merged'][-1]:.3f} split_ms={timing_acc['split_total'][-1]:.3f}"
         )
+        sem = comparison.get("topk_index_semantics")
+        if isinstance(sem, Mapping):
+            print(
+                f"        topk_valid_mismatch={sem.get('valid_index_mismatch_count')} "
+                f"topk_invalid_mismatch={sem.get('invalid_index_mismatch_count')} "
+                f"topk_total_mismatch={sem.get('total_index_mismatch_count')}"
+            )
 
     payload: Dict[str, object] = {
         "merged_mxr": str(args.merged_mxr),
@@ -346,7 +476,11 @@ def main() -> None:
         "runs": int(args.runs),
         "atol": float(args.atol),
         "rtol": float(args.rtol),
+        "ignore_invalid_topk_indices": bool(args.ignore_invalid_topk_indices),
+        "invalid_score_threshold": float(args.invalid_score_threshold),
         "passed_all_runs": all(bool(r["comparison"]["passed"]) for r in runs_detail),
+        "strict_passed_all_runs": all(bool(r["comparison"]["strict_passed"]) for r in runs_detail),
+        "semantic_passed_all_runs": all(bool(r["comparison"]["semantic_passed"]) for r in runs_detail),
         "exact_all_runs": all(bool(r["comparison"]["exact"]) for r in runs_detail),
         "timing_ms_avg": {k: float(np.mean(v)) if v else math.nan for k, v in timing_acc.items()},
         "runs_detail": runs_detail,
