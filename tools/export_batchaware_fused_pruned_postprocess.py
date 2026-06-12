@@ -167,6 +167,7 @@ class BatchAwareFusedPrunedPostprocess(nn.Module):
         self.points_per_limb = int(points_per_limb)
         self.min_paf_score = float(min_paf_score)
         self.success_ratio_thr = float(success_ratio_thr)
+        self.heatmap_cubic_a = float(heatmap_cubic_a)
         self.paf_cubic_a = float(paf_cubic_a)
         self.min_pair_score = float(min_pair_score)
         self.heatmap_mode = str(heatmap_mode)
@@ -246,11 +247,11 @@ class BatchAwareFusedPrunedPostprocess(nn.Module):
 
         for oy in (-1, 0, 1, 2):
             iy_f = base_y + float(oy)
-            wy = self._cubic_kernel(torch.abs(src_y - iy_f))
+            wy = self._heatmap_cubic_kernel(torch.abs(src_y - iy_f))
             iy = torch.clamp(iy_f.to(torch.int64), 0, self.in_h - 1)
             for ox in (-1, 0, 1, 2):
                 ix_f = base_x + float(ox)
-                wx = self._cubic_kernel(torch.abs(src_x - ix_f))
+                wx = self._heatmap_cubic_kernel(torch.abs(src_x - ix_f))
                 ix = torch.clamp(ix_f.to(torch.int64), 0, self.in_w - 1)
                 flat_idx = iy * int(self.in_w) + ix
                 values = torch.gather(flat, 1, flat_idx.reshape(b * c, -1)).reshape(
@@ -304,6 +305,14 @@ class BatchAwareFusedPrunedPostprocess(nn.Module):
         y = torch.floor(indices_f / float(self.full_w))
         x = indices_f - y * float(self.full_w)
         return x, y
+
+    def _heatmap_cubic_kernel(self, dist):
+        a = self.heatmap_cubic_a
+        dist2 = dist * dist
+        dist3 = dist2 * dist
+        w1 = (a + 2.0) * dist3 - (a + 3.0) * dist2 + 1.0
+        w2 = a * dist3 - 5.0 * a * dist2 + 8.0 * a * dist - 4.0 * a
+        return torch.where(dist <= 1.0, w1, torch.where(dist < 2.0, w2, torch.zeros_like(dist)))
 
     def _cubic_kernel(self, dist):
         a = self.paf_cubic_a
