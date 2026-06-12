@@ -28,6 +28,23 @@ int heatmap_topk_hip_run(
     int nms_radius,
     void* hip_stream);
 
+// Host-mediated correctness/test entrypoint.  This intentionally performs
+// CPU<->GPU copies around heatmap_topk_hip_run so the native kernels can be
+// validated before the true zero-copy handoff is implemented.
+int heatmap_topk_hip_run_host(
+    const float* heatmaps_host,
+    float* top_scores_host,
+    long long* top_indices_host,
+    int batch,
+    int channels,
+    int in_h,
+    int in_w,
+    int full_h,
+    int full_w,
+    int topk,
+    float threshold,
+    int nms_radius);
+
 #ifdef __cplusplus
 }
 #endif
