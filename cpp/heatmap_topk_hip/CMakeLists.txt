@@ -1,29 +1,49 @@
 cmake_minimum_required(VERSION 3.21)
 
-# Keep the scaffold CXX-only for now.  The current implementation only uses the
-# HIP runtime C API from a .cpp translation unit, so enabling CMake's HIP
-# language is unnecessary and makes CMake reject the hipcc wrapper when users
-# pass -DCMAKE_HIP_COMPILER=/opt/rocm/bin/hipcc.  When real .hip kernels are
-# added, this can be switched to LANGUAGES CXX HIP and configured with Clang
-# directly or by letting CMake auto-detect the HIP compiler.
+# Use a CXX-only CMake project and invoke hipcc explicitly.  This avoids the
+# CMake 3.28 restriction that rejects /opt/rocm/bin/hipcc as CMAKE_HIP_COMPILER,
+# while still compiling real HIP kernels into the shared library.
 project(heatmap_topk_hip LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-find_package(hip REQUIRED CONFIG)
-
-add_library(heatmap_topk_hip SHARED
-    heatmap_topk_hip.cpp
+find_program(HIPCC_EXECUTABLE
+    NAMES hipcc
+    HINTS /opt/rocm/bin
+    REQUIRED
 )
 
-target_include_directories(heatmap_topk_hip PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}
+set(HIP_TOPK_OFFLOAD_ARCH "native" CACHE STRING "HIP offload architecture, e.g. native, gfx1100, gfx1150. Empty disables explicit arch flag.")
+set(HIP_TOPK_ARCH_FLAGS "")
+if(NOT "${HIP_TOPK_OFFLOAD_ARCH}" STREQUAL "")
+    list(APPEND HIP_TOPK_ARCH_FLAGS "--offload-arch=${HIP_TOPK_OFFLOAD_ARCH}")
+endif()
+
+set(HIP_TOPK_SOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/heatmap_topk_hip.cpp
+)
+set(HIP_TOPK_OUTPUT
+    ${CMAKE_CURRENT_BINARY_DIR}/libheatmap_topk_hip.so
 )
 
-target_link_libraries(heatmap_topk_hip PRIVATE hip::host)
+add_custom_command(
+    OUTPUT ${HIP_TOPK_OUTPUT}
+    COMMAND ${HIPCC_EXECUTABLE}
+        -O3
+        -std=c++17
+        -fPIC
+        -shared
+        ${HIP_TOPK_ARCH_FLAGS}
+        -I${CMAKE_CURRENT_SOURCE_DIR}
+        ${HIP_TOPK_SOURCES}
+        -o ${HIP_TOPK_OUTPUT}
+    DEPENDS ${HIP_TOPK_SOURCES} ${CMAKE_CURRENT_SOURCE_DIR}/heatmap_topk_hip.h
+    COMMENT "Building HIP heatmap TopK backend with ${HIPCC_EXECUTABLE}"
+    VERBATIM
+)
 
-set_target_properties(heatmap_topk_hip PROPERTIES
-    OUTPUT_NAME heatmap_topk_hip
+add_custom_target(heatmap_topk_hip ALL
+    DEPENDS ${HIP_TOPK_OUTPUT}
 )
