@@ -31,7 +31,7 @@ except ModuleNotFoundError:  # pragma: no cover - useful when imported from tool
     from tools.export_batchaware_fused_pruned_postprocess import BatchAwareFusedPrunedPostprocess
 
 
-HeatmapBackendName = Literal["torch_manual", "torch_bicubic", "hip_host"]
+HeatmapBackendName = Literal["torch_manual", "torch_bicubic", "hip_host", "hip_host_fused"]
 
 
 @dataclass(frozen=True)
@@ -50,8 +50,6 @@ class HeatmapTopKConfig:
 
 
 def torch_device_summary() -> str:
-    """Return a compact PyTorch device diagnostic string for error messages."""
-
     cuda_built = False
     try:
         cuda_built = bool(torch.backends.cuda.is_built())
@@ -75,7 +73,6 @@ def _select_device(device: str | None = None) -> torch.device:
     if requested in {"", "auto"}:
         requested = "cuda" if torch.cuda.is_available() else "cpu"
     if requested in {"rocm", "hip"}:
-        # PyTorch exposes ROCm devices through the cuda device namespace.
         requested = "cuda"
     if requested.startswith("cuda"):
         try:
@@ -115,14 +112,6 @@ def torch_manual_heatmap_topk(
     *,
     device: str | None = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """Run the existing manual cubic heatmap branch in PyTorch.
-
-    This backend uses the same manual cubic index/weight formulation as the
-    batch-aware fused-pruned exporter.  It is the correctness bridge for the
-    split pipeline because it mirrors the current ONNX/MIGraphX graph more
-    closely than native PyTorch bicubic interpolation.
-    """
-
     arr = _validate_heatmaps(heatmaps, cfg)
     dev = _select_device(device)
     module = BatchAwareFusedPrunedPostprocess(
@@ -143,7 +132,6 @@ def torch_manual_heatmap_topk(
         paf_cubic_a=float(cfg.cubic_a),
         min_pair_score=0.0,
     ).eval().to(dev)
-
     x = torch.from_numpy(arr).to(dev, non_blocking=False)
     with torch.no_grad():
         scores, indices = module.topk_heatmaps(x)
@@ -158,12 +146,6 @@ def torch_bicubic_heatmap_topk(
     *,
     device: str | None = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """Run PyTorch ROCm/CUDA bicubic resize + NMS + TopK.
-
-    This backend is not guaranteed to be bit-equivalent to the manual cubic
-    exporter.  It is useful as a performance/accuracy experiment.
-    """
-
     arr = _validate_heatmaps(heatmaps, cfg)
     dev = _select_device(device)
     x = torch.from_numpy(arr).to(dev, non_blocking=False)
@@ -193,39 +175,10 @@ def torch_bicubic_heatmap_topk(
     return _to_numpy_pair(scores, indices)
 
 
-def hip_host_heatmap_topk(
-    heatmaps: np.ndarray,
-    cfg: HeatmapTopKConfig,
-    *,
-    device: str | None = None,
-) -> Tuple[np.ndarray, np.ndarray]:
-    """Run native HIP heatmap TopK through host-mediated test ABI.
+def _hip_shape(cfg: HeatmapTopKConfig):
+    from modules.external_heatmap_topk_hip import HipHeatmapTopKShape
 
-    This path copies heatmaps host->device and topk outputs device->host inside
-    the native library.  It is for correctness and staged integration only; the
-    final production path should call heatmap_topk_hip_run on GPU-resident
-    pointers between MXR1 and MXR2.
-    """
-
-    del device  # native HIP backend does not use PyTorch device strings
-    if cfg.nms_impl not in {"separable", "2d"}:
-        raise RuntimeError(f"Unsupported nms_impl={cfg.nms_impl}")
-    if abs(float(cfg.cubic_a) - (-0.75)) > 1.0e-6:
-        raise RuntimeError("HIP backend currently implements heatmap cubic_a=-0.75 only")
-
-    arr = _validate_heatmaps(heatmaps, cfg)
-    try:
-        from modules.external_heatmap_topk_hip import HipHeatmapTopKBackend, HipHeatmapTopKShape
-    except ModuleNotFoundError:  # pragma: no cover
-        import sys
-        from pathlib import Path
-
-        _ROOT = Path(__file__).resolve().parents[1]
-        if str(_ROOT) not in sys.path:
-            sys.path.insert(0, str(_ROOT))
-        from modules.external_heatmap_topk_hip import HipHeatmapTopKBackend, HipHeatmapTopKShape
-
-    shape = HipHeatmapTopKShape(
+    return HipHeatmapTopKShape(
         batch=int(cfg.batch_size),
         channels=int(cfg.channels),
         in_h=int(cfg.in_h),
@@ -236,8 +189,40 @@ def hip_host_heatmap_topk(
         threshold=float(cfg.threshold),
         nms_radius=int(cfg.nms_radius),
     )
-    backend = HipHeatmapTopKBackend()
-    return backend.run_host(arr, shape)
+
+
+def hip_host_heatmap_topk(
+    heatmaps: np.ndarray,
+    cfg: HeatmapTopKConfig,
+    *,
+    device: str | None = None,
+) -> Tuple[np.ndarray, np.ndarray]:
+    del device
+    if cfg.nms_impl not in {"separable", "2d"}:
+        raise RuntimeError(f"Unsupported nms_impl={cfg.nms_impl}")
+    if abs(float(cfg.cubic_a) - (-0.75)) > 1.0e-6:
+        raise RuntimeError("HIP backend currently implements heatmap cubic_a=-0.75 only")
+    arr = _validate_heatmaps(heatmaps, cfg)
+    from modules.external_heatmap_topk_hip import HipHeatmapTopKBackend
+
+    return HipHeatmapTopKBackend().run_host(arr, _hip_shape(cfg))
+
+
+def hip_host_fused_heatmap_topk(
+    heatmaps: np.ndarray,
+    cfg: HeatmapTopKConfig,
+    *,
+    device: str | None = None,
+) -> Tuple[np.ndarray, np.ndarray]:
+    del device
+    if cfg.nms_impl not in {"separable", "2d"}:
+        raise RuntimeError(f"Unsupported nms_impl={cfg.nms_impl}")
+    if abs(float(cfg.cubic_a) - (-0.75)) > 1.0e-6:
+        raise RuntimeError("HIP backend currently implements heatmap cubic_a=-0.75 only")
+    arr = _validate_heatmaps(heatmaps, cfg)
+    from modules.external_heatmap_topk_hip import HipHeatmapTopKBackend
+
+    return HipHeatmapTopKBackend().run_host_fused(arr, _hip_shape(cfg))
 
 
 def run_external_heatmap_topk(
@@ -253,4 +238,6 @@ def run_external_heatmap_topk(
         return torch_bicubic_heatmap_topk(heatmaps, cfg, device=device)
     if backend == "hip_host":
         return hip_host_heatmap_topk(heatmaps, cfg, device=device)
+    if backend == "hip_host_fused":
+        return hip_host_fused_heatmap_topk(heatmaps, cfg, device=device)
     raise ValueError(f"Unsupported external heatmap backend: {backend}")
