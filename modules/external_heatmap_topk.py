@@ -47,8 +47,8 @@ class HeatmapTopKConfig:
     nms_radius: int = 6
     nms_impl: str = "separable"
     cubic_a: float = -0.75
-    smart_proposals: int = 64
-    smart_local_radius: int = 8
+    smart_proposals: int = 32
+    smart_local_radius: int = 4
     smart_lowres_nms_radius: int = 1
 
 
