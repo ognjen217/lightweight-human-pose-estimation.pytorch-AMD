@@ -5,7 +5,7 @@ branch inside the fused-pruned MIGraphX graph:
 
     heatmaps [B,18,68,121] -> top_scores [B,18,K], top_indices [B,18,K]
 
-The first implementation is a host-mediated PyTorch prototype.  It is meant for
+The first implementation is a host-mediated prototype.  It is meant for
 correctness and performance exploration before a true GPU-resident handoff is
 implemented.
 """
@@ -31,7 +31,7 @@ except ModuleNotFoundError:  # pragma: no cover - useful when imported from tool
     from tools.export_batchaware_fused_pruned_postprocess import BatchAwareFusedPrunedPostprocess
 
 
-HeatmapBackendName = Literal["torch_manual", "torch_bicubic"]
+HeatmapBackendName = Literal["torch_manual", "torch_bicubic", "hip_host"]
 
 
 @dataclass(frozen=True)
@@ -193,6 +193,53 @@ def torch_bicubic_heatmap_topk(
     return _to_numpy_pair(scores, indices)
 
 
+def hip_host_heatmap_topk(
+    heatmaps: np.ndarray,
+    cfg: HeatmapTopKConfig,
+    *,
+    device: str | None = None,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Run native HIP heatmap TopK through host-mediated test ABI.
+
+    This path copies heatmaps host->device and topk outputs device->host inside
+    the native library.  It is for correctness and staged integration only; the
+    final production path should call heatmap_topk_hip_run on GPU-resident
+    pointers between MXR1 and MXR2.
+    """
+
+    del device  # native HIP backend does not use PyTorch device strings
+    if cfg.nms_impl not in {"separable", "2d"}:
+        raise RuntimeError(f"Unsupported nms_impl={cfg.nms_impl}")
+    if abs(float(cfg.cubic_a) - (-0.75)) > 1.0e-6:
+        raise RuntimeError("HIP backend currently implements heatmap cubic_a=-0.75 only")
+
+    arr = _validate_heatmaps(heatmaps, cfg)
+    try:
+        from modules.external_heatmap_topk_hip import HipHeatmapTopKBackend, HipHeatmapTopKShape
+    except ModuleNotFoundError:  # pragma: no cover
+        import sys
+        from pathlib import Path
+
+        _ROOT = Path(__file__).resolve().parents[1]
+        if str(_ROOT) not in sys.path:
+            sys.path.insert(0, str(_ROOT))
+        from modules.external_heatmap_topk_hip import HipHeatmapTopKBackend, HipHeatmapTopKShape
+
+    shape = HipHeatmapTopKShape(
+        batch=int(cfg.batch_size),
+        channels=int(cfg.channels),
+        in_h=int(cfg.in_h),
+        in_w=int(cfg.in_w),
+        full_h=int(cfg.full_h),
+        full_w=int(cfg.full_w),
+        topk=int(cfg.topk),
+        threshold=float(cfg.threshold),
+        nms_radius=int(cfg.nms_radius),
+    )
+    backend = HipHeatmapTopKBackend()
+    return backend.run_host(arr, shape)
+
+
 def run_external_heatmap_topk(
     heatmaps: np.ndarray,
     cfg: HeatmapTopKConfig,
@@ -204,4 +251,6 @@ def run_external_heatmap_topk(
         return torch_manual_heatmap_topk(heatmaps, cfg, device=device)
     if backend == "torch_bicubic":
         return torch_bicubic_heatmap_topk(heatmaps, cfg, device=device)
+    if backend == "hip_host":
+        return hip_host_heatmap_topk(heatmaps, cfg, device=device)
     raise ValueError(f"Unsupported external heatmap backend: {backend}")
