@@ -1,8 +1,4 @@
-"""ctypes loader for the native HIP heatmap TopK backend.
-
-This module gives the Python side a stable place to load the shared library,
-call the C ABI, and later plug the backend into the split MXR pipeline.
-"""
+"""ctypes loader for the native HIP heatmap TopK backend."""
 
 from __future__ import annotations
 
@@ -13,7 +9,6 @@ from pathlib import Path
 from typing import Dict, Tuple
 
 import numpy as np
-
 
 HIP_TOPK_SUCCESS = 0
 HIP_TOPK_INVALID_ARGUMENT = 1
@@ -45,8 +40,8 @@ class HipHeatmapTopKSmartShape:
     topk: int = 20
     threshold: float = 0.1
     lowres_nms_radius: int = 1
-    smart_proposals: int = 64
-    smart_local_radius: int = 8
+    smart_proposals: int = 32
+    smart_local_radius: int = 4
 
 
 @dataclass(frozen=True)
@@ -112,28 +107,14 @@ class HipHeatmapTopKBackend:
         env_path = os.environ.get("HEATMAP_TOPK_HIP_LIB", "").strip()
         path = Path(library_path or env_path or default_library_path())
         if not path.exists():
-            raise FileNotFoundError(
-                f"HIP heatmap TopK shared library not found: {path}. "
-                "Build it with: cmake --build build/heatmap_topk_hip -j"
-            )
+            raise FileNotFoundError(f"HIP heatmap TopK shared library not found: {path}. Build it with: bash tools/build_heatmap_topk_hip.sh")
         self.path = path
         self.lib = ctypes.CDLL(str(path))
-
         self.lib.heatmap_topk_hip_status_string.argtypes = [ctypes.c_int]
         self.lib.heatmap_topk_hip_status_string.restype = ctypes.c_char_p
 
-        common_host_args = [
-            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
-            ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
-            ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_float,
-            ctypes.c_int,
-        ]
-        smart_host_args = [
-            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
-            ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
-            ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_float,
-            ctypes.c_int, ctypes.c_int, ctypes.c_int,
-        ]
+        common_host_args = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_float, ctypes.c_int]
+        smart_host_args = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_float, ctypes.c_int, ctypes.c_int, ctypes.c_int]
 
         self.lib.heatmap_topk_hip_run.argtypes = common_host_args + [ctypes.c_void_p]
         self.lib.heatmap_topk_hip_run.restype = ctypes.c_int
@@ -157,8 +138,7 @@ class HipHeatmapTopKBackend:
     def run_raw(self, *, heatmaps_ptr: int, top_scores_ptr: int, top_indices_ptr: int, shape: HipHeatmapTopKShape, hip_stream_ptr: int = 0, raise_on_error: bool = True) -> int:
         status = int(self.lib.heatmap_topk_hip_run(
             ctypes.c_void_p(int(heatmaps_ptr)), ctypes.c_void_p(int(top_scores_ptr)), ctypes.c_void_p(int(top_indices_ptr)),
-            int(shape.batch), int(shape.channels), int(shape.in_h), int(shape.in_w), int(shape.full_h), int(shape.full_w),
-            int(shape.topk), ctypes.c_float(float(shape.threshold)), int(shape.nms_radius), ctypes.c_void_p(int(hip_stream_ptr)),
+            int(shape.batch), int(shape.channels), int(shape.in_h), int(shape.in_w), int(shape.full_h), int(shape.full_w), int(shape.topk), ctypes.c_float(float(shape.threshold)), int(shape.nms_radius), ctypes.c_void_p(int(hip_stream_ptr)),
         ))
         if raise_on_error and status != HIP_TOPK_SUCCESS:
             raise RuntimeError(f"heatmap_topk_hip_run failed: {self.status_string(status)} ({status})")
@@ -176,23 +156,14 @@ class HipHeatmapTopKBackend:
 
     def _call_common(self, symbol_name: str, arr, shape: HipHeatmapTopKShape, top_scores, top_indices, profile=None) -> int:
         fn = getattr(self.lib, symbol_name)
-        args = [
-            arr.ctypes.data_as(ctypes.c_void_p), top_scores.ctypes.data_as(ctypes.c_void_p), top_indices.ctypes.data_as(ctypes.c_void_p),
-            int(shape.batch), int(shape.channels), int(shape.in_h), int(shape.in_w), int(shape.full_h), int(shape.full_w),
-            int(shape.topk), ctypes.c_float(float(shape.threshold)), int(shape.nms_radius),
-        ]
+        args = [arr.ctypes.data_as(ctypes.c_void_p), top_scores.ctypes.data_as(ctypes.c_void_p), top_indices.ctypes.data_as(ctypes.c_void_p), int(shape.batch), int(shape.channels), int(shape.in_h), int(shape.in_w), int(shape.full_h), int(shape.full_w), int(shape.topk), ctypes.c_float(float(shape.threshold)), int(shape.nms_radius)]
         if profile is not None:
             args.append(ctypes.byref(profile))
         return int(fn(*args))
 
     def _call_smart(self, symbol_name: str, arr, shape: HipHeatmapTopKSmartShape, top_scores, top_indices, profile=None) -> int:
         fn = getattr(self.lib, symbol_name)
-        args = [
-            arr.ctypes.data_as(ctypes.c_void_p), top_scores.ctypes.data_as(ctypes.c_void_p), top_indices.ctypes.data_as(ctypes.c_void_p),
-            int(shape.batch), int(shape.channels), int(shape.in_h), int(shape.in_w), int(shape.full_h), int(shape.full_w),
-            int(shape.topk), ctypes.c_float(float(shape.threshold)), int(shape.lowres_nms_radius),
-            int(shape.smart_proposals), int(shape.smart_local_radius),
-        ]
+        args = [arr.ctypes.data_as(ctypes.c_void_p), top_scores.ctypes.data_as(ctypes.c_void_p), top_indices.ctypes.data_as(ctypes.c_void_p), int(shape.batch), int(shape.channels), int(shape.in_h), int(shape.in_w), int(shape.full_h), int(shape.full_w), int(shape.topk), ctypes.c_float(float(shape.threshold)), int(shape.lowres_nms_radius), int(shape.smart_proposals), int(shape.smart_local_radius)]
         if profile is not None:
             args.append(ctypes.byref(profile))
         return int(fn(*args))
