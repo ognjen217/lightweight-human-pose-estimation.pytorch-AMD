@@ -9,6 +9,10 @@ namespace {
 
 constexpr float kInvalidScore = -1.0e9f;
 constexpr int kMaxTopK = 64;
+constexpr int kThreads = 256;
+constexpr int kMaxDenseBlocks = 32768;
+constexpr int kLargePlaneSegments = 32;
+constexpr int kLargePlaneThreshold = 262144;
 
 bool invalid_shape(
     int batch,
@@ -25,6 +29,20 @@ bool invalid_shape(
 
 __device__ __host__ inline int clamp_int(int v, int lo, int hi) {
     return v < lo ? lo : (v > hi ? hi : v);
+}
+
+int ceil_div_size(std::size_t a, int b) {
+    return static_cast<int>((a + static_cast<std::size_t>(b) - 1) / static_cast<std::size_t>(b));
+}
+
+int choose_dense_blocks(std::size_t total) {
+    const int raw = ceil_div_size(total, kThreads);
+    if (raw < 1) return 1;
+    return raw > kMaxDenseBlocks ? kMaxDenseBlocks : raw;
+}
+
+int choose_segments_per_plane(int full_size) {
+    return full_size >= kLargePlaneThreshold ? kLargePlaneSegments : 1;
 }
 
 __device__ __host__ inline float cubic_weight(float distance, float a) {
@@ -150,18 +168,21 @@ __device__ inline void insert_topk(float score, long long index, float* scores, 
     }
 }
 
-__global__ void topk_from_pooled_kernel(
+__global__ void topk_stage1_kernel(
     const float* __restrict__ resized,
     const float* __restrict__ pooled,
-    float* __restrict__ top_scores,
-    long long* __restrict__ top_indices,
+    float* __restrict__ partial_scores,
+    long long* __restrict__ partial_indices,
     int batch,
     int channels,
     int full_h,
     int full_w,
     int topk,
-    float threshold) {
-    const int bc = blockIdx.x;
+    float threshold,
+    int segments_per_plane) {
+    const int global_segment = blockIdx.x;
+    const int bc = global_segment / segments_per_plane;
+    const int segment = global_segment - bc * segments_per_plane;
     const int total_bc = batch * channels;
     if (bc >= total_bc) {
         return;
@@ -173,6 +194,9 @@ __global__ void topk_from_pooled_kernel(
 
     const int tid = threadIdx.x;
     const int full_size = full_h * full_w;
+    const int begin = static_cast<int>((static_cast<long long>(full_size) * segment) / segments_per_plane);
+    const int end = static_cast<int>((static_cast<long long>(full_size) * (segment + 1)) / segments_per_plane);
+
     float local_scores[kMaxTopK];
     long long local_indices[kMaxTopK];
     for (int k = 0; k < topk; ++k) {
@@ -181,7 +205,7 @@ __global__ void topk_from_pooled_kernel(
     }
 
     const std::size_t plane = static_cast<std::size_t>(bc) * full_h * full_w;
-    for (int idx = tid; idx < full_size; idx += blockDim.x) {
+    for (int idx = begin + tid; idx < end; idx += blockDim.x) {
         const float hm = resized[plane + idx];
         const float pm = pooled[plane + idx];
         if ((hm == pm) && (hm > threshold)) {
@@ -210,6 +234,68 @@ __global__ void topk_from_pooled_kernel(
             }
         }
 
+        const std::size_t out_base = (static_cast<std::size_t>(bc) * segments_per_plane + segment) * topk;
+        for (int k = 0; k < topk; ++k) {
+            partial_scores[out_base + k] = best_scores[k];
+            partial_indices[out_base + k] = best_indices[k];
+        }
+    }
+}
+
+__global__ void topk_stage2_kernel(
+    const float* __restrict__ partial_scores,
+    const long long* __restrict__ partial_indices,
+    float* __restrict__ top_scores,
+    long long* __restrict__ top_indices,
+    int batch,
+    int channels,
+    int topk,
+    int segments_per_plane) {
+    const int bc = blockIdx.x;
+    const int total_bc = batch * channels;
+    if (bc >= total_bc) {
+        return;
+    }
+
+    extern __shared__ unsigned char shared_raw[];
+    float* sh_scores = reinterpret_cast<float*>(shared_raw);
+    long long* sh_indices = reinterpret_cast<long long*>(sh_scores + blockDim.x * topk);
+
+    const int tid = threadIdx.x;
+    const int candidates = segments_per_plane * topk;
+    float local_scores[kMaxTopK];
+    long long local_indices[kMaxTopK];
+    for (int k = 0; k < topk; ++k) {
+        local_scores[k] = kInvalidScore;
+        local_indices[k] = 9223372036854775807LL;
+    }
+
+    const std::size_t base = static_cast<std::size_t>(bc) * segments_per_plane * topk;
+    for (int i = tid; i < candidates; i += blockDim.x) {
+        insert_topk(partial_scores[base + i], partial_indices[base + i], local_scores, local_indices, topk);
+    }
+
+    const int sh_base = tid * topk;
+    for (int k = 0; k < topk; ++k) {
+        sh_scores[sh_base + k] = local_scores[k];
+        sh_indices[sh_base + k] = local_indices[k];
+    }
+    __syncthreads();
+
+    if (tid == 0) {
+        float best_scores[kMaxTopK];
+        long long best_indices[kMaxTopK];
+        for (int k = 0; k < topk; ++k) {
+            best_scores[k] = kInvalidScore;
+            best_indices[k] = 9223372036854775807LL;
+        }
+        for (int t = 0; t < blockDim.x; ++t) {
+            const int thread_base = t * topk;
+            for (int kk = 0; kk < topk; ++kk) {
+                insert_topk(sh_scores[thread_base + kk], sh_indices[thread_base + kk], best_scores, best_indices, topk);
+            }
+        }
+
         const std::size_t out_base = static_cast<std::size_t>(bc) * topk;
         for (int k = 0; k < topk; ++k) {
             top_scores[out_base + k] = best_scores[k];
@@ -225,7 +311,13 @@ int check_last_error() {
 
 void free_if_needed(float* ptr) {
     if (ptr) {
-        hipFree(ptr);
+        (void)hipFree(ptr);
+    }
+}
+
+void free_if_needed(long long* ptr) {
+    if (ptr) {
+        (void)hipFree(ptr);
     }
 }
 
@@ -269,14 +361,19 @@ int heatmap_topk_hip_run(
 
     hipStream_t stream = reinterpret_cast<hipStream_t>(hip_stream);
     const std::size_t dense_count = static_cast<std::size_t>(batch) * channels * full_h * full_w;
-    const int threads = 256;
-    const int blocks = static_cast<int>((dense_count + threads - 1) / threads);
+    const int threads = kThreads;
+    const int blocks = choose_dense_blocks(dense_count);
     const int total_bc = batch * channels;
+    const int full_size = full_h * full_w;
+    const int segments_per_plane = choose_segments_per_plane(full_size);
     const std::size_t dense_bytes = dense_count * sizeof(float);
+    const std::size_t partial_count = static_cast<std::size_t>(total_bc) * segments_per_plane * topk;
 
     float* resized = nullptr;
     float* vertical = nullptr;
     float* pooled = nullptr;
+    float* partial_scores = nullptr;
+    long long* partial_indices = nullptr;
 
     hipError_t err = hipMalloc(reinterpret_cast<void**>(&resized), dense_bytes);
     if (err != hipSuccess) return HIP_TOPK_HIP_ERROR;
@@ -289,6 +386,21 @@ int heatmap_topk_hip_run(
     if (err != hipSuccess) {
         free_if_needed(resized);
         free_if_needed(vertical);
+        return HIP_TOPK_HIP_ERROR;
+    }
+    err = hipMalloc(reinterpret_cast<void**>(&partial_scores), partial_count * sizeof(float));
+    if (err != hipSuccess) {
+        free_if_needed(resized);
+        free_if_needed(vertical);
+        free_if_needed(pooled);
+        return HIP_TOPK_HIP_ERROR;
+    }
+    err = hipMalloc(reinterpret_cast<void**>(&partial_indices), partial_count * sizeof(long long));
+    if (err != hipSuccess) {
+        free_if_needed(resized);
+        free_if_needed(vertical);
+        free_if_needed(pooled);
+        free_if_needed(partial_scores);
         return HIP_TOPK_HIP_ERROR;
     }
 
@@ -345,21 +457,39 @@ int heatmap_topk_hip_run(
         const std::size_t shared_bytes = static_cast<std::size_t>(threads) * static_cast<std::size_t>(topk) *
                                          (sizeof(float) + sizeof(long long));
         hipLaunchKernelGGL(
-            topk_from_pooled_kernel,
-            dim3(total_bc),
+            topk_stage1_kernel,
+            dim3(total_bc * segments_per_plane),
             dim3(threads),
             shared_bytes,
             stream,
             resized,
             pooled,
-            top_scores_dev,
-            top_indices_dev,
+            partial_scores,
+            partial_indices,
             batch,
             channels,
             full_h,
             full_w,
             topk,
-            threshold);
+            threshold,
+            segments_per_plane);
+        status = check_last_error();
+        if (status != HIP_TOPK_SUCCESS) goto cleanup;
+
+        hipLaunchKernelGGL(
+            topk_stage2_kernel,
+            dim3(total_bc),
+            dim3(threads),
+            shared_bytes,
+            stream,
+            partial_scores,
+            partial_indices,
+            top_scores_dev,
+            top_indices_dev,
+            batch,
+            channels,
+            topk,
+            segments_per_plane);
         status = check_last_error();
         if (status != HIP_TOPK_SUCCESS) goto cleanup;
     }
@@ -373,6 +503,8 @@ cleanup:
     free_if_needed(resized);
     free_if_needed(vertical);
     free_if_needed(pooled);
+    free_if_needed(partial_scores);
+    free_if_needed(partial_indices);
     return status;
 }
 
@@ -407,21 +539,21 @@ int heatmap_topk_hip_run_host(
     if (err != hipSuccess) return HIP_TOPK_HIP_ERROR;
     err = hipMalloc(reinterpret_cast<void**>(&top_scores_dev), topk_count * sizeof(float));
     if (err != hipSuccess) {
-        hipFree(heatmaps_dev);
+        free_if_needed(heatmaps_dev);
         return HIP_TOPK_HIP_ERROR;
     }
     err = hipMalloc(reinterpret_cast<void**>(&top_indices_dev), topk_count * sizeof(long long));
     if (err != hipSuccess) {
-        hipFree(heatmaps_dev);
-        hipFree(top_scores_dev);
+        free_if_needed(heatmaps_dev);
+        free_if_needed(top_scores_dev);
         return HIP_TOPK_HIP_ERROR;
     }
 
     err = hipMemcpy(heatmaps_dev, heatmaps_host, heatmap_count * sizeof(float), hipMemcpyHostToDevice);
     if (err != hipSuccess) {
-        hipFree(heatmaps_dev);
-        hipFree(top_scores_dev);
-        hipFree(top_indices_dev);
+        free_if_needed(heatmaps_dev);
+        free_if_needed(top_scores_dev);
+        free_if_needed(top_indices_dev);
         return HIP_TOPK_HIP_ERROR;
     }
 
@@ -447,8 +579,8 @@ int heatmap_topk_hip_run_host(
         if (err != hipSuccess) status = HIP_TOPK_HIP_ERROR;
     }
 
-    hipFree(heatmaps_dev);
-    hipFree(top_scores_dev);
-    hipFree(top_indices_dev);
+    free_if_needed(heatmaps_dev);
+    free_if_needed(top_scores_dev);
+    free_if_needed(top_indices_dev);
     return status;
 }
