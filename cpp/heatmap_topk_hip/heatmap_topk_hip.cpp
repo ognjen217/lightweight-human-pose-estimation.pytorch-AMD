@@ -229,6 +229,12 @@ void free_if_needed(float* ptr) {
     }
 }
 
+void free_if_needed(long long* ptr) {
+    if (ptr) {
+        (void)hipFree(ptr);
+    }
+}
+
 }  // namespace
 
 const char* heatmap_topk_hip_status_string(int status) {
