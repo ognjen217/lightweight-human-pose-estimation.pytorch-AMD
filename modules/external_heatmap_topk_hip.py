@@ -107,10 +107,10 @@ class HipHeatmapTopKBackend:
         self.lib.heatmap_topk_hip_status_string.argtypes = [ctypes.c_int]
         self.lib.heatmap_topk_hip_status_string.restype = ctypes.c_char_p
 
-        self.lib.heatmap_topk_hip_run.argtypes = [
-            ctypes.c_void_p,       # heatmaps_dev
-            ctypes.c_void_p,       # top_scores_dev
-            ctypes.c_void_p,       # top_indices_dev
+        common_host_args = [
+            ctypes.c_void_p,       # heatmaps_host
+            ctypes.c_void_p,       # top_scores_host
+            ctypes.c_void_p,       # top_indices_host
             ctypes.c_int,          # batch
             ctypes.c_int,          # channels
             ctypes.c_int,          # in_h
@@ -120,42 +120,25 @@ class HipHeatmapTopKBackend:
             ctypes.c_int,          # topk
             ctypes.c_float,        # threshold
             ctypes.c_int,          # nms_radius
-            ctypes.c_void_p,       # hip_stream
+        ]
+
+        self.lib.heatmap_topk_hip_run.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+            ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+            ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_float,
+            ctypes.c_int, ctypes.c_void_p,
         ]
         self.lib.heatmap_topk_hip_run.restype = ctypes.c_int
 
-        self.lib.heatmap_topk_hip_run_host.argtypes = [
-            ctypes.c_void_p,       # heatmaps_host
-            ctypes.c_void_p,       # top_scores_host
-            ctypes.c_void_p,       # top_indices_host
-            ctypes.c_int,          # batch
-            ctypes.c_int,          # channels
-            ctypes.c_int,          # in_h
-            ctypes.c_int,          # in_w
-            ctypes.c_int,          # full_h
-            ctypes.c_int,          # full_w
-            ctypes.c_int,          # topk
-            ctypes.c_float,        # threshold
-            ctypes.c_int,          # nms_radius
-        ]
+        self.lib.heatmap_topk_hip_run_host.argtypes = common_host_args
         self.lib.heatmap_topk_hip_run_host.restype = ctypes.c_int
-
-        self.lib.heatmap_topk_hip_run_host_profile.argtypes = [
-            ctypes.c_void_p,       # heatmaps_host
-            ctypes.c_void_p,       # top_scores_host
-            ctypes.c_void_p,       # top_indices_host
-            ctypes.c_int,          # batch
-            ctypes.c_int,          # channels
-            ctypes.c_int,          # in_h
-            ctypes.c_int,          # in_w
-            ctypes.c_int,          # full_h
-            ctypes.c_int,          # full_w
-            ctypes.c_int,          # topk
-            ctypes.c_float,        # threshold
-            ctypes.c_int,          # nms_radius
-            ctypes.POINTER(_CHipHeatmapTopKProfile),
-        ]
+        self.lib.heatmap_topk_hip_run_host_profile.argtypes = common_host_args + [ctypes.POINTER(_CHipHeatmapTopKProfile)]
         self.lib.heatmap_topk_hip_run_host_profile.restype = ctypes.c_int
+
+        self.lib.heatmap_topk_hip_run_host_fused.argtypes = common_host_args
+        self.lib.heatmap_topk_hip_run_host_fused.restype = ctypes.c_int
+        self.lib.heatmap_topk_hip_run_host_fused_profile.argtypes = common_host_args + [ctypes.POINTER(_CHipHeatmapTopKProfile)]
+        self.lib.heatmap_topk_hip_run_host_fused_profile.restype = ctypes.c_int
 
     def status_string(self, status: int) -> str:
         raw = self.lib.heatmap_topk_hip_status_string(int(status))
@@ -172,19 +155,9 @@ class HipHeatmapTopKBackend:
         raise_on_error: bool = True,
     ) -> int:
         status = int(self.lib.heatmap_topk_hip_run(
-            ctypes.c_void_p(int(heatmaps_ptr)),
-            ctypes.c_void_p(int(top_scores_ptr)),
-            ctypes.c_void_p(int(top_indices_ptr)),
-            int(shape.batch),
-            int(shape.channels),
-            int(shape.in_h),
-            int(shape.in_w),
-            int(shape.full_h),
-            int(shape.full_w),
-            int(shape.topk),
-            ctypes.c_float(float(shape.threshold)),
-            int(shape.nms_radius),
-            ctypes.c_void_p(int(hip_stream_ptr)),
+            ctypes.c_void_p(int(heatmaps_ptr)), ctypes.c_void_p(int(top_scores_ptr)), ctypes.c_void_p(int(top_indices_ptr)),
+            int(shape.batch), int(shape.channels), int(shape.in_h), int(shape.in_w), int(shape.full_h), int(shape.full_w),
+            int(shape.topk), ctypes.c_float(float(shape.threshold)), int(shape.nms_radius), ctypes.c_void_p(int(hip_stream_ptr)),
         ))
         if raise_on_error and status != HIP_TOPK_SUCCESS:
             raise RuntimeError(f"heatmap_topk_hip_run failed: {self.status_string(status)} ({status})")
@@ -200,48 +173,58 @@ class HipHeatmapTopKBackend:
         top_indices = np.empty((int(inferred.batch), int(inferred.channels), int(inferred.topk)), dtype=np.int64)
         return arr, inferred, top_scores, top_indices
 
-    def run_host(self, heatmaps: np.ndarray, shape: HipHeatmapTopKShape | None = None) -> Tuple[np.ndarray, np.ndarray]:
+    def _run_host_symbol(self, symbol_name: str, heatmaps: np.ndarray, shape: HipHeatmapTopKShape | None = None) -> Tuple[np.ndarray, np.ndarray]:
         arr, inferred, top_scores, top_indices = self._prepare_host_io(heatmaps, shape)
-        status = int(self.lib.heatmap_topk_hip_run_host(
+        fn = getattr(self.lib, symbol_name)
+        status = int(fn(
             arr.ctypes.data_as(ctypes.c_void_p),
             top_scores.ctypes.data_as(ctypes.c_void_p),
             top_indices.ctypes.data_as(ctypes.c_void_p),
-            int(inferred.batch),
-            int(inferred.channels),
-            int(inferred.in_h),
-            int(inferred.in_w),
-            int(inferred.full_h),
-            int(inferred.full_w),
-            int(inferred.topk),
-            ctypes.c_float(float(inferred.threshold)),
+            int(inferred.batch), int(inferred.channels), int(inferred.in_h), int(inferred.in_w),
+            int(inferred.full_h), int(inferred.full_w), int(inferred.topk), ctypes.c_float(float(inferred.threshold)),
             int(inferred.nms_radius),
         ))
         if status != HIP_TOPK_SUCCESS:
-            raise RuntimeError(f"heatmap_topk_hip_run_host failed: {self.status_string(status)} ({status})")
+            raise RuntimeError(f"{symbol_name} failed: {self.status_string(status)} ({status})")
         return np.ascontiguousarray(top_scores), np.ascontiguousarray(top_indices)
+
+    def _run_host_profile_symbol(
+        self,
+        symbol_name: str,
+        heatmaps: np.ndarray,
+        shape: HipHeatmapTopKShape | None = None,
+    ) -> Tuple[np.ndarray, np.ndarray, HipHeatmapTopKProfile]:
+        arr, inferred, top_scores, top_indices = self._prepare_host_io(heatmaps, shape)
+        c_profile = _CHipHeatmapTopKProfile()
+        fn = getattr(self.lib, symbol_name)
+        status = int(fn(
+            arr.ctypes.data_as(ctypes.c_void_p),
+            top_scores.ctypes.data_as(ctypes.c_void_p),
+            top_indices.ctypes.data_as(ctypes.c_void_p),
+            int(inferred.batch), int(inferred.channels), int(inferred.in_h), int(inferred.in_w),
+            int(inferred.full_h), int(inferred.full_w), int(inferred.topk), ctypes.c_float(float(inferred.threshold)),
+            int(inferred.nms_radius), ctypes.byref(c_profile),
+        ))
+        if status != HIP_TOPK_SUCCESS:
+            raise RuntimeError(f"{symbol_name} failed: {self.status_string(status)} ({status})")
+        return np.ascontiguousarray(top_scores), np.ascontiguousarray(top_indices), c_profile.to_dataclass()
+
+    def run_host(self, heatmaps: np.ndarray, shape: HipHeatmapTopKShape | None = None) -> Tuple[np.ndarray, np.ndarray]:
+        return self._run_host_symbol("heatmap_topk_hip_run_host", heatmaps, shape)
 
     def run_host_profile(
         self,
         heatmaps: np.ndarray,
         shape: HipHeatmapTopKShape | None = None,
     ) -> Tuple[np.ndarray, np.ndarray, HipHeatmapTopKProfile]:
-        arr, inferred, top_scores, top_indices = self._prepare_host_io(heatmaps, shape)
-        c_profile = _CHipHeatmapTopKProfile()
-        status = int(self.lib.heatmap_topk_hip_run_host_profile(
-            arr.ctypes.data_as(ctypes.c_void_p),
-            top_scores.ctypes.data_as(ctypes.c_void_p),
-            top_indices.ctypes.data_as(ctypes.c_void_p),
-            int(inferred.batch),
-            int(inferred.channels),
-            int(inferred.in_h),
-            int(inferred.in_w),
-            int(inferred.full_h),
-            int(inferred.full_w),
-            int(inferred.topk),
-            ctypes.c_float(float(inferred.threshold)),
-            int(inferred.nms_radius),
-            ctypes.byref(c_profile),
-        ))
-        if status != HIP_TOPK_SUCCESS:
-            raise RuntimeError(f"heatmap_topk_hip_run_host_profile failed: {self.status_string(status)} ({status})")
-        return np.ascontiguousarray(top_scores), np.ascontiguousarray(top_indices), c_profile.to_dataclass()
+        return self._run_host_profile_symbol("heatmap_topk_hip_run_host_profile", heatmaps, shape)
+
+    def run_host_fused(self, heatmaps: np.ndarray, shape: HipHeatmapTopKShape | None = None) -> Tuple[np.ndarray, np.ndarray]:
+        return self._run_host_symbol("heatmap_topk_hip_run_host_fused", heatmaps, shape)
+
+    def run_host_fused_profile(
+        self,
+        heatmaps: np.ndarray,
+        shape: HipHeatmapTopKShape | None = None,
+    ) -> Tuple[np.ndarray, np.ndarray, HipHeatmapTopKProfile]:
+        return self._run_host_profile_symbol("heatmap_topk_hip_run_host_fused_profile", heatmaps, shape)
