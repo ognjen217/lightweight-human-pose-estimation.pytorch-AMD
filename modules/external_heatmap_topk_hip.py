@@ -1,8 +1,7 @@
 """ctypes loader for the native HIP heatmap TopK backend.
 
-The initial native library is only an ABI/build scaffold.  This module gives the
-Python side a stable place to load the shared library, call the C ABI, and later
-plug the backend into the split MXR pipeline.
+This module gives the Python side a stable place to load the shared library,
+call the C ABI, and later plug the backend into the split MXR pipeline.
 """
 
 from __future__ import annotations
@@ -11,7 +10,9 @@ import ctypes
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Tuple
+
+import numpy as np
 
 
 HIP_TOPK_SUCCESS = 0
@@ -70,6 +71,22 @@ class HipHeatmapTopKBackend:
         ]
         self.lib.heatmap_topk_hip_run.restype = ctypes.c_int
 
+        self.lib.heatmap_topk_hip_run_host.argtypes = [
+            ctypes.c_void_p,       # heatmaps_host
+            ctypes.c_void_p,       # top_scores_host
+            ctypes.c_void_p,       # top_indices_host
+            ctypes.c_int,          # batch
+            ctypes.c_int,          # channels
+            ctypes.c_int,          # in_h
+            ctypes.c_int,          # in_w
+            ctypes.c_int,          # full_h
+            ctypes.c_int,          # full_w
+            ctypes.c_int,          # topk
+            ctypes.c_float,        # threshold
+            ctypes.c_int,          # nms_radius
+        ]
+        self.lib.heatmap_topk_hip_run_host.restype = ctypes.c_int
+
     def status_string(self, status: int) -> str:
         raw = self.lib.heatmap_topk_hip_status_string(int(status))
         return raw.decode("utf-8") if raw else f"UNKNOWN_STATUS_{status}"
@@ -102,3 +119,30 @@ class HipHeatmapTopKBackend:
         if raise_on_error and status != HIP_TOPK_SUCCESS:
             raise RuntimeError(f"heatmap_topk_hip_run failed: {self.status_string(status)} ({status})")
         return status
+
+    def run_host(self, heatmaps: np.ndarray, shape: HipHeatmapTopKShape | None = None) -> Tuple[np.ndarray, np.ndarray]:
+        arr = np.ascontiguousarray(np.asarray(heatmaps, dtype=np.float32))
+        inferred = HipHeatmapTopKShape(batch=arr.shape[0], channels=arr.shape[1]) if shape is None else shape
+        expected = (int(inferred.batch), int(inferred.channels), int(inferred.in_h), int(inferred.in_w))
+        if tuple(arr.shape) != expected:
+            raise ValueError(f"Expected heatmaps shape {expected}, got {tuple(arr.shape)}")
+
+        top_scores = np.empty((int(inferred.batch), int(inferred.channels), int(inferred.topk)), dtype=np.float32)
+        top_indices = np.empty((int(inferred.batch), int(inferred.channels), int(inferred.topk)), dtype=np.int64)
+        status = int(self.lib.heatmap_topk_hip_run_host(
+            arr.ctypes.data_as(ctypes.c_void_p),
+            top_scores.ctypes.data_as(ctypes.c_void_p),
+            top_indices.ctypes.data_as(ctypes.c_void_p),
+            int(inferred.batch),
+            int(inferred.channels),
+            int(inferred.in_h),
+            int(inferred.in_w),
+            int(inferred.full_h),
+            int(inferred.full_w),
+            int(inferred.topk),
+            ctypes.c_float(float(inferred.threshold)),
+            int(inferred.nms_radius),
+        ))
+        if status != HIP_TOPK_SUCCESS:
+            raise RuntimeError(f"heatmap_topk_hip_run_host failed: {self.status_string(status)} ({status})")
+        return np.ascontiguousarray(top_scores), np.ascontiguousarray(top_indices)
