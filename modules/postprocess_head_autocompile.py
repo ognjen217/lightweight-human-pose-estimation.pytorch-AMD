@@ -15,7 +15,7 @@ The functions are intentionally conservative: if a head already exists and
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Iterable, MutableSet, Sequence, Tuple
+from typing import Any, MutableSet, Sequence, Tuple
 
 
 FUSED_MODE = "mx_fused_cubic_topk_fullres_paf"
@@ -55,8 +55,16 @@ def _args_get(args: Any, name: str, default: Any = None) -> Any:
     return getattr(args, name, default)
 
 
+def _fused_pruned_heatmap_mode(args: Any) -> str:
+    return str(_args_get(args, "fused_pruned_heatmap_mode", "full-res"))
+
+
 def postprocess_extra_from_args(args: Any) -> dict:
     """Build PostprocessConfig.extra for MIGraphX fused/manual/pruned paths."""
+    heatmap_mode = _fused_pruned_heatmap_mode(args)
+    smart_proposals = int(_args_get(args, "smart_proposals", 64))
+    smart_local_radius = int(_args_get(args, "smart_local_radius", 8))
+    smart_lowres_nms_radius = int(_args_get(args, "smart_lowres_nms_radius", 1))
     return {
         "gpu_compute_dtype": _args_get(args, "gpu_compute_dtype", "float32"),
         "nms_impl": _args_get(args, "nms_impl", "separable"),
@@ -83,6 +91,14 @@ def postprocess_extra_from_args(args: Any) -> dict:
         "limb_topm": int(_args_get(args, "limb_topm", 20)),
         "fused_limb_topm": int(_args_get(args, "limb_topm", 20)),
         "min_pair_score": float(_args_get(args, "min_pair_score", 0.0)),
+        # Experimental heatmap candidate generator inside fused-pruned heads.
+        # full-res preserves the old path. smart-full-res uses low-res proposals
+        # and local full-res cubic refinement; it needs separate per-shape MXRs.
+        "fused_pruned_heatmap_mode": heatmap_mode,
+        "heatmap_mode": heatmap_mode,
+        "smart_proposals": smart_proposals,
+        "smart_local_radius": smart_local_radius,
+        "smart_lowres_nms_radius": smart_lowres_nms_radius,
     }
 
 
@@ -125,6 +141,11 @@ def ensure_shape_postprocess_heads(
     force = bool(_args_get(args, "force_compile_postprocess_heads", False))
     keep_onnx = bool(_args_get(args, "keep_postprocess_onnx", False))
     variants_set = set(variants)
+
+    heatmap_mode = _fused_pruned_heatmap_mode(args)
+    smart_proposals = int(_args_get(args, "smart_proposals", 64))
+    smart_local_radius = int(_args_get(args, "smart_local_radius", 8))
+    smart_lowres_nms_radius = int(_args_get(args, "smart_lowres_nms_radius", 1))
 
     common_key = (
         in_h,
@@ -192,6 +213,10 @@ def ensure_shape_postprocess_heads(
     if PRUNED_MODE in variants_set and not _args_get(args, "fused_pruned_postprocess_mxr", ""):
         key = (
             PRUNED_MODE,
+            heatmap_mode,
+            smart_proposals,
+            smart_local_radius,
+            smart_lowres_nms_radius,
             int(_args_get(args, "limb_topm", 20)),
             float(_args_get(args, "min_pair_score", 0.0)),
         ) + common_key
@@ -215,6 +240,11 @@ def ensure_shape_postprocess_heads(
                 success_ratio_thr=float(_args_get(args, "success_ratio_thr", 0.8)),
                 paf_cubic_a=float(_args_get(args, "paf_cubic_a", -0.75)),
                 min_pair_score=float(_args_get(args, "min_pair_score", 0.0)),
+                batch_size=1,
+                heatmap_mode=heatmap_mode,
+                smart_proposals=smart_proposals,
+                smart_local_radius=smart_local_radius,
+                smart_lowres_nms_radius=smart_lowres_nms_radius,
                 force=force,
                 keep_onnx=keep_onnx,
             )
