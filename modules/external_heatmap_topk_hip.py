@@ -10,7 +10,7 @@ import ctypes
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Tuple
+from typing import Dict, Tuple
 
 import numpy as np
 
@@ -32,6 +32,59 @@ class HipHeatmapTopKShape:
     topk: int = 20
     threshold: float = 0.1
     nms_radius: int = 6
+
+
+@dataclass(frozen=True)
+class HipHeatmapTopKProfile:
+    h2d_ms: float
+    resize_ms: float
+    vertical_ms: float
+    horizontal_ms: float
+    topk_ms: float
+    d2h_scores_ms: float
+    d2h_indices_ms: float
+    device_total_ms: float
+    total_ms: float
+
+    def as_dict(self) -> Dict[str, float]:
+        return {
+            "h2d_ms": float(self.h2d_ms),
+            "resize_ms": float(self.resize_ms),
+            "vertical_ms": float(self.vertical_ms),
+            "horizontal_ms": float(self.horizontal_ms),
+            "topk_ms": float(self.topk_ms),
+            "d2h_scores_ms": float(self.d2h_scores_ms),
+            "d2h_indices_ms": float(self.d2h_indices_ms),
+            "device_total_ms": float(self.device_total_ms),
+            "total_ms": float(self.total_ms),
+        }
+
+
+class _CHipHeatmapTopKProfile(ctypes.Structure):
+    _fields_ = [
+        ("h2d_ms", ctypes.c_float),
+        ("resize_ms", ctypes.c_float),
+        ("vertical_ms", ctypes.c_float),
+        ("horizontal_ms", ctypes.c_float),
+        ("topk_ms", ctypes.c_float),
+        ("d2h_scores_ms", ctypes.c_float),
+        ("d2h_indices_ms", ctypes.c_float),
+        ("device_total_ms", ctypes.c_float),
+        ("total_ms", ctypes.c_float),
+    ]
+
+    def to_dataclass(self) -> HipHeatmapTopKProfile:
+        return HipHeatmapTopKProfile(
+            h2d_ms=float(self.h2d_ms),
+            resize_ms=float(self.resize_ms),
+            vertical_ms=float(self.vertical_ms),
+            horizontal_ms=float(self.horizontal_ms),
+            topk_ms=float(self.topk_ms),
+            d2h_scores_ms=float(self.d2h_scores_ms),
+            d2h_indices_ms=float(self.d2h_indices_ms),
+            device_total_ms=float(self.device_total_ms),
+            total_ms=float(self.total_ms),
+        )
 
 
 def default_library_path(repo_root: str | Path | None = None) -> Path:
@@ -87,6 +140,23 @@ class HipHeatmapTopKBackend:
         ]
         self.lib.heatmap_topk_hip_run_host.restype = ctypes.c_int
 
+        self.lib.heatmap_topk_hip_run_host_profile.argtypes = [
+            ctypes.c_void_p,       # heatmaps_host
+            ctypes.c_void_p,       # top_scores_host
+            ctypes.c_void_p,       # top_indices_host
+            ctypes.c_int,          # batch
+            ctypes.c_int,          # channels
+            ctypes.c_int,          # in_h
+            ctypes.c_int,          # in_w
+            ctypes.c_int,          # full_h
+            ctypes.c_int,          # full_w
+            ctypes.c_int,          # topk
+            ctypes.c_float,        # threshold
+            ctypes.c_int,          # nms_radius
+            ctypes.POINTER(_CHipHeatmapTopKProfile),
+        ]
+        self.lib.heatmap_topk_hip_run_host_profile.restype = ctypes.c_int
+
     def status_string(self, status: int) -> str:
         raw = self.lib.heatmap_topk_hip_status_string(int(status))
         return raw.decode("utf-8") if raw else f"UNKNOWN_STATUS_{status}"
@@ -120,15 +190,18 @@ class HipHeatmapTopKBackend:
             raise RuntimeError(f"heatmap_topk_hip_run failed: {self.status_string(status)} ({status})")
         return status
 
-    def run_host(self, heatmaps: np.ndarray, shape: HipHeatmapTopKShape | None = None) -> Tuple[np.ndarray, np.ndarray]:
+    def _prepare_host_io(self, heatmaps: np.ndarray, shape: HipHeatmapTopKShape | None):
         arr = np.ascontiguousarray(np.asarray(heatmaps, dtype=np.float32))
         inferred = HipHeatmapTopKShape(batch=arr.shape[0], channels=arr.shape[1]) if shape is None else shape
         expected = (int(inferred.batch), int(inferred.channels), int(inferred.in_h), int(inferred.in_w))
         if tuple(arr.shape) != expected:
             raise ValueError(f"Expected heatmaps shape {expected}, got {tuple(arr.shape)}")
-
         top_scores = np.empty((int(inferred.batch), int(inferred.channels), int(inferred.topk)), dtype=np.float32)
         top_indices = np.empty((int(inferred.batch), int(inferred.channels), int(inferred.topk)), dtype=np.int64)
+        return arr, inferred, top_scores, top_indices
+
+    def run_host(self, heatmaps: np.ndarray, shape: HipHeatmapTopKShape | None = None) -> Tuple[np.ndarray, np.ndarray]:
+        arr, inferred, top_scores, top_indices = self._prepare_host_io(heatmaps, shape)
         status = int(self.lib.heatmap_topk_hip_run_host(
             arr.ctypes.data_as(ctypes.c_void_p),
             top_scores.ctypes.data_as(ctypes.c_void_p),
@@ -146,3 +219,29 @@ class HipHeatmapTopKBackend:
         if status != HIP_TOPK_SUCCESS:
             raise RuntimeError(f"heatmap_topk_hip_run_host failed: {self.status_string(status)} ({status})")
         return np.ascontiguousarray(top_scores), np.ascontiguousarray(top_indices)
+
+    def run_host_profile(
+        self,
+        heatmaps: np.ndarray,
+        shape: HipHeatmapTopKShape | None = None,
+    ) -> Tuple[np.ndarray, np.ndarray, HipHeatmapTopKProfile]:
+        arr, inferred, top_scores, top_indices = self._prepare_host_io(heatmaps, shape)
+        c_profile = _CHipHeatmapTopKProfile()
+        status = int(self.lib.heatmap_topk_hip_run_host_profile(
+            arr.ctypes.data_as(ctypes.c_void_p),
+            top_scores.ctypes.data_as(ctypes.c_void_p),
+            top_indices.ctypes.data_as(ctypes.c_void_p),
+            int(inferred.batch),
+            int(inferred.channels),
+            int(inferred.in_h),
+            int(inferred.in_w),
+            int(inferred.full_h),
+            int(inferred.full_w),
+            int(inferred.topk),
+            ctypes.c_float(float(inferred.threshold)),
+            int(inferred.nms_radius),
+            ctypes.byref(c_profile),
+        ))
+        if status != HIP_TOPK_SUCCESS:
+            raise RuntimeError(f"heatmap_topk_hip_run_host_profile failed: {self.status_string(status)} ({status})")
+        return np.ascontiguousarray(top_scores), np.ascontiguousarray(top_indices), c_profile.to_dataclass()
