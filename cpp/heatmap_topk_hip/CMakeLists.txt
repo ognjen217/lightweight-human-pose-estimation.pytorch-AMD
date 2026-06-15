@@ -25,6 +25,7 @@ set(HIP_TOPK_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/heatmap_topk_hip.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/heatmap_topk_hip_profile.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/heatmap_topk_hip_fused.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/heatmap_topk_hip_smart.cpp
 )
 set(HIP_TOPK_OUTPUT
     ${CMAKE_CURRENT_BINARY_DIR}/libheatmap_topk_hip.so
