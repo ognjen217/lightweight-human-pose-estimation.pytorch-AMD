@@ -46,11 +46,11 @@ def parse_args():
     p.add_argument("--target-h", type=int, default=544)
     p.add_argument("--topk", type=int, default=20)
     p.add_argument("--threshold", type=float, default=0.1)
-    p.add_argument("--smart-proposals", type=int, default=64)
-    p.add_argument("--smart-local-radius", type=int, default=8)
+    p.add_argument("--smart-proposals", type=int, default=32)
+    p.add_argument("--smart-local-radius", type=int, default=4)
     p.add_argument("--smart-lowres-nms-radius", type=int, default=1)
-    p.add_argument("--json", default="outputs/split_pipeline_compare/b4_hip_smart_split_sanity_r3.json")
-    p.add_argument("--markdown", default="outputs/split_pipeline_compare/b4_hip_smart_split_sanity_r3.md")
+    p.add_argument("--json", default="outputs/split_pipeline_compare/b4_hip_smart_split_sanity_sp32_lr4_r3.json")
+    p.add_argument("--markdown", default="outputs/split_pipeline_compare/b4_hip_smart_split_sanity_sp32_lr4_r3.md")
     return p.parse_args()
 
 
