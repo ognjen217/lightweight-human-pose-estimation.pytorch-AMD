@@ -5,9 +5,9 @@ branch inside the fused-pruned MIGraphX graph:
 
     heatmaps [B,18,68,121] -> top_scores [B,18,K], top_indices [B,18,K]
 
-The first implementation is a host-mediated prototype.  It is meant for
-correctness and performance exploration before a true GPU-resident handoff is
-implemented.
+The HIP variants are staged experiments.  `hip_host` is the stable dense
+correctness baseline, `hip_host_fused` is the rejected dense-fusion experiment,
+and `hip_host_smart` is the E4 smart-full-res candidate backend.
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ except ModuleNotFoundError:  # pragma: no cover - useful when imported from tool
     from tools.export_batchaware_fused_pruned_postprocess import BatchAwareFusedPrunedPostprocess
 
 
-HeatmapBackendName = Literal["torch_manual", "torch_bicubic", "hip_host", "hip_host_fused"]
+HeatmapBackendName = Literal["torch_manual", "torch_bicubic", "hip_host", "hip_host_fused", "hip_host_smart"]
 
 
 @dataclass(frozen=True)
@@ -47,6 +47,9 @@ class HeatmapTopKConfig:
     nms_radius: int = 6
     nms_impl: str = "separable"
     cubic_a: float = -0.75
+    smart_proposals: int = 64
+    smart_local_radius: int = 8
+    smart_lowres_nms_radius: int = 1
 
 
 def torch_device_summary() -> str:
@@ -106,12 +109,7 @@ def _validate_heatmaps(heatmaps: np.ndarray, cfg: HeatmapTopKConfig) -> np.ndarr
     return np.ascontiguousarray(arr.astype(np.float32, copy=False))
 
 
-def torch_manual_heatmap_topk(
-    heatmaps: np.ndarray,
-    cfg: HeatmapTopKConfig,
-    *,
-    device: str | None = None,
-) -> Tuple[np.ndarray, np.ndarray]:
+def torch_manual_heatmap_topk(heatmaps: np.ndarray, cfg: HeatmapTopKConfig, *, device: str | None = None) -> Tuple[np.ndarray, np.ndarray]:
     arr = _validate_heatmaps(heatmaps, cfg)
     dev = _select_device(device)
     module = BatchAwareFusedPrunedPostprocess(
@@ -140,23 +138,12 @@ def torch_manual_heatmap_topk(
     return _to_numpy_pair(scores, indices)
 
 
-def torch_bicubic_heatmap_topk(
-    heatmaps: np.ndarray,
-    cfg: HeatmapTopKConfig,
-    *,
-    device: str | None = None,
-) -> Tuple[np.ndarray, np.ndarray]:
+def torch_bicubic_heatmap_topk(heatmaps: np.ndarray, cfg: HeatmapTopKConfig, *, device: str | None = None) -> Tuple[np.ndarray, np.ndarray]:
     arr = _validate_heatmaps(heatmaps, cfg)
     dev = _select_device(device)
     x = torch.from_numpy(arr).to(dev, non_blocking=False)
     with torch.no_grad():
-        hm = F.interpolate(
-            x,
-            size=(int(cfg.full_h), int(cfg.full_w)),
-            mode="bicubic",
-            align_corners=False,
-            antialias=False,
-        )
+        hm = F.interpolate(x, size=(int(cfg.full_h), int(cfg.full_w)), mode="bicubic", align_corners=False, antialias=False)
         r = int(cfg.nms_radius)
         k = 2 * r + 1
         if cfg.nms_impl == "2d":
@@ -175,6 +162,13 @@ def torch_bicubic_heatmap_topk(
     return _to_numpy_pair(scores, indices)
 
 
+def _check_hip_cfg(cfg: HeatmapTopKConfig) -> None:
+    if cfg.nms_impl not in {"separable", "2d"}:
+        raise RuntimeError(f"Unsupported nms_impl={cfg.nms_impl}")
+    if abs(float(cfg.cubic_a) - (-0.75)) > 1.0e-6:
+        raise RuntimeError("HIP backend currently implements heatmap cubic_a=-0.75 only")
+
+
 def _hip_shape(cfg: HeatmapTopKConfig):
     from modules.external_heatmap_topk_hip import HipHeatmapTopKShape
 
@@ -191,47 +185,52 @@ def _hip_shape(cfg: HeatmapTopKConfig):
     )
 
 
-def hip_host_heatmap_topk(
-    heatmaps: np.ndarray,
-    cfg: HeatmapTopKConfig,
-    *,
-    device: str | None = None,
-) -> Tuple[np.ndarray, np.ndarray]:
+def _hip_smart_shape(cfg: HeatmapTopKConfig):
+    from modules.external_heatmap_topk_hip import HipHeatmapTopKSmartShape
+
+    return HipHeatmapTopKSmartShape(
+        batch=int(cfg.batch_size),
+        channels=int(cfg.channels),
+        in_h=int(cfg.in_h),
+        in_w=int(cfg.in_w),
+        full_h=int(cfg.full_h),
+        full_w=int(cfg.full_w),
+        topk=int(cfg.topk),
+        threshold=float(cfg.threshold),
+        lowres_nms_radius=int(cfg.smart_lowres_nms_radius),
+        smart_proposals=int(cfg.smart_proposals),
+        smart_local_radius=int(cfg.smart_local_radius),
+    )
+
+
+def hip_host_heatmap_topk(heatmaps: np.ndarray, cfg: HeatmapTopKConfig, *, device: str | None = None) -> Tuple[np.ndarray, np.ndarray]:
     del device
-    if cfg.nms_impl not in {"separable", "2d"}:
-        raise RuntimeError(f"Unsupported nms_impl={cfg.nms_impl}")
-    if abs(float(cfg.cubic_a) - (-0.75)) > 1.0e-6:
-        raise RuntimeError("HIP backend currently implements heatmap cubic_a=-0.75 only")
+    _check_hip_cfg(cfg)
     arr = _validate_heatmaps(heatmaps, cfg)
     from modules.external_heatmap_topk_hip import HipHeatmapTopKBackend
 
     return HipHeatmapTopKBackend().run_host(arr, _hip_shape(cfg))
 
 
-def hip_host_fused_heatmap_topk(
-    heatmaps: np.ndarray,
-    cfg: HeatmapTopKConfig,
-    *,
-    device: str | None = None,
-) -> Tuple[np.ndarray, np.ndarray]:
+def hip_host_fused_heatmap_topk(heatmaps: np.ndarray, cfg: HeatmapTopKConfig, *, device: str | None = None) -> Tuple[np.ndarray, np.ndarray]:
     del device
-    if cfg.nms_impl not in {"separable", "2d"}:
-        raise RuntimeError(f"Unsupported nms_impl={cfg.nms_impl}")
-    if abs(float(cfg.cubic_a) - (-0.75)) > 1.0e-6:
-        raise RuntimeError("HIP backend currently implements heatmap cubic_a=-0.75 only")
+    _check_hip_cfg(cfg)
     arr = _validate_heatmaps(heatmaps, cfg)
     from modules.external_heatmap_topk_hip import HipHeatmapTopKBackend
 
     return HipHeatmapTopKBackend().run_host_fused(arr, _hip_shape(cfg))
 
 
-def run_external_heatmap_topk(
-    heatmaps: np.ndarray,
-    cfg: HeatmapTopKConfig,
-    *,
-    backend: HeatmapBackendName = "torch_manual",
-    device: str | None = None,
-) -> Tuple[np.ndarray, np.ndarray]:
+def hip_host_smart_heatmap_topk(heatmaps: np.ndarray, cfg: HeatmapTopKConfig, *, device: str | None = None) -> Tuple[np.ndarray, np.ndarray]:
+    del device
+    _check_hip_cfg(cfg)
+    arr = _validate_heatmaps(heatmaps, cfg)
+    from modules.external_heatmap_topk_hip import HipHeatmapTopKBackend
+
+    return HipHeatmapTopKBackend().run_host_smart(arr, _hip_smart_shape(cfg))
+
+
+def run_external_heatmap_topk(heatmaps: np.ndarray, cfg: HeatmapTopKConfig, *, backend: HeatmapBackendName = "torch_manual", device: str | None = None) -> Tuple[np.ndarray, np.ndarray]:
     if backend == "torch_manual":
         return torch_manual_heatmap_topk(heatmaps, cfg, device=device)
     if backend == "torch_bicubic":
@@ -240,4 +239,6 @@ def run_external_heatmap_topk(
         return hip_host_heatmap_topk(heatmaps, cfg, device=device)
     if backend == "hip_host_fused":
         return hip_host_fused_heatmap_topk(heatmaps, cfg, device=device)
+    if backend == "hip_host_smart":
+        return hip_host_smart_heatmap_topk(heatmaps, cfg, device=device)
     raise ValueError(f"Unsupported external heatmap backend: {backend}")
