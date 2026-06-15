@@ -11,6 +11,18 @@ enum HeatmapTopKHipStatus {
     HIP_TOPK_NOT_IMPLEMENTED = 3,
 };
 
+typedef struct HeatmapTopKHipProfile {
+    float h2d_ms;
+    float resize_ms;
+    float vertical_ms;
+    float horizontal_ms;
+    float topk_ms;
+    float d2h_scores_ms;
+    float d2h_indices_ms;
+    float device_total_ms;
+    float total_ms;
+} HeatmapTopKHipProfile;
+
 const char* heatmap_topk_hip_status_string(int status);
 
 int heatmap_topk_hip_run(
@@ -44,6 +56,23 @@ int heatmap_topk_hip_run_host(
     int topk,
     float threshold,
     int nms_radius);
+
+// Profiling entrypoint for the host-mediated path.  It performs the same work
+// as heatmap_topk_hip_run_host, but records HIP-event timings for each stage.
+int heatmap_topk_hip_run_host_profile(
+    const float* heatmaps_host,
+    float* top_scores_host,
+    long long* top_indices_host,
+    int batch,
+    int channels,
+    int in_h,
+    int in_w,
+    int full_h,
+    int full_w,
+    int topk,
+    float threshold,
+    int nms_radius,
+    HeatmapTopKHipProfile* profile);
 
 #ifdef __cplusplus
 }
