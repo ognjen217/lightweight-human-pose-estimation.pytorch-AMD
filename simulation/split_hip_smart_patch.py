@@ -1,21 +1,19 @@
-"""Runtime integration for the split MXR1 -> HIP smart TopK -> MXR2 stream variant.
+"""Runtime integration for split MXR1 -> HIP smart TopK stream variants.
 
 This module is imported by the root ``simulate_camera_stream.py`` wrapper before
 ``simulation.cli.main`` is executed.  It keeps the existing modular simulator
-unchanged for all current variants and adds a new stream variant:
+unchanged for all current variants and adds host-mediated split variants:
 
     split_hip_host_smart
+        MXR1 -> HIP smart heatmap TopK -> MXR2 PAF pruning -> CPU assembly
 
-The pipeline is host-mediated by design in this stage:
+    split_hip2_host_smart
+        MXR1 -> HIP smart heatmap TopK -> HIP2 PAF pruning -> CPU assembly
 
-    MXR1 inference worker -> postprocess worker:
-        heatmaps -> native HIP smart TopK -> MXR2 PAF pruning -> CPU assembly
-
-The smart HIP defaults match the validated speed candidate:
-    smart_proposals=32, smart_local_radius=4, smart_lowres_nms_radius=1
-
-The reducer thread count is build-time controlled by tools/build_heatmap_topk_hip.sh
-via HIP_TOPK_SMART_THREADS, defaulting to 64.
+Both variants use the same shared-map transport and batching layer.  The HIP2
+variant is the Step-1 correctness baseline that replaces MXR2 with the native
+``cpp/paf_prune_hip`` backend while preserving the same four pruned limb tensor
+outputs.
 """
 
 from __future__ import annotations
@@ -29,7 +27,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
-_SPLIT_ALIASES = {
+_SPLIT_MXR2_ALIASES = {
     "split_hip_host_smart",
     "split-hip-host-smart",
     "split_hip_smart",
@@ -39,6 +37,21 @@ _SPLIT_ALIASES = {
     "mxr1_hip_host_smart_mxr2",
     "mxr1-hip-host-smart-mxr2",
 }
+
+_SPLIT_HIP2_ALIASES = {
+    "split_hip2_host_smart",
+    "split-hip2-host-smart",
+    "split_hip_smart_hip_paf",
+    "split-hip-smart-hip-paf",
+    "split_hip_smart_hip2",
+    "split-hip-smart-hip2",
+    "mxr1_hip_smart_hip2",
+    "mxr1-hip-smart-hip2",
+    "mxr1_hip_host_smart_hip_paf",
+    "mxr1-hip-host-smart-hip-paf",
+}
+
+_SPLIT_ALIASES = _SPLIT_MXR2_ALIASES | _SPLIT_HIP2_ALIASES
 
 _MXR2_OUTPUT_NAMES = [
     "limb_top_pair_a_idx",
@@ -50,9 +63,25 @@ _MXR2_OUTPUT_NAMES = [
 _ORIGINALS: Dict[str, Any] = {}
 
 
+def _variant_key(user_variant: str) -> str:
+    return str(user_variant or "").strip().lower().replace(" ", "-")
+
+
+def _matches_alias(user_variant: str, aliases: set[str]) -> bool:
+    key = _variant_key(user_variant)
+    return key in aliases or key.replace("-", "_") in aliases or key.replace("_", "-") in aliases
+
+
 def _is_split_variant(user_variant: str) -> bool:
-    key = str(user_variant or "").strip().lower().replace(" ", "-")
-    return key in _SPLIT_ALIASES or key.replace("-", "_") in _SPLIT_ALIASES or key.replace("_", "-") in _SPLIT_ALIASES
+    return _matches_alias(user_variant, _SPLIT_ALIASES)
+
+
+def _is_split_hip2_variant(user_variant: str) -> bool:
+    return _matches_alias(user_variant, _SPLIT_HIP2_ALIASES)
+
+
+def _canonical_split_variant(user_variant: str) -> str:
+    return "split_hip2_host_smart" if _is_split_hip2_variant(user_variant) else "split_hip_host_smart"
 
 
 def _split_env_int(name: str, default: int) -> int:
@@ -144,30 +173,43 @@ def _slice_batched(arr: np.ndarray, i: int) -> np.ndarray:
     return np.ascontiguousarray(x)
 
 
-def _load_split_runtime():
-    import migraphx  # type: ignore
-
+def _load_split_runtime(*, use_hip2: bool):
     from modules.external_heatmap_topk import HeatmapTopKConfig, run_external_heatmap_topk
     from modules.mx_pair_assembly_pruned import assemble_poses_from_pruned_pairs
     from modules.postprocessing import PostprocessOutput
 
-    mxr2_path = _split_env_path()
-    if not Path(mxr2_path).exists():
-        raise FileNotFoundError(f"Missing --split-mxr2 MXR2 model: {mxr2_path}")
-    mxr2 = migraphx.load(mxr2_path)
-    return mxr2, HeatmapTopKConfig, run_external_heatmap_topk, assemble_poses_from_pruned_pairs, PostprocessOutput
+    mxr2 = None
+    if not use_hip2:
+        import migraphx  # type: ignore
+
+        mxr2_path = _split_env_path()
+        if not Path(mxr2_path).exists():
+            raise FileNotFoundError(f"Missing --split-mxr2 MXR2 model: {mxr2_path}")
+        mxr2 = migraphx.load(mxr2_path)
+
+    PafPruneConfig = None
+    run_external_paf_prune = None
+    if use_hip2:
+        from modules.external_paf_prune import PafPruneConfig, run_external_paf_prune
+
+    return {
+        "mxr2": mxr2,
+        "HeatmapTopKConfig": HeatmapTopKConfig,
+        "run_external_heatmap_topk": run_external_heatmap_topk,
+        "PafPruneConfig": PafPruneConfig,
+        "run_external_paf_prune": run_external_paf_prune,
+        "assemble_poses_from_pruned_pairs": assemble_poses_from_pruned_pairs,
+        "PostprocessOutput": PostprocessOutput,
+    }
 
 
 def _run_split_hip_smart_batch(
     *,
     batch_items: Sequence[Dict[str, Any]],
     map_pairs: Sequence[Tuple[np.ndarray, np.ndarray]],
-    mxr2: Any,
-    HeatmapTopKConfig: Any,
-    run_external_heatmap_topk: Any,
-    assemble_poses_from_pruned_pairs: Any,
-    PostprocessOutput: Any,
+    runtime: Dict[str, Any],
     threshold: float,
+    use_hip2: bool,
 ) -> List[Any]:
     if not batch_items:
         return []
@@ -176,20 +218,27 @@ def _run_split_hip_smart_batch(
     smart_proposals = _split_env_int("STREAM_SPLIT_HIP_SMART_PROPOSALS", 32)
     smart_local_radius = _split_env_int("STREAM_SPLIT_HIP_SMART_LOCAL_RADIUS", 4)
     smart_lowres_nms_radius = _split_env_int("STREAM_SPLIT_HIP_SMART_LOWRES_NMS_RADIUS", 1)
+    topk = _split_env_int("STREAM_SPLIT_HIP_TOPK", 20)
+    limb_topm = _split_env_int("STREAM_SPLIT_HIP_LIMB_TOPM", 20)
 
     heat_bchw = np.stack([_heatmap_to_chw(hm) for hm, _pf in map_pairs], axis=0)
     paf_bchw = np.stack([_paf_to_chw(pf) for _hm, pf in map_pairs], axis=0)
     heat_bchw, real_n = _pad_batch(heat_bchw, compiled_batch_size)
     paf_bchw, _ = _pad_batch(paf_bchw, compiled_batch_size)
 
-    cfg = HeatmapTopKConfig(
+    HeatmapTopKConfig = runtime["HeatmapTopKConfig"]
+    run_external_heatmap_topk = runtime["run_external_heatmap_topk"]
+    assemble_poses_from_pruned_pairs = runtime["assemble_poses_from_pruned_pairs"]
+    PostprocessOutput = runtime["PostprocessOutput"]
+
+    heat_cfg = HeatmapTopKConfig(
         batch_size=int(heat_bchw.shape[0]),
         in_h=int(heat_bchw.shape[2]),
         in_w=int(heat_bchw.shape[3]),
         full_h=int(batch_items[0]["original_hw"][0]),
         full_w=int(batch_items[0]["original_hw"][1]),
         channels=18,
-        topk=_split_env_int("STREAM_SPLIT_HIP_TOPK", 20),
+        topk=topk,
         threshold=float(threshold),
         smart_proposals=smart_proposals,
         smart_local_radius=smart_local_radius,
@@ -197,23 +246,60 @@ def _run_split_hip_smart_batch(
     )
 
     t0 = time.perf_counter()
-    top_scores, top_indices = run_external_heatmap_topk(heat_bchw, cfg, backend="hip_host_smart")
+    top_scores, top_indices = run_external_heatmap_topk(heat_bchw, heat_cfg, backend="hip_host_smart")
     t1 = time.perf_counter()
-    mxr2_out = _run_mxr2(mxr2, paf_bchw, top_scores, top_indices)
+
+    if use_hip2:
+        PafPruneConfig = runtime["PafPruneConfig"]
+        run_external_paf_prune = runtime["run_external_paf_prune"]
+        if PafPruneConfig is None or run_external_paf_prune is None:
+            raise RuntimeError("HIP2 runtime was not loaded correctly")
+        paf_cfg = PafPruneConfig(
+            batch_size=int(paf_bchw.shape[0]),
+            topk=topk,
+            limb_topm=limb_topm,
+            in_h=int(paf_bchw.shape[2]),
+            in_w=int(paf_bchw.shape[3]),
+            full_h=int(batch_items[0]["original_hw"][0]),
+            full_w=int(batch_items[0]["original_hw"][1]),
+            points_per_limb=_split_env_int("STREAM_SPLIT_HIP_POINTS_PER_LIMB", 8),
+            min_paf_score=_split_env_float("STREAM_SPLIT_HIP_MIN_PAF_SCORE", 0.05),
+            success_ratio_thr=_split_env_float("STREAM_SPLIT_HIP_SUCCESS_RATIO_THR", 0.8),
+            min_pair_score=_split_env_float("STREAM_SPLIT_HIP_MIN_PAIR_SCORE", 0.0),
+            paf_cubic_a=_split_env_float("STREAM_SPLIT_HIP_PAF_CUBIC_A", -0.75),
+        )
+        a_idx, b_idx, pair_score, pair_valid = run_external_paf_prune(
+            paf_bchw,
+            top_scores,
+            top_indices,
+            paf_cfg,
+            backend=os.environ.get("STREAM_SPLIT_HIP_PAF_BACKEND", "hip_host"),
+        )
+        pair_out = {
+            "limb_top_pair_a_idx": a_idx,
+            "limb_top_pair_b_idx": b_idx,
+            "limb_top_pair_score": pair_score,
+            "limb_top_pair_valid": pair_valid,
+        }
+    else:
+        pair_out = _run_mxr2(runtime["mxr2"], paf_bchw, top_scores, top_indices)
     t2 = time.perf_counter()
 
     heatmap_ms_total = (t1 - t0) * 1000.0
-    mxr2_ms_total = (t2 - t1) * 1000.0
+    pair_ms_total = (t2 - t1) * 1000.0
+    pair_key = "split_hip2" if use_hip2 else "split_mxr2"
+    pair_batch_key = "split_hip2_batch" if use_hip2 else "split_mxr2_batch"
+
     outputs = []
     for i, item in enumerate(batch_items[:real_n]):
         t_asm0 = time.perf_counter()
         poses, keypoints, asm_times = assemble_poses_from_pruned_pairs(
             _slice_batched(top_scores, i),
             _slice_batched(top_indices, i),
-            _slice_batched(mxr2_out["limb_top_pair_a_idx"], i),
-            _slice_batched(mxr2_out["limb_top_pair_b_idx"], i),
-            _slice_batched(mxr2_out["limb_top_pair_score"], i),
-            _slice_batched(mxr2_out["limb_top_pair_valid"], i),
+            _slice_batched(pair_out["limb_top_pair_a_idx"], i),
+            _slice_batched(pair_out["limb_top_pair_b_idx"], i),
+            _slice_batched(pair_out["limb_top_pair_score"], i),
+            _slice_batched(pair_out["limb_top_pair_valid"], i),
             full_width=int(item["original_hw"][1]),
             threshold=float(threshold),
             min_pair_score=0.0,
@@ -221,21 +307,25 @@ def _run_split_hip_smart_batch(
         )
         asm_ms = (time.perf_counter() - t_asm0) * 1000.0
         valid_topk = float(np.sum(_slice_batched(top_scores, i) > -1.0e8))
-        limb_valid = float(np.sum(_slice_batched(mxr2_out["limb_top_pair_valid"], i) > 0.5))
-        per_frame_gpu_ms = (heatmap_ms_total + mxr2_ms_total) / float(max(1, real_n))
+        limb_valid = float(np.sum(_slice_batched(pair_out["limb_top_pair_valid"], i) > 0.5))
+        per_frame_gpu_ms = (heatmap_ms_total + pair_ms_total) / float(max(1, real_n))
         timings: Dict[str, float] = {
             "split_smart_heatmap": heatmap_ms_total / float(max(1, real_n)),
             "split_smart_heatmap_batch": heatmap_ms_total,
-            "split_mxr2": mxr2_ms_total / float(max(1, real_n)),
-            "split_mxr2_batch": mxr2_ms_total,
+            pair_key: pair_ms_total / float(max(1, real_n)),
+            pair_batch_key: pair_ms_total,
+            "split_pair_backend": 2.0 if use_hip2 else 1.0,
             "split_cpu_assembly": asm_ms,
-            "split_total_batch": heatmap_ms_total + mxr2_ms_total,
+            "split_total_batch": heatmap_ms_total + pair_ms_total,
             "split_real_batch_size": float(real_n),
             "split_compiled_batch_size": float(heat_bchw.shape[0]),
             "valid_topk_count": valid_topk,
             "limb_valid_count": limb_valid,
             "total_postprocess": per_frame_gpu_ms + asm_ms,
         }
+        if use_hip2:
+            # Keep a compatibility key for stream comparisons that grouped pair-stage timings.
+            timings["split_mxr2_replaced_by_hip2"] = pair_ms_total / float(max(1, real_n))
         for k, v in dict(asm_times).items():
             try:
                 timings[str(k)] = float(v)
@@ -324,6 +414,8 @@ def postprocess_latest_worker_patched(
             roctx_enabled=roctx_enabled,
         )
 
+    use_hip2 = _is_split_hip2_variant(user_variant)
+    canonical = registry_mode = _canonical_split_variant(user_variant)
     try:
         from simulation.grid_video import draw_poses_on_frame
         from simulation.queues import all_done, all_queues_empty
@@ -332,12 +424,11 @@ def postprocess_latest_worker_patched(
         from simulation.tracing import RocTxTracer, trace_print
         from simulation.utils import mean, percentile
 
-        tracer = RocTxTracer(roctx_enabled, f"post:{worker_id}:pid:{os.getpid()}:split_hip_smart")
+        tracer = RocTxTracer(roctx_enabled, f"post:{worker_id}:pid:{os.getpid()}:{canonical}")
         tracer.mark("worker_start")
         configure_child_cpu_runtime(int(os.environ.get("STREAM_WORKER_THREADS", "1")))
-        mxr2, HeatmapTopKConfig, run_external_heatmap_topk, assemble_poses_from_pruned_pairs, PostprocessOutput = _load_split_runtime()
+        runtime = _load_split_runtime(use_hip2=use_hip2)
 
-        canonical = registry_mode = "split_hip_host_smart"
         shared_slots, shared_handles = open_shared_map_buffers(shared_map_descs)
         batch_size = max(1, _split_env_int("STREAM_SPLIT_HIP_BATCH_SIZE", 4))
         batch_timeout_s = max(0.0, _split_env_float("STREAM_SPLIT_HIP_TIMEOUT_MS", 4.0)) / 1000.0
@@ -348,8 +439,9 @@ def postprocess_latest_worker_patched(
         queue_wait_times: List[float] = []
         e2e_times: List[float] = []
         t_worker_start = time.perf_counter()
+        pair_backend = "hip2" if use_hip2 else f"mxr2={_split_env_path()}"
         print(
-            f"[POST:{worker_id}] split_hip_host_smart mxr2={_split_env_path()} batch={batch_size} "
+            f"[POST:{worker_id}] {canonical} pair_backend={pair_backend} batch={batch_size} "
             f"timeout={batch_timeout_s*1000:.2f}ms sp={_split_env_int('STREAM_SPLIT_HIP_SMART_PROPOSALS', 32)} "
             f"lr={_split_env_int('STREAM_SPLIT_HIP_SMART_LOCAL_RADIUS', 4)}",
             flush=True,
@@ -397,16 +489,13 @@ def postprocess_latest_worker_patched(
             post_start = time.perf_counter()
             try:
                 map_pairs = [_maps_for(bi) for bi in batch_items]
-                with tracer.range(f"postprocess_split_hip_host_smart_batch{len(batch_items)}"):
+                with tracer.range(f"postprocess_{canonical}_batch{len(batch_items)}"):
                     batch_outputs = _run_split_hip_smart_batch(
                         batch_items=batch_items,
                         map_pairs=map_pairs,
-                        mxr2=mxr2,
-                        HeatmapTopKConfig=HeatmapTopKConfig,
-                        run_external_heatmap_topk=run_external_heatmap_topk,
-                        assemble_poses_from_pruned_pairs=assemble_poses_from_pruned_pairs,
-                        PostprocessOutput=PostprocessOutput,
+                        runtime=runtime,
                         threshold=threshold,
+                        use_hip2=use_hip2,
                     )
             except Exception:
                 for bi in batch_items:
@@ -434,27 +523,40 @@ def postprocess_latest_worker_patched(
                     last_processed_ts[cam_done_id] = time.perf_counter()
                 release_shared_slot_from_item(bi, free_map_slots)
                 processed += 1
-                trace_print(trace_log_every, processed, f"[TRACE post:{worker_id} pid={os.getpid()} latest split] processed={processed} cam={row['camera_id']} frame={row['frame_id']} batch={len(batch_items)} post={row['post_ms']:.2f}ms e2e={row['e2e_ms']:.2f}ms")
+                trace_print(trace_log_every, processed, f"[TRACE post:{worker_id} pid={os.getpid()} latest split] variant={canonical} processed={processed} cam={row['camera_id']} frame={row['frame_id']} batch={len(batch_items)} post={row['post_ms']:.2f}ms e2e={row['e2e_ms']:.2f}ms")
 
         close_shared_map_views(shared_handles)
-        stats_q.put({"stage": "postprocess", "buffer_mode": "latest", "worker_id": worker_id, "variant": canonical, "registry_mode": registry_mode, "processed": processed, "avg_queue_infer_to_post_ms": mean(queue_wait_times), "p95_queue_infer_to_post_ms": percentile(queue_wait_times, 95), "avg_post_ms": mean(post_times), "p95_post_ms": percentile(post_times, 95), "avg_e2e_ms": mean(e2e_times), "p95_e2e_ms": percentile(e2e_times, 95), "split_mxr2": _split_env_path(), "split_mxr2_batch_size": batch_size, "wall_s": time.perf_counter() - t_worker_start})
+        stats_q.put({
+            "stage": "postprocess",
+            "buffer_mode": "latest",
+            "worker_id": worker_id,
+            "variant": canonical,
+            "registry_mode": registry_mode,
+            "processed": processed,
+            "avg_queue_infer_to_post_ms": mean(queue_wait_times),
+            "p95_queue_infer_to_post_ms": percentile(queue_wait_times, 95),
+            "avg_post_ms": mean(post_times),
+            "p95_post_ms": percentile(post_times, 95),
+            "avg_e2e_ms": mean(e2e_times),
+            "p95_e2e_ms": percentile(e2e_times, 95),
+            "split_pair_backend": "hip2" if use_hip2 else "mxr2",
+            "split_mxr2": "" if use_hip2 else _split_env_path(),
+            "split_mxr2_batch_size": batch_size,
+            "wall_s": time.perf_counter() - t_worker_start,
+        })
         print(f"[POST:{worker_id}] Done. processed={processed}", flush=True)
     except Exception:
         error_q.put({"stage": "postprocess", "worker_id": worker_id, "traceback": traceback.format_exc()})
 
 
 def postprocess_worker_patched(**kwargs) -> None:
-    # Queue mode support uses the same latest-compatible implementation by adapting
-    # the single shared input queue into per-camera semantics would be more invasive.
-    # For non-latest stream runs, fall back to the existing worker unless the split
-    # variant is requested, in which case fail loudly with a clear message.
     user_variant = kwargs.get("user_variant", "")
     if not _is_split_variant(user_variant):
         return _ORIGINALS["postprocess_worker"](**kwargs)
     error_q = kwargs.get("error_q")
     worker_id = kwargs.get("worker_id", 0)
     try:
-        raise RuntimeError("split_hip_host_smart is currently implemented for --buffer-mode latest. Use --buffer-mode latest.")
+        raise RuntimeError(f"{_canonical_split_variant(user_variant)} is currently implemented for --buffer-mode latest. Use --buffer-mode latest.")
     except Exception:
         if error_q is not None:
             error_q.put({"stage": "postprocess", "worker_id": worker_id, "traceback": traceback.format_exc()})
@@ -470,7 +572,8 @@ def _patch_resolve_registry_mode():
 
     def resolve_registry_mode_patched(user_mode: str):
         if _is_split_variant(user_mode):
-            return "split_hip_host_smart", "split_hip_host_smart", False
+            canonical = _canonical_split_variant(user_mode)
+            return canonical, canonical, False
         return original(user_mode)
 
     modes.resolve_registry_mode = resolve_registry_mode_patched
@@ -491,22 +594,26 @@ def _patch_cli_and_run():
         parser = original_build_parser()
         existing = {a.dest for a in parser._actions}
         if "split_mxr2" not in existing:
-            parser.add_argument("--split-mxr2", default=_split_env_path(), help="MXR2 model for --variant split_hip_host_smart.")
-            parser.add_argument("--split-mxr2-batch-size", type=int, default=4, help="Compiled/static batch size of --split-mxr2. Default: 4.")
-            parser.add_argument("--split-batch-timeout-ms", type=float, default=4.0, help="Maximum wait to fill a split MXR2 postprocess batch. Default: 4 ms.")
+            parser.add_argument("--split-mxr2", default=_split_env_path(), help="MXR2 model for --variant split_hip_host_smart. Not required by split_hip2_host_smart.")
+            parser.add_argument("--split-mxr2-batch-size", type=int, default=4, help="Compiled/static batch size of split postprocess stage. Default: 4.")
+            parser.add_argument("--split-batch-timeout-ms", type=float, default=4.0, help="Maximum wait to fill a split postprocess batch. Default: 4 ms.")
+            parser.add_argument("--split-paf-backend", choices=["hip_host"], default="hip_host", help="PAF pruning backend for split_hip2_host_smart. Default: hip_host.")
             parser.add_argument("--smart-proposals", type=int, default=32, help="hip_host_smart proposals per keypoint type. Default: 32.")
             parser.add_argument("--smart-local-radius", type=int, default=4, help="hip_host_smart full-res local refinement radius. Default: 4.")
             parser.add_argument("--smart-lowres-nms-radius", type=int, default=1, help="hip_host_smart low-res NMS radius. Default: 1.")
         return parser
 
     def run_patched(args):
+        os.environ["STREAM_SHARED_HEATMAP_CHANNELS"] = "18" if _is_split_variant(getattr(args, "variant", "")) else os.environ.get("STREAM_SHARED_HEATMAP_CHANNELS", "")
         os.environ["STREAM_SPLIT_HIP_MXR2"] = str(getattr(args, "split_mxr2", _split_env_path()))
         os.environ["STREAM_SPLIT_HIP_BATCH_SIZE"] = str(int(getattr(args, "split_mxr2_batch_size", 4)))
         os.environ["STREAM_SPLIT_HIP_TIMEOUT_MS"] = str(float(getattr(args, "split_batch_timeout_ms", 4.0)))
+        os.environ["STREAM_SPLIT_HIP_PAF_BACKEND"] = str(getattr(args, "split_paf_backend", "hip_host"))
         os.environ["STREAM_SPLIT_HIP_SMART_PROPOSALS"] = str(int(getattr(args, "smart_proposals", 32)))
         os.environ["STREAM_SPLIT_HIP_SMART_LOCAL_RADIUS"] = str(int(getattr(args, "smart_local_radius", 4)))
         os.environ["STREAM_SPLIT_HIP_SMART_LOWRES_NMS_RADIUS"] = str(int(getattr(args, "smart_lowres_nms_radius", 1)))
         os.environ["STREAM_SPLIT_HIP_TOPK"] = str(int(getattr(args, "max_keypoints", 20)))
+        os.environ["STREAM_SPLIT_HIP_LIMB_TOPM"] = str(int(getattr(args, "max_keypoints", 20)))
         return original_run(args)
 
     cli.build_parser = build_parser_patched
