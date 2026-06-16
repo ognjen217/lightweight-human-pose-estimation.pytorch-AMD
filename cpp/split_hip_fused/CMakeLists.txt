@@ -19,8 +19,7 @@ if(NOT "${SPLIT_HIP_FUSED_OFFLOAD_ARCH}" STREQUAL "")
 endif()
 
 set(SPLIT_HIP_FUSED_SOURCES
-    ${CMAKE_CURRENT_SOURCE_DIR}/split_hip_fused.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../paf_prune_hip/paf_prune_hip.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/split_hip_fused_v2.cpp
 )
 
 set(SPLIT_HIP_FUSED_OUTPUT
@@ -36,13 +35,14 @@ add_custom_command(
         -shared
         ${SPLIT_HIP_FUSED_ARCH_FLAGS}
         -I${CMAKE_CURRENT_SOURCE_DIR}
-        -I${CMAKE_CURRENT_SOURCE_DIR}/../paf_prune_hip
+        -I${CMAKE_CURRENT_SOURCE_DIR}/../heatmap_topk_hip
         ${SPLIT_HIP_FUSED_SOURCES}
         -o ${SPLIT_HIP_FUSED_OUTPUT}
     DEPENDS ${SPLIT_HIP_FUSED_SOURCES}
             ${CMAKE_CURRENT_SOURCE_DIR}/split_hip_fused.h
-            ${CMAKE_CURRENT_SOURCE_DIR}/../paf_prune_hip/paf_prune_hip.h
-    COMMENT "Building fused HIP split postprocess backend with ${HIPCC_EXECUTABLE}"
+            ${CMAKE_CURRENT_SOURCE_DIR}/../heatmap_topk_hip/heatmap_topk_hip_smart.cpp
+            ${CMAKE_CURRENT_SOURCE_DIR}/../heatmap_topk_hip/heatmap_topk_hip.h
+    COMMENT "Building low-level fused HIP split postprocess backend with ${HIPCC_EXECUTABLE}"
     VERBATIM
 )
 
