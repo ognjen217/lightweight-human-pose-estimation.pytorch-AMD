@@ -1,19 +1,13 @@
 #!/usr/bin/env python3
 """Compile fused_postprocess_v2 / pruned pair head.
 
-The base fused head produces:
-  pair_scores [B,19,K,K] or [1,19,K,K]
-  pair_valid  [B,19,K,K] or [1,19,K,K]
-  top_scores  [B,18,K]
-  top_indices [B,18,K]
+The default full-res path keeps the original compiler flow:
+  fused heatmap TopK + PAF scorer ONNX -> append TopM pruning tail -> MXR.
 
-This compiler appends an ONNX TopM pruning tail.
-
-For batch_size=1, it keeps the legacy outputs:
-  limb_top_pair_* [19,M]
-
-For batch_size>1, it emits batched outputs:
-  limb_top_pair_* [B,19,M]
+The experimental smart-full-res path exports the batch-aware pruned ONNX directly
+from tools/export_batchaware_fused_pruned_postprocess.py. It replaces the global
+full-resolution heatmap resize with low-res proposal selection plus local
+full-resolution cubic refinement, while preserving the six pruned output tensors.
 """
 
 from __future__ import annotations
@@ -23,8 +17,10 @@ import inspect
 import json
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any, Callable
+
 
 def _safe_float_token(x: float) -> str:
     return str(float(x)).replace("-", "m").replace(".", "p")
@@ -74,6 +70,25 @@ def _call_with_optional_batch(func: Callable[..., Any], *args: Any, batch_size: 
     return func(*args, **kwargs)
 
 
+def _heatmap_mode_token(
+    heatmap_mode: str,
+    *,
+    smart_proposals: int,
+    smart_local_radius: int,
+    smart_lowres_nms_radius: int,
+) -> str:
+    mode = str(heatmap_mode or "full-res")
+    if mode == "full-res":
+        return ""
+    safe_mode = mode.replace("-", "")
+    return (
+        f"_hm{safe_mode}"
+        f"_sp{int(smart_proposals)}"
+        f"_lr{int(smart_local_radius)}"
+        f"_lnms{int(smart_lowres_nms_radius)}"
+    )
+
+
 def pruned_head_name(
     in_h: int,
     in_w: int,
@@ -92,8 +107,18 @@ def pruned_head_name(
     paf_cubic_a: float,
     min_pair_score: float = 0.0,
     batch_size: int = 1,
+    heatmap_mode: str = "full-res",
+    smart_proposals: int = 64,
+    smart_local_radius: int = 8,
+    smart_lowres_nms_radius: int = 1,
 ) -> str:
     batch_token = "" if int(batch_size) == 1 else f"_b{int(batch_size)}"
+    mode_token = _heatmap_mode_token(
+        heatmap_mode,
+        smart_proposals=smart_proposals,
+        smart_local_radius=smart_local_radius,
+        smart_lowres_nms_radius=smart_lowres_nms_radius,
+    )
     return (
         "fused_cubic_topk_fullres_paf_pruned_"
         f"{int(in_h)}x{int(in_w)}_to_{int(full_h)}x{int(full_w)}{batch_token}_"
@@ -103,6 +128,7 @@ def pruned_head_name(
         f"p{int(points_per_limb)}_min{_safe_float_token(min_paf_score)}_"
         f"sr{_safe_float_token(success_ratio_thr)}_pa{_safe_float_token(paf_cubic_a)}_"
         f"mp{_safe_float_token(min_pair_score)}"
+        f"{mode_token}"
     )
 
 
@@ -241,6 +267,65 @@ def append_pruning_tail(
     return pruned_onnx
 
 
+def _export_batchaware_pruned_onnx(
+    onnx_path: Path,
+    *,
+    in_h: int,
+    in_w: int,
+    full_h: int,
+    full_w: int,
+    topk: int,
+    limb_topm: int,
+    threshold: float,
+    nms_radius: int,
+    nms_impl: str,
+    heatmap_cubic_a: float,
+    points_per_limb: int,
+    min_paf_score: float,
+    success_ratio_thr: float,
+    paf_cubic_a: float,
+    min_pair_score: float,
+    batch_size: int,
+    opset: int,
+    heatmap_mode: str,
+    smart_proposals: int,
+    smart_local_radius: int,
+    smart_lowres_nms_radius: int,
+) -> None:
+    script = Path(__file__).resolve().parents[1] / "tools" / "export_batchaware_fused_pruned_postprocess.py"
+    if not script.exists():
+        raise FileNotFoundError(f"Expected exporter script not found: {script}")
+    cmd = [
+        sys.executable,
+        str(script),
+        "--onnx", str(onnx_path),
+        "--batch-size", str(int(batch_size)),
+        "--in-h", str(int(in_h)),
+        "--in-w", str(int(in_w)),
+        "--full-h", str(int(full_h)),
+        "--full-w", str(int(full_w)),
+        "--topk", str(int(topk)),
+        "--limb-topm", str(int(limb_topm)),
+        "--threshold", str(float(threshold)),
+        "--nms-radius", str(int(nms_radius)),
+        "--nms-impl", str(nms_impl),
+        "--heatmap-cubic-a", str(float(heatmap_cubic_a)),
+        "--points-per-limb", str(int(points_per_limb)),
+        "--min-paf-score", str(float(min_paf_score)),
+        "--success-ratio-thr", str(float(success_ratio_thr)),
+        "--paf-cubic-a", str(float(paf_cubic_a)),
+        "--min-pair-score", str(float(min_pair_score)),
+        "--heatmap-mode", str(heatmap_mode),
+        "--smart-proposals", str(int(smart_proposals)),
+        "--smart-local-radius", str(int(smart_local_radius)),
+        "--smart-lowres-nms-radius", str(int(smart_lowres_nms_radius)),
+        "--opset", str(int(opset)),
+    ]
+    print("[fused-pruned] exporting batch-aware pruned ONNX via:")
+    print("[fused-pruned] " + " ".join(cmd), flush=True)
+    subprocess.check_call(cmd)
+
+
 def compile_pruned_fused_postprocess_head(
     *,
     in_h: int,
@@ -265,8 +350,16 @@ def compile_pruned_fused_postprocess_head(
     exhaustive_tune: bool = False,
     force: bool = False,
     keep_onnx: bool = True,
+    heatmap_mode: str = "full-res",
+    smart_proposals: int = 64,
+    smart_local_radius: int = 8,
+    smart_lowres_nms_radius: int = 1,
 ) -> Path:
     from modules.migraphx_fused_postprocess_compiler import compile_fused_postprocess_head, fused_head_name
+
+    heatmap_mode = str(heatmap_mode or "full-res")
+    if heatmap_mode not in {"full-res", "smart-full-res"}:
+        raise ValueError("heatmap_mode must be 'full-res' or 'smart-full-res'")
 
     batch_size = int(batch_size)
     output_dir = Path(output_dir)
@@ -291,6 +384,10 @@ def compile_pruned_fused_postprocess_head(
         paf_cubic_a=paf_cubic_a,
         min_pair_score=min_pair_score,
         batch_size=batch_size,
+        heatmap_mode=heatmap_mode,
+        smart_proposals=smart_proposals,
+        smart_local_radius=smart_local_radius,
+        smart_lowres_nms_radius=smart_lowres_nms_radius,
     )
     mxr_path = output_dir / f"{name}.mxr"
     onnx_path = output_dir / f"{name}.onnx"
@@ -298,60 +395,91 @@ def compile_pruned_fused_postprocess_head(
         print(f"[fused-pruned] exists, skipping: {mxr_path}")
         return mxr_path
 
-    print("[fused-pruned] compiling/checking base fused postprocess ONNX")
-    _call_with_optional_batch(
-        compile_fused_postprocess_head,
-        in_h=in_h,
-        in_w=in_w,
-        full_h=full_h,
-        full_w=full_w,
-        output_dir=parts_dir,
-        topk=topk,
-        threshold=threshold,
-        nms_radius=nms_radius,
-        nms_impl=nms_impl,
-        heatmap_cubic_a=heatmap_cubic_a,
-        points_per_limb=points_per_limb,
-        min_paf_score=min_paf_score,
-        success_ratio_thr=success_ratio_thr,
-        paf_cubic_a=paf_cubic_a,
-        opset=opset,
-        exhaustive_tune=False,
-        force=force,
-        keep_onnx=True,
-        batch_size=batch_size,
-    )
+    if heatmap_mode == "smart-full-res":
+        print(
+            "[fused-pruned] compiling smart-full-res pruned postprocess "
+            f"B={batch_size} shape={in_h}x{in_w}->{full_h}x{full_w} "
+            f"sp={smart_proposals} lr={smart_local_radius} lnms={smart_lowres_nms_radius}"
+        )
+        _export_batchaware_pruned_onnx(
+            onnx_path,
+            in_h=in_h,
+            in_w=in_w,
+            full_h=full_h,
+            full_w=full_w,
+            topk=topk,
+            limb_topm=limb_topm,
+            threshold=threshold,
+            nms_radius=nms_radius,
+            nms_impl=nms_impl,
+            heatmap_cubic_a=heatmap_cubic_a,
+            points_per_limb=points_per_limb,
+            min_paf_score=min_paf_score,
+            success_ratio_thr=success_ratio_thr,
+            paf_cubic_a=paf_cubic_a,
+            min_pair_score=min_pair_score,
+            batch_size=batch_size,
+            opset=opset,
+            heatmap_mode=heatmap_mode,
+            smart_proposals=smart_proposals,
+            smart_local_radius=smart_local_radius,
+            smart_lowres_nms_radius=smart_lowres_nms_radius,
+        )
+    else:
+        print("[fused-pruned] compiling/checking base fused postprocess ONNX")
+        _call_with_optional_batch(
+            compile_fused_postprocess_head,
+            in_h=in_h,
+            in_w=in_w,
+            full_h=full_h,
+            full_w=full_w,
+            output_dir=parts_dir,
+            topk=topk,
+            threshold=threshold,
+            nms_radius=nms_radius,
+            nms_impl=nms_impl,
+            heatmap_cubic_a=heatmap_cubic_a,
+            points_per_limb=points_per_limb,
+            min_paf_score=min_paf_score,
+            success_ratio_thr=success_ratio_thr,
+            paf_cubic_a=paf_cubic_a,
+            opset=opset,
+            exhaustive_tune=False,
+            force=force,
+            keep_onnx=True,
+            batch_size=batch_size,
+        )
 
-    base_name = _call_with_optional_batch(
-        fused_head_name,
-        in_h,
-        in_w,
-        full_h,
-        full_w,
-        topk=topk,
-        threshold=threshold,
-        nms_radius=nms_radius,
-        nms_impl=nms_impl,
-        heatmap_cubic_a=heatmap_cubic_a,
-        points_per_limb=points_per_limb,
-        min_paf_score=min_paf_score,
-        success_ratio_thr=success_ratio_thr,
-        paf_cubic_a=paf_cubic_a,
-        batch_size=batch_size,
-    )
-    base_onnx = parts_dir / f"{base_name}.onnx"
-    if not base_onnx.exists():
-        raise FileNotFoundError(f"Expected base fused ONNX not found: {base_onnx}")
+        base_name = _call_with_optional_batch(
+            fused_head_name,
+            in_h,
+            in_w,
+            full_h,
+            full_w,
+            topk=topk,
+            threshold=threshold,
+            nms_radius=nms_radius,
+            nms_impl=nms_impl,
+            heatmap_cubic_a=heatmap_cubic_a,
+            points_per_limb=points_per_limb,
+            min_paf_score=min_paf_score,
+            success_ratio_thr=success_ratio_thr,
+            paf_cubic_a=paf_cubic_a,
+            batch_size=batch_size,
+        )
+        base_onnx = parts_dir / f"{base_name}.onnx"
+        if not base_onnx.exists():
+            raise FileNotFoundError(f"Expected base fused ONNX not found: {base_onnx}")
 
-    print(f"[fused-pruned] appending TopM pruning tail: B={batch_size}, K={topk}, M={limb_topm}")
-    append_pruning_tail(
-        base_onnx,
-        onnx_path,
-        topk=topk,
-        limb_topm=limb_topm,
-        min_pair_score=min_pair_score,
-        batch_size=batch_size,
-    )
+        print(f"[fused-pruned] appending TopM pruning tail: B={batch_size}, K={topk}, M={limb_topm}")
+        append_pruning_tail(
+            base_onnx,
+            onnx_path,
+            topk=topk,
+            limb_topm=limb_topm,
+            min_pair_score=min_pair_score,
+            batch_size=batch_size,
+        )
 
     print(f"[fused-pruned] compiling MIGraphX GPU target: {onnx_path.name} -> {mxr_path.name}")
     _compile_onnx_to_mxr(onnx_path, mxr_path, exhaustive_tune=bool(exhaustive_tune))
@@ -410,6 +538,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--success-ratio-thr", type=float, default=0.8)
     p.add_argument("--paf-cubic-a", type=float, default=-0.75)
     p.add_argument("--min-pair-score", type=float, default=0.0)
+    p.add_argument("--heatmap-mode", choices=["full-res", "smart-full-res"], default="full-res")
+    p.add_argument("--smart-proposals", type=int, default=64)
+    p.add_argument("--smart-local-radius", type=int, default=8)
+    p.add_argument("--smart-lowres-nms-radius", type=int, default=1)
     p.add_argument("--opset", type=int, default=18)
     p.add_argument("--exhaustive-tune", action="store_true")
     p.add_argument("--force", action="store_true")
@@ -434,6 +566,10 @@ def main() -> None:
         success_ratio_thr=args.success_ratio_thr,
         paf_cubic_a=args.paf_cubic_a,
         min_pair_score=args.min_pair_score,
+        heatmap_mode=args.heatmap_mode,
+        smart_proposals=args.smart_proposals,
+        smart_local_radius=args.smart_local_radius,
+        smart_lowres_nms_radius=args.smart_lowres_nms_radius,
         opset=args.opset,
         exhaustive_tune=args.exhaustive_tune,
         force=args.force,

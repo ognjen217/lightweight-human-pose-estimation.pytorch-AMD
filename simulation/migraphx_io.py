@@ -21,6 +21,45 @@ def _as_migraphx_output_array(x: Any) -> np.ndarray:
     return np.asarray(x)
 
 
+def _infer_heatmap_channels(heat_raw: np.ndarray, out_h: int, out_w: int, batch_size: Optional[int]) -> int:
+    """Infer whether a pose model returned 19-channel or split 18-channel heatmaps.
+
+    Older/full pose models expose heatmaps as 19 channels including background.
+    The split pose adapter used by MXR1 -> HIP smart -> MXR2 returns only the
+    18 body keypoint heatmaps.  The stream decoder must accept both contracts.
+    """
+    if heat_raw.ndim == 4:
+        if heat_raw.shape[1] in (18, 19):
+            return int(heat_raw.shape[1])
+        if heat_raw.shape[-1] in (18, 19):
+            return int(heat_raw.shape[-1])
+    if heat_raw.ndim == 3:
+        if heat_raw.shape[0] in (18, 19):
+            return int(heat_raw.shape[0])
+        if heat_raw.shape[-1] in (18, 19):
+            return int(heat_raw.shape[-1])
+
+    plane = int(out_h) * int(out_w)
+    if plane <= 0:
+        raise RuntimeError(f"Invalid output map size: out_h={out_h}, out_w={out_w}")
+
+    if batch_size is not None and int(batch_size) > 0:
+        per_batch = int(batch_size) * plane
+        for channels in (19, 18):
+            if heat_raw.size == per_batch * channels:
+                return channels
+
+    for channels in (19, 18):
+        per_sample = channels * plane
+        if heat_raw.size % per_sample == 0:
+            return channels
+
+    raise RuntimeError(
+        "Cannot infer heatmap channel count from MIGraphX output: "
+        f"size={heat_raw.size}, raw_shape={heat_raw.shape}, out_h={out_h}, out_w={out_w}, batch_size={batch_size}"
+    )
+
+
 def decode_migraphx_batch_outputs(
     results: Any,
     out_h: int,
@@ -31,12 +70,12 @@ def decode_migraphx_batch_outputs(
     """
     Decode MIGraphX model outputs for batched inference.
 
-    Expected model output for input Bx3xHxW:
-        heatmaps: B x 19 x out_h x out_w
+    Supported heatmap contracts:
+        heatmaps: B x 19 x out_h x out_w  or  B x 18 x out_h x out_w
         pafs:     B x 38 x out_h x out_w
 
     Returns:
-        heatmaps: B x out_h x out_w x 19
+        heatmaps: B x out_h x out_w x C, where C is 18 or 19
         pafs:     B x out_h x out_w x 38
     """
     if not isinstance(results, (list, tuple)):
@@ -47,7 +86,8 @@ def decode_migraphx_batch_outputs(
     heat_raw = _as_migraphx_output_array(results[-2])
     paf_raw = _as_migraphx_output_array(results[-1])
 
-    heat_per_sample = 19 * out_h * out_w
+    heat_channels = _infer_heatmap_channels(heat_raw, out_h, out_w, batch_size)
+    heat_per_sample = heat_channels * out_h * out_w
     paf_per_sample = 38 * out_h * out_w
 
     if batch_size is None:
@@ -63,21 +103,21 @@ def decode_migraphx_batch_outputs(
         raise RuntimeError(f"Invalid decoded batch size: {batch_size}")
 
     if heat_raw.ndim == 4:
-        if heat_raw.shape[0] == batch_size and heat_raw.shape[1] == 19:
+        if heat_raw.shape[0] == batch_size and heat_raw.shape[1] == heat_channels:
             heat_bchw = heat_raw
-        elif heat_raw.shape[0] == batch_size and heat_raw.shape[-1] == 19:
+        elif heat_raw.shape[0] == batch_size and heat_raw.shape[-1] == heat_channels:
             heat_bchw = np.transpose(heat_raw, (0, 3, 1, 2))
         else:
-            heat_bchw = heat_raw.reshape(batch_size, 19, out_h, out_w)
+            heat_bchw = heat_raw.reshape(batch_size, heat_channels, out_h, out_w)
     elif heat_raw.ndim == 3:
-        if heat_raw.shape[0] == 19:
-            heat_bchw = heat_raw.reshape(1, 19, out_h, out_w)
-        elif heat_raw.shape[-1] == 19:
-            heat_bchw = np.transpose(heat_raw, (2, 0, 1)).reshape(1, 19, out_h, out_w)
+        if heat_raw.shape[0] == heat_channels:
+            heat_bchw = heat_raw.reshape(1, heat_channels, out_h, out_w)
+        elif heat_raw.shape[-1] == heat_channels:
+            heat_bchw = np.transpose(heat_raw, (2, 0, 1)).reshape(1, heat_channels, out_h, out_w)
         else:
-            heat_bchw = heat_raw.reshape(batch_size, 19, out_h, out_w)
+            heat_bchw = heat_raw.reshape(batch_size, heat_channels, out_h, out_w)
     else:
-        heat_bchw = heat_raw.reshape(batch_size, 19, out_h, out_w)
+        heat_bchw = heat_raw.reshape(batch_size, heat_channels, out_h, out_w)
 
     if paf_raw.ndim == 4:
         if paf_raw.shape[0] == batch_size and paf_raw.shape[1] == 38:
@@ -111,7 +151,7 @@ def decode_migraphx_batch_outputs(
 
 
 def decode_migraphx_outputs(results: Any, out_h: int, out_w: int, output_dtype: str) -> Tuple[np.ndarray, np.ndarray]:
-    """Backward-compatible single-frame decode. Returns HxWx19 and HxWx38."""
+    """Backward-compatible single-frame decode. Returns HxWxC and HxWx38."""
     heat_bhwc, paf_bhwc = decode_migraphx_batch_outputs(
         results,
         out_h,
