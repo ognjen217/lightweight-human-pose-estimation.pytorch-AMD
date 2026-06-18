@@ -1,6 +1,6 @@
 # AMD ROCm/MIGraphX Acceleration for Lightweight Human Pose Estimation
 
-This repository is an AMD ROCm/MIGraphX optimization fork of the Lightweight OpenPose-style human pose estimation pipeline. It is intended for readers who open the repository for the first time and need to understand what was inherited from the earlier AMD port, what was added in this fork, how the code is organized, and how the main validation and stream-simulation entrypoints are run.
+This repository is an AMD ROCm/MIGraphX optimization fork of the Lightweight OpenPose-style human pose estimation pipeline. The repository was inherited from the earlier AMD port. What was added in this fork, how the code is organized, and how the main validation and stream-simulation entrypoints are run.
 
 The important context is that the fork point was not the original PyTorch-only Lightweight Human Pose Estimation repository directly, but the AMD-oriented fork at `cane122/lightweight-human-pose-estimation.pytorch-AMD`. That fork had already moved the model toward AMD GPU execution through ROCm/MIGraphX. The work in this repository starts from that point and focuses on the next bottleneck: after neural-network inference became fast enough, the limiting factor moved into postprocessing, data movement, CPU/GPU scheduling, batching, and live multi-camera stream behavior.
 
